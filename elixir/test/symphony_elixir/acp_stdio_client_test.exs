@@ -33,4 +33,32 @@ defmodule SymphonyElixir.AcpStdioClientTest do
       File.rm_rf(test_root)
     end
   end
+
+  test "rejects ACP permission requests by default" do
+    test_root =
+      Path.join(System.tmp_dir!(), "symphony-acp-client-permission-#{System.unique_integer([:positive])}")
+
+    try do
+      workspace = Path.join(test_root, "workspace")
+      File.mkdir_p!(workspace)
+      {executable, env} = SymphonyElixir.FakeAcpServer.write!(test_root, %{"sessionId" => "fake-acp-session", "permission" => true})
+
+      parent = self()
+
+      assert {:ok, session} =
+               Client.start_session(
+                 workspace,
+                 %{command: executable, args: [], env: env, permission_policy: "reject", timeout_ms: 5_000},
+                 fn event -> send(parent, {:acp_event, event}) end
+               )
+
+      assert {:ok, _result} = Client.prompt(session, "hello", timeout_ms: 5_000)
+
+      assert_receive {:acp_event, %{event: :permission_rejected, payload: %{"toolCall" => %{"title" => "write"}}}}
+
+      assert :ok = Client.stop_session(session)
+    after
+      File.rm_rf(test_root)
+    end
+  end
 end

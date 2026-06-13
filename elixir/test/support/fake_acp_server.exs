@@ -27,6 +27,9 @@ defmodule SymphonyElixir.FakeAcpServer do
         elif method == "session/new":
             send({"jsonrpc": "2.0", "id": request_id, "result": {"sessionId": session_id}})
         elif method == "session/prompt":
+            if behavior.get("permission"):
+                send({"jsonrpc": "2.0", "id": 9001, "method": "session/request_permission", "params": {"sessionId": session_id, "toolCall": {"title": "write"}, "options": [{"id": "allow_once"}, {"id": "reject"}]}})
+                json.loads(sys.stdin.readline())
             send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": session_id, "update": {"kind": "text", "text": "working"}}})
             send({"jsonrpc": "2.0", "id": request_id, "result": {"stopReason": behavior.get("stopReason", "end_turn")}})
         elif method == "session/close":
