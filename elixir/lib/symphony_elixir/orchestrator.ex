@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
+  alias SymphonyElixir.Agent.Router
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
@@ -209,6 +210,8 @@ defmodule SymphonyElixir.Orchestrator do
         identifier: running_entry.identifier,
         issue_url: running_entry.issue.url,
         delay_type: :continuation,
+        agent_id: Map.get(running_entry, :agent_id),
+        agent_kind: Map.get(running_entry, :agent_kind),
         worker_host: Map.get(running_entry, :worker_host),
         workspace_path: Map.get(running_entry, :workspace_path)
       })
@@ -240,6 +243,8 @@ defmodule SymphonyElixir.Orchestrator do
       identifier: running_entry.identifier,
       issue_url: running_entry.issue.url,
       error: "agent exited: #{inspect(reason)}",
+      agent_id: Map.get(running_entry, :agent_id),
+      agent_kind: Map.get(running_entry, :agent_kind),
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path)
     })
@@ -391,6 +396,12 @@ defmodule SymphonyElixir.Orchestrator do
   @spec sort_issues_for_dispatch_for_test([Issue.t()]) :: [Issue.t()]
   def sort_issues_for_dispatch_for_test(issues) when is_list(issues) do
     sort_issues_for_dispatch(issues)
+  end
+
+  @doc false
+  @spec selected_agent_for_test(Issue.t()) :: {:ok, map()} | {:error, term()}
+  def selected_agent_for_test(%Issue{} = issue) do
+    selected_agent_for_dispatch(issue, %{})
   end
 
   @doc false
@@ -623,7 +634,11 @@ defmodule SymphonyElixir.Orchestrator do
         |> schedule_issue_retry(issue_id, next_attempt, %{
           identifier: identifier,
           issue_url: running_entry.issue.url,
-          error: "stalled for #{elapsed_ms}ms without codex activity"
+          error: "stalled for #{elapsed_ms}ms without codex activity",
+          agent_id: Map.get(running_entry, :agent_id),
+          agent_kind: Map.get(running_entry, :agent_kind),
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path)
         })
       end
     else
@@ -747,6 +762,8 @@ defmodule SymphonyElixir.Orchestrator do
       issue_id: issue_id,
       identifier: Map.get(running_entry, :identifier, issue_id),
       issue: Map.get(running_entry, :issue),
+      agent_id: Map.get(running_entry, :agent_id),
+      agent_kind: Map.get(running_entry, :agent_kind),
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path),
       session_id: running_entry_session_id(running_entry),
@@ -906,10 +923,17 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil, metadata \\ %{}) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+        case selected_agent_for_dispatch(refreshed_issue, metadata) do
+          {:ok, resolved_agent} ->
+            do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, resolved_agent)
+
+          {:error, reason} ->
+            Logger.error("Skipping dispatch; agent route failed for #{issue_context(refreshed_issue)}: #{inspect(reason)}")
+            release_issue_claim(state, refreshed_issue.id)
+        end
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -926,7 +950,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, resolved_agent) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -935,18 +959,24 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, resolved_agent)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, resolved_agent) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(issue, recipient,
+             attempt: attempt,
+             worker_host: worker_host,
+             agent_id: resolved_agent.id
+           )
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
 
-        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+        Logger.info(
+          "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"} agent_id=#{resolved_agent.id} agent_kind=#{resolved_agent.kind}"
+        )
 
         running =
           Map.put(state.running, issue.id, %{
@@ -954,6 +984,8 @@ defmodule SymphonyElixir.Orchestrator do
             ref: ref,
             identifier: issue.identifier,
             issue: issue,
+            agent_id: resolved_agent.id,
+            agent_kind: resolved_agent.kind,
             worker_host: worker_host,
             workspace_path: nil,
             session_id: nil,
@@ -987,9 +1019,40 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: issue.identifier,
           issue_url: issue.url,
           error: "failed to spawn agent: #{inspect(reason)}",
+          agent_id: resolved_agent.id,
+          agent_kind: resolved_agent.kind,
           worker_host: worker_host
         })
     end
+  end
+
+  defp selected_agent_for_dispatch(%Issue{} = issue, metadata) when is_map(metadata) do
+    case metadata_agent_id(metadata) do
+      agent_id when is_binary(agent_id) and agent_id != "" ->
+        resolve_agent_by_id_for_dispatch(agent_id)
+
+      _ ->
+        Router.resolve(issue, Config.settings!())
+    end
+  end
+
+  defp resolve_agent_by_id_for_dispatch(agent_id) do
+    settings = Config.settings!()
+
+    case Map.fetch(settings.agents || %{}, agent_id) do
+      {:ok, %{"enabled" => false}} ->
+        {:error, {:agent_disabled, agent_id}}
+
+      {:ok, agent_config} when is_map(agent_config) ->
+        {:ok, %{id: agent_id, kind: Map.get(agent_config, "kind"), config: agent_config}}
+
+      :error ->
+        {:error, {:unknown_agent, agent_id}}
+    end
+  end
+
+  defp metadata_agent_id(metadata) when is_map(metadata) do
+    Map.get(metadata, :agent_id) || Map.get(metadata, "agent_id")
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
@@ -1031,6 +1094,8 @@ defmodule SymphonyElixir.Orchestrator do
     identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
     issue_url = pick_retry_issue_url(previous_retry, metadata)
     error = pick_retry_error(previous_retry, metadata)
+    agent_id = pick_retry_agent_id(previous_retry, metadata)
+    agent_kind = pick_retry_agent_kind(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
 
@@ -1055,6 +1120,8 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: identifier,
             issue_url: issue_url,
             error: error,
+            agent_id: agent_id,
+            agent_kind: agent_kind,
             worker_host: worker_host,
             workspace_path: workspace_path
           })
@@ -1068,6 +1135,8 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry_entry, :identifier),
           issue_url: Map.get(retry_entry, :issue_url),
           error: Map.get(retry_entry, :error),
+          agent_id: Map.get(retry_entry, :agent_id),
+          agent_kind: Map.get(retry_entry, :agent_kind),
           worker_host: Map.get(retry_entry, :worker_host),
           workspace_path: Map.get(retry_entry, :workspace_path)
         }
@@ -1163,7 +1232,7 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -1222,6 +1291,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pick_retry_error(previous_retry, metadata) do
     metadata[:error] || Map.get(previous_retry, :error)
+  end
+
+  defp pick_retry_agent_id(previous_retry, metadata) do
+    metadata[:agent_id] || Map.get(previous_retry, :agent_id)
+  end
+
+  defp pick_retry_agent_kind(previous_retry, metadata) do
+    metadata[:agent_kind] || Map.get(previous_retry, :agent_kind)
   end
 
   defp pick_retry_worker_host(previous_retry, metadata) do
@@ -1379,6 +1456,8 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: metadata.identifier,
           issue_url: metadata.issue.url,
           state: metadata.issue.state,
+          agent_id: Map.get(metadata, :agent_id, "codex"),
+          agent_kind: Map.get(metadata, :agent_kind, "codex_app_server"),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
@@ -1405,6 +1484,8 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry, :identifier),
           issue_url: Map.get(retry, :issue_url),
           error: Map.get(retry, :error),
+          agent_id: Map.get(retry, :agent_id),
+          agent_kind: Map.get(retry, :agent_kind),
           worker_host: Map.get(retry, :worker_host),
           workspace_path: Map.get(retry, :workspace_path)
         }
@@ -1418,6 +1499,8 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(metadata, :identifier),
           issue_url: blocked_issue_url(metadata),
           state: blocked_issue_state(metadata),
+          agent_id: Map.get(metadata, :agent_id),
+          agent_kind: Map.get(metadata, :agent_kind),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: Map.get(metadata, :session_id),

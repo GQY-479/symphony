@@ -349,6 +349,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_identifier" => "MT-HTTP",
                  "issue_url" => "https://example.org/issues/MT-HTTP",
                  "state" => "In Progress",
+                 "agent_id" => "mimocode",
+                 "agent_kind" => "cli_run",
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "session_id" => "thread-http",
@@ -368,6 +370,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "attempt" => 2,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
+                 "agent_id" => "mimocode",
+                 "agent_kind" => "cli_run",
                  "worker_host" => nil,
                  "workspace_path" => nil
                }
@@ -379,6 +383,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_url" => "https://example.org/issues/MT-BLOCKED",
                  "state" => "In Progress",
                  "error" => "codex turn requires operator input",
+                 "agent_id" => "mimocode",
+                 "agent_kind" => "cli_run",
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "session_id" => "thread-blocked",
@@ -415,6 +421,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
+               "agent_id" => "mimocode",
+               "agent_kind" => "cli_run",
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",
                "last_message" => "rendered",
@@ -431,7 +439,10 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")
 
-    assert %{"status" => "retrying", "retry" => %{"attempt" => 2, "error" => "boom"}} =
+    assert %{
+             "status" => "retrying",
+             "retry" => %{"attempt" => 2, "error" => "boom", "agent_id" => "mimocode", "agent_kind" => "cli_run"}
+           } =
              json_response(conn, 200)
 
     conn = get(build_conn(), "/api/v1/MT-BLOCKED")
@@ -442,7 +453,9 @@ defmodule SymphonyElixir.ExtensionsTest do
              "blocked" => %{
                "session_id" => "thread-blocked",
                "state" => "In Progress",
-               "error" => "codex turn requires operator input"
+               "error" => "codex turn requires operator input",
+               "agent_id" => "mimocode",
+               "agent_kind" => "cli_run"
              }
            } = json_response(conn, 200)
 
@@ -740,6 +753,8 @@ defmodule SymphonyElixir.ExtensionsTest do
           identifier: "MT-HTTP",
           issue_url: "https://example.org/issues/MT-HTTP",
           state: "In Progress",
+          agent_id: "mimocode",
+          agent_kind: "cli_run",
           session_id: "thread-http",
           turn_count: 7,
           codex_app_server_pid: nil,
@@ -759,7 +774,9 @@ defmodule SymphonyElixir.ExtensionsTest do
           issue_url: "https://example.org/issues/MT-RETRY",
           attempt: 2,
           due_in_ms: 2_000,
-          error: "boom"
+          error: "boom",
+          agent_id: "mimocode",
+          agent_kind: "cli_run"
         }
       ],
       blocked: [
@@ -769,6 +786,8 @@ defmodule SymphonyElixir.ExtensionsTest do
           issue_url: "https://example.org/issues/MT-BLOCKED",
           state: "In Progress",
           error: "codex turn requires operator input",
+          agent_id: "mimocode",
+          agent_kind: "cli_run",
           worker_host: "dm-dev2",
           workspace_path: "/workspaces/MT-BLOCKED",
           session_id: "thread-blocked",

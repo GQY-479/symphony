@@ -4,7 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.Codex.AppServer
+  alias SymphonyElixir.Agent.{Backend, Router}
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
@@ -43,7 +43,7 @@ defmodule SymphonyElixir.AgentRunner do
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            run_agent_turns(workspace, issue, codex_update_recipient, opts, worker_host)
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -84,37 +84,115 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
-  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
+  defp run_agent_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+    with {:ok, resolved_agent} <- resolve_agent(issue, opts),
+         {:ok, backend_module} <- backend_module(resolved_agent) do
+      backend_opts = Keyword.put(opts, :worker_host, worker_host)
+
+      run_agent_turns_with_backend(
+        backend_module,
+        resolved_agent,
+        workspace,
+        issue,
+        codex_update_recipient,
+        backend_opts,
+        issue_state_fetcher,
+        max_turns
+      )
+    end
+  end
+
+  defp run_agent_turns_with_backend(
+         backend_module,
+         resolved_agent,
+         workspace,
+         issue,
+         codex_update_recipient,
+         backend_opts,
+         issue_state_fetcher,
+         max_turns
+       ) do
+    if session_backend?(backend_module) do
+      run_session_agent_turns(
+        backend_module,
+        resolved_agent,
+        workspace,
+        issue,
+        codex_update_recipient,
+        backend_opts,
+        issue_state_fetcher,
+        max_turns
+      )
+    else
+      run_turn = fn turn_issue, prompt, turn_opts ->
+        backend_module.run_issue(workspace, turn_issue, prompt, resolved_agent, turn_opts)
+      end
+
+      do_run_agent_turns(
+        run_turn,
+        workspace,
+        issue,
+        codex_update_recipient,
+        backend_opts,
+        issue_state_fetcher,
+        1,
+        max_turns
+      )
+    end
+  end
+
+  defp run_session_agent_turns(
+         backend_module,
+         resolved_agent,
+         workspace,
+         issue,
+         codex_update_recipient,
+         backend_opts,
+         issue_state_fetcher,
+         max_turns
+       ) do
+    with {:ok, session} <- backend_module.start_session(workspace, resolved_agent, backend_opts) do
+      run_turn = fn turn_issue, prompt, turn_opts ->
+        backend_module.run_turn(session, workspace, turn_issue, prompt, turn_opts)
+      end
+
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_agent_turns(
+          run_turn,
+          workspace,
+          issue,
+          codex_update_recipient,
+          backend_opts,
+          issue_state_fetcher,
+          1,
+          max_turns
+        )
       after
-        AppServer.stop_session(session)
+        backend_module.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+  defp do_run_agent_turns(run_turn, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
-           AppServer.run_turn(
-             app_session,
-             prompt,
+           run_turn.(
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
+             prompt,
+             Keyword.put(opts, :on_message, codex_message_handler(codex_update_recipient, issue))
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{session_id(turn_session)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
       case continue_with_issue?(issue, issue_state_fetcher) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
           Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_codex_turns(
-            app_session,
+          do_run_agent_turns(
+            run_turn,
             workspace,
             refreshed_issue,
             codex_update_recipient,
@@ -182,6 +260,45 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp issue_routable?(%Issue{} = issue) do
     Issue.routable?(issue, Config.settings!().tracker.required_labels)
+  end
+
+  defp resolve_agent(%Issue{} = issue, opts) do
+    settings = Config.settings!()
+
+    case Keyword.get(opts, :agent_id) do
+      nil -> Router.resolve(issue, settings)
+      agent_id -> resolve_agent_by_id(to_string(agent_id), settings)
+    end
+  end
+
+  defp resolve_agent_by_id(agent_id, settings) do
+    case Map.fetch(settings.agents || %{}, agent_id) do
+      {:ok, %{"enabled" => false}} ->
+        {:error, {:agent_disabled, agent_id}}
+
+      {:ok, agent_config} when is_map(agent_config) ->
+        {:ok, %{id: agent_id, kind: Map.get(agent_config, "kind"), config: agent_config}}
+
+      :error ->
+        {:error, {:unknown_agent, agent_id}}
+    end
+  end
+
+  defp backend_module(%{kind: kind}) do
+    {:ok, Backend.module_for(kind)}
+  rescue
+    error in ArgumentError -> {:error, error}
+  end
+
+  defp session_backend?(backend_module) when is_atom(backend_module) do
+    Code.ensure_loaded?(backend_module) and
+      function_exported?(backend_module, :start_session, 3) and
+      function_exported?(backend_module, :run_turn, 5) and
+      function_exported?(backend_module, :stop_session, 1)
+  end
+
+  defp session_id(turn_session) when is_map(turn_session) do
+    Map.get(turn_session, :session_id) || Map.get(turn_session, "session_id")
   end
 
   defp selected_worker_host(nil, []), do: nil

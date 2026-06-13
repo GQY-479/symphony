@@ -205,6 +205,25 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Routing do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:default_agent, :string, default: "codex")
+      field(:by_assignee, :map, default: %{})
+      field(:by_label, :map, default: %{})
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:default_agent, :by_assignee, :by_label], empty_values: [])
+    end
+  end
+
   defmodule Hooks do
     @moduledoc false
     use Ecto.Schema
@@ -274,6 +293,9 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    field(:agents, :map)
+    field(:agents_configured, :boolean, virtual: true, default: false)
+    embeds_one(:routing, Routing, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -366,6 +388,9 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
+    |> cast(attrs, [:agents], empty_values: [])
+    |> put_change(:agents_configured, Map.has_key?(attrs, "agents"))
+    |> cast_embed(:routing, with: &Routing.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
@@ -389,7 +414,78 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    settings = %{settings | tracker: tracker, workspace: workspace, codex: codex}
+
+    %{
+      settings
+      | agents: normalize_agents(settings.agents, codex),
+        routing: normalize_routing(settings.routing)
+    }
+  end
+
+  defp normalize_agents(nil, codex), do: %{"codex" => default_codex_agent(codex)}
+  defp normalize_agents(agents, codex) when agents == %{}, do: %{"codex" => default_codex_agent(codex)}
+
+  defp normalize_agents(agents, codex) when is_map(agents) do
+    Enum.reduce(agents, %{}, fn {agent_id, agent_config}, normalized ->
+      Map.put(normalized, normalize_key(agent_id), normalize_agent(agent_config, codex))
+    end)
+  end
+
+  defp normalize_agent(agent_config, codex) when is_map(agent_config) do
+    agent =
+      agent_config
+      |> normalize_keys()
+      |> Map.put_new("enabled", true)
+
+    if Map.get(agent, "kind") == "codex_app_server" do
+      Map.merge(default_codex_agent(codex), agent)
+    else
+      agent
+    end
+  end
+
+  defp normalize_agent(agent_config, _codex), do: agent_config
+
+  defp default_codex_agent(codex) do
+    %{
+      "kind" => "codex_app_server",
+      "command" => codex.command,
+      "approval_policy" => codex.approval_policy,
+      "thread_sandbox" => codex.thread_sandbox,
+      "turn_sandbox_policy" => codex.turn_sandbox_policy,
+      "timeout_ms" => codex.turn_timeout_ms,
+      "read_timeout_ms" => codex.read_timeout_ms,
+      "stall_timeout_ms" => codex.stall_timeout_ms,
+      "enabled" => true
+    }
+  end
+
+  defp normalize_routing(%Routing{} = routing) do
+    %{
+      routing
+      | default_agent: normalize_key(routing.default_agent),
+        by_assignee: normalize_route_map(routing.by_assignee),
+        by_label: normalize_label_route_map(routing.by_label)
+    }
+  end
+
+  defp normalize_route_map(routes) when is_map(routes) do
+    Enum.reduce(routes, %{}, fn {key, target}, normalized ->
+      Map.put(normalized, normalize_key(key), normalize_key(target))
+    end)
+  end
+
+  defp normalize_label_route_map(routes) when is_map(routes) do
+    Enum.reduce(routes, %{}, fn {label, target}, normalized ->
+      normalized_label =
+        label
+        |> normalize_key()
+        |> String.trim()
+        |> String.downcase()
+
+      Map.put(normalized, normalized_label, normalize_key(target))
+    end)
   end
 
   defp normalize_keys(value) when is_map(value) do

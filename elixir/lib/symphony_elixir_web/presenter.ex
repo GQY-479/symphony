@@ -105,6 +105,8 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_identifier: entry.identifier,
       issue_url: Map.get(entry, :issue_url),
       state: entry.state,
+      agent_id: Map.get(entry, :agent_id),
+      agent_kind: Map.get(entry, :agent_kind),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
@@ -129,6 +131,8 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
+      agent_id: Map.get(entry, :agent_id),
+      agent_kind: Map.get(entry, :agent_kind),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path)
     }
@@ -141,6 +145,8 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_url: Map.get(entry, :issue_url),
       state: entry.state,
       error: entry.error,
+      agent_id: Map.get(entry, :agent_id),
+      agent_kind: Map.get(entry, :agent_kind),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
@@ -158,6 +164,8 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
+      agent_id: Map.get(running, :agent_id),
+      agent_kind: Map.get(running, :agent_kind),
       started_at: iso8601(running.started_at),
       last_event: running.last_codex_event,
       last_message: summarize_message(running.last_codex_message),
@@ -175,6 +183,8 @@ defmodule SymphonyElixirWeb.Presenter do
       attempt: retry.attempt,
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
+      agent_id: Map.get(retry, :agent_id),
+      agent_kind: Map.get(retry, :agent_kind),
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path)
     }
@@ -187,6 +197,8 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: blocked.session_id,
       state: blocked.state,
       error: blocked.error,
+      agent_id: Map.get(blocked, :agent_id),
+      agent_kind: Map.get(blocked, :agent_kind),
       blocked_at: iso8601(blocked.blocked_at),
       last_event: blocked.last_codex_event,
       last_message: summarize_message(blocked.last_codex_message),

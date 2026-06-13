@@ -1,6 +1,9 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Agent.Router
+  alias SymphonyElixir.Config.Schema
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -86,6 +89,255 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+  end
+
+  test "legacy codex config synthesizes the default codex agent" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      codex_command: "custom-codex app-server",
+      codex_approval_policy: "never",
+      codex_thread_sandbox: "workspace-write",
+      codex_turn_sandbox_policy: %{type: "dangerFullAccess"}
+    )
+
+    settings = Config.settings!()
+
+    assert settings.routing.default_agent == "codex"
+    assert settings.agents["codex"]["kind"] == "codex_app_server"
+    assert settings.agents["codex"]["command"] == "custom-codex app-server"
+    assert settings.agents["codex"]["approval_policy"] == "never"
+    assert settings.agents["codex"]["thread_sandbox"] == "workspace-write"
+    assert settings.agents["codex"]["turn_sandbox_policy"] == %{"type" => "dangerFullAccess"}
+  end
+
+  test "multi-agent config parses named agents and routing" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{
+          kind: "cli_run",
+          command: "mimo",
+          args: ["run", "--format", "json", "--dir", "{{workspace}}"],
+          assignee: "mimo-user-id",
+          timeout_ms: 600_000,
+          max_output_bytes: 200_000
+        }
+      },
+      routing: %{
+        default_agent: "codex",
+        by_label: %{"agent:mimo" => "mimocode"},
+        by_assignee: %{"mimo-user-id" => "mimocode"}
+      }
+    )
+
+    settings = Config.settings!()
+
+    assert Map.keys(settings.agents) |> Enum.sort() == ["codex", "mimocode"]
+    assert settings.agents["mimocode"]["kind"] == "cli_run"
+    assert settings.agents["mimocode"]["args"] == ["run", "--format", "json", "--dir", "{{workspace}}"]
+    assert settings.routing.by_label == %{"agent:mimo" => "mimocode"}
+    assert settings.routing.by_assignee == %{"mimo-user-id" => "mimocode"}
+  end
+
+  test "codex app-server agents validate policy overlay types" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        custom_codex: %{
+          kind: "codex_app_server",
+          command: "custom-codex app-server",
+          approval_policy: 123
+        }
+      },
+      routing: %{default_agent: "codex"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.custom_codex.approval_policy"
+  end
+
+  test "agent router label route takes precedence over assignee route" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{kind: "cli_run", command: "mimo"}
+      },
+      routing: %{
+        by_label: %{"agent:mimo" => "mimocode"},
+        by_assignee: %{"codex-user" => "codex"}
+      }
+    )
+
+    issue = %Issue{
+      id: "issue-label-route",
+      labels: ["Agent:MiMo"],
+      assignee_id: "codex-user"
+    }
+
+    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+             Router.resolve(issue, Config.settings!())
+  end
+
+  test "agent router falls back from assignee route to default agent" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{kind: "cli_run", command: "mimo"}
+      },
+      routing: %{
+        default_agent: "codex",
+        by_assignee: %{"mimo-user" => "mimocode"}
+      }
+    )
+
+    settings = Config.settings!()
+
+    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+             Router.resolve(%Issue{assignee_id: "mimo-user"}, settings)
+
+    assert {:ok, %{id: "codex", kind: "codex_app_server"}} =
+             Router.resolve(%Issue{assignee_id: "someone-else"}, settings)
+  end
+
+  test "agent router normalizes label route keys and ignores malformed labels" do
+    {:ok, settings} =
+      Schema.parse(%{
+        tracker: %{kind: "memory"},
+        agents: %{
+          codex: %{kind: "codex_app_server", command: "codex app-server"},
+          mimocode: %{kind: "cli_run", command: "mimo"}
+        },
+        routing: %{
+          default_agent: "codex",
+          by_label: %{" Agent:MiMo " => "mimocode"},
+          by_assignee: %{"mimo-user" => "mimocode"}
+        }
+      })
+
+    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+             Router.resolve(%Issue{labels: ["agent:mimo"]}, settings)
+
+    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+             Router.resolve(%Issue{labels: nil, assignee_id: "mimo-user"}, settings)
+  end
+
+  test "routing to an unknown agent fails workflow validation" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "missing-agent"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "routing.default_agent"
+    assert message =~ "missing-agent"
+  end
+
+  test "orchestrator selected agent helper resolves dispatch identity" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{kind: "cli_run", command: "mimo"}
+      },
+      routing: %{
+        default_agent: "codex",
+        by_label: %{"agent:mimo" => "mimocode"}
+      }
+    )
+
+    issue = %Issue{id: "issue-selected-agent", labels: ["Agent:MiMo"]}
+
+    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+             Orchestrator.selected_agent_for_test(issue)
+  end
+
+  test "orchestrator retry dispatch keeps the originally selected agent identity" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{kind: "cli_run", command: "missing-mimocode-test-binary"}
+      },
+      routing: %{default_agent: "codex"}
+    )
+
+    issue = %Issue{
+      id: "issue-retry-agent",
+      identifier: "MT-AGENT",
+      title: "Retry keeps agent",
+      description: "Retry should not reroute after labels change",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-AGENT",
+      labels: []
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 10,
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    updated_state =
+      Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue.id, 2, %{
+        identifier: issue.identifier,
+        issue_url: issue.url,
+        agent_id: "mimocode",
+        agent_kind: "cli_run"
+      })
+
+    running_entry = updated_state.running[issue.id]
+
+    on_exit(fn ->
+      if is_map(running_entry) do
+        pid = Map.get(running_entry, :pid)
+        if is_pid(pid) and Process.alive?(pid), do: Process.exit(pid, :shutdown)
+      end
+    end)
+
+    assert %{agent_id: "mimocode", agent_kind: "cli_run", retry_attempt: 2} = running_entry
+  end
+
+  test "orchestrator retry dispatch releases claim when the selected agent is unavailable" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"}
+    )
+
+    issue = %Issue{
+      id: "issue-missing-agent-retry",
+      identifier: "MT-MISSING-AGENT",
+      title: "Missing agent retry",
+      state: "In Progress",
+      labels: []
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 10,
+      claimed: MapSet.new([issue.id]),
+      retry_attempts: %{
+        issue.id => %{
+          attempt: 2,
+          due_at_ms: System.monotonic_time(:millisecond),
+          identifier: issue.identifier,
+          agent_id: "missing-agent",
+          agent_kind: "cli_run"
+        }
+      },
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    updated_state =
+      Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue.id, 2, %{
+        identifier: issue.identifier,
+        agent_id: "missing-agent",
+        agent_kind: "cli_run"
+      })
+
+    refute MapSet.member?(updated_state.claimed, issue.id)
+    refute Map.has_key?(updated_state.retry_attempts, issue.id)
+    refute Map.has_key?(updated_state.running, issue.id)
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -639,6 +891,8 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "normal worker exit schedules active-state continuation retry" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
     issue_id = "issue-resume"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :ContinuationOrchestrator)
@@ -679,6 +933,8 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
     issue_id = "issue-crash"
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :CrashRetryOrchestrator)
@@ -1283,6 +1539,85 @@ defmodule SymphonyElixir.CoreTest do
                      500
 
       assert session_id == "thread-live-turn-live"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "agent runner dispatches to configured cli backend" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-cli-backend-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      cli_binary = Path.join(test_root, "fake-cli")
+      trace_file = Path.join(test_root, "cli.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(cli_binary, """
+      #!/bin/sh
+      trace_file="#{trace_file}"
+      printf 'CWD:%s\\n' "$PWD" >> "$trace_file"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      printf '%s\\n' '{"kind":"runner-progress"}'
+      """)
+
+      File.chmod!(cli_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        agents: %{
+          codex: %{kind: "codex_app_server", command: "codex app-server"},
+          mimocode: %{
+            kind: "cli_run",
+            command: cli_binary,
+            args: ["run", "--workspace", "{{workspace}}"]
+          }
+        },
+        routing: %{default_agent: "codex"}
+      )
+
+      issue = %Issue{
+        id: "issue-runner-cli",
+        identifier: "MT-904",
+        title: "Run with CLI backend",
+        description: "Use the configured CLI agent",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-904",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 self(),
+                 agent_id: "mimocode",
+                 issue_state_fetcher: fn ["issue-runner-cli"] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      trace = File.read!(trace_file)
+      assert trace =~ "CWD:#{Path.join(workspace_root, "MT-904")}"
+      assert trace =~ "ARGV:run --workspace #{Path.join(workspace_root, "MT-904")}"
+      assert trace =~ "You are an agent for this repository."
+
+      assert_receive {:codex_worker_update, "issue-runner-cli",
+                      %{
+                        event: :turn_completed,
+                        agent_id: "mimocode",
+                        agent_kind: "cli_run"
+                      }}
     after
       File.rm_rf(test_root)
     end

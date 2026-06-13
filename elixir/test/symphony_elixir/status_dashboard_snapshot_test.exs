@@ -203,6 +203,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
       %{
         identifier: "MT-000",
         state: "running",
+        agent_id: "mimocode",
         session_id: "thread-1234567890",
         codex_app_server_pid: "4242",
         codex_total_tokens: 0,

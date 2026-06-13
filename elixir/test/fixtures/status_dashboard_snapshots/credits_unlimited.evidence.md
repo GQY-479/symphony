@@ -9,9 +9,9 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                  
+│   ID       AGENT    STAGE       PID    AGE / ... TOKENS   SES... EVENT                                           
 │   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│ ● MT-777   running        4242     1m 15s / 7        3,200 thre...567890  thread token usage updated (in 90, o...
+│ ● MT-777   mimocode running     4242   1m 15s...    3,200 thr... thread token usage updated (in 90, out 12, to...
 │
 ├─ Backoff queue
 │

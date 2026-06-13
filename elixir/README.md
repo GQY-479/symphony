@@ -112,6 +112,10 @@ You are working on a Linear issue {{ issue.identifier }}.
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
 
+Symphony can also route issues to peer agent backends (Codex, MiMo-Code, OpenCode) instead of
+running Codex only. See [`docs/multi_agent_backends.md`](docs/multi_agent_backends.md) for the
+`agents` and `routing` configuration.
+
 Notes:
 
 - If a value is missing, defaults are used.

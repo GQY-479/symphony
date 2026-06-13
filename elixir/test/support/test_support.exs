@@ -125,6 +125,8 @@ defmodule SymphonyElixir.TestSupport do
           observability_render_interval_ms: 16,
           server_port: nil,
           server_host: nil,
+          agents: nil,
+          routing: nil,
           prompt: @workflow_prompt
         ],
         overrides
@@ -163,6 +165,8 @@ defmodule SymphonyElixir.TestSupport do
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
+    agents = Keyword.get(config, :agents)
+    routing = Keyword.get(config, :routing)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -198,6 +202,8 @@ defmodule SymphonyElixir.TestSupport do
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
+        agents_yaml(agents),
+        routing_yaml(routing),
         "---",
         prompt
       ]
@@ -279,6 +285,12 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
+
+  defp agents_yaml(nil), do: nil
+  defp agents_yaml(agents), do: "agents: #{yaml_value(agents)}"
+
+  defp routing_yaml(nil), do: nil
+  defp routing_yaml(routing), do: "routing: #{yaml_value(routing)}"
 
   defp hook_entry(_name, nil), do: nil
 

@@ -16,14 +16,15 @@ defmodule SymphonyElixir.StatusDashboard do
   @throughput_graph_columns 24
   @sparkline_blocks ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
   @running_id_width 8
-  @running_stage_width 14
-  @running_pid_width 8
-  @running_age_width 12
-  @running_tokens_width 10
-  @running_session_width 14
+  @running_agent_width 8
+  @running_stage_width 11
+  @running_pid_width 6
+  @running_age_width 9
+  @running_tokens_width 8
+  @running_session_width 6
   @running_event_default_width 44
   @running_event_min_width 12
-  @running_row_chrome_width 10
+  @running_row_chrome_width 11
   @default_terminal_columns 115
 
   @ansi_reset IO.ANSI.reset()
@@ -589,6 +590,7 @@ defmodule SymphonyElixir.StatusDashboard do
   # credo:disable-for-next-line
   defp format_running_summary(running_entry, running_event_width) do
     issue = format_cell(running_entry.identifier || "unknown", @running_id_width)
+    agent = format_cell(Map.get(running_entry, :agent_id) || "n/a", @running_agent_width)
     state = running_entry.state || "unknown"
     state_display = format_cell(to_string(state), @running_stage_width)
     session = running_entry.session_id |> compact_session_id() |> format_cell(@running_session_width)
@@ -616,6 +618,8 @@ defmodule SymphonyElixir.StatusDashboard do
       status_dot(status_color),
       " ",
       colorize(issue, @ansi_cyan),
+      " ",
+      colorize(agent, @ansi_cyan),
       " ",
       colorize(state_display, status_color),
       " ",
@@ -740,6 +744,7 @@ defmodule SymphonyElixir.StatusDashboard do
     header =
       [
         format_cell("ID", @running_id_width),
+        format_cell("AGENT", @running_agent_width),
         format_cell("STAGE", @running_stage_width),
         format_cell("PID", @running_pid_width),
         format_cell("AGE / TURN", @running_age_width),
@@ -755,12 +760,13 @@ defmodule SymphonyElixir.StatusDashboard do
   defp running_table_separator_row(running_event_width) do
     separator_width =
       @running_id_width +
+        @running_agent_width +
         @running_stage_width +
         @running_pid_width +
         @running_age_width +
         @running_tokens_width +
         @running_session_width +
-        running_event_width + 6
+        running_event_width + 7
 
     "│   " <> colorize(String.duplicate("─", separator_width), @ansi_gray)
   end
@@ -776,6 +782,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp fixed_running_width do
     @running_id_width +
+      @running_agent_width +
       @running_stage_width +
       @running_pid_width +
       @running_age_width +

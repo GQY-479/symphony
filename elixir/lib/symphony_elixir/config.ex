@@ -115,23 +115,197 @@ defmodule SymphonyElixir.Config do
   end
 
   defp validate_semantics(settings) do
-    cond do
-      is_nil(settings.tracker.kind) ->
-        {:error, :missing_tracker_kind}
+    with :ok <- validate_agents(settings),
+         :ok <- validate_routing(settings) do
+      cond do
+        is_nil(settings.tracker.kind) ->
+          {:error, :missing_tracker_kind}
 
-      settings.tracker.kind not in ["linear", "memory"] ->
-        {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
+        settings.tracker.kind not in ["linear", "memory"] ->
+          {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
-        {:error, :missing_linear_api_token}
+        settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
+          {:error, :missing_linear_api_token}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
+        settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
+          {:error, :missing_linear_project_slug}
 
-      true ->
-        :ok
+        true ->
+          :ok
+      end
     end
   end
+
+  defp validate_agents(settings) do
+    Enum.reduce_while(settings.agents || %{}, :ok, fn {agent_id, agent}, :ok ->
+      case validate_agent(agent_id, agent, settings.agents_configured) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_agent(agent_id, agent, agents_configured) when is_map(agent) do
+    with :ok <- validate_agent_id(agent_id),
+         :ok <- validate_agent_kind(agent_id, Map.get(agent, "kind")),
+         :ok <- validate_agent_command(agent_id, Map.get(agent, "command"), agents_configured),
+         :ok <- validate_agent_integer(agent_id, agent, "timeout_ms", greater_than: 0),
+         :ok <- validate_agent_integer(agent_id, agent, "read_timeout_ms", greater_than: 0),
+         :ok <- validate_agent_integer(agent_id, agent, "stall_timeout_ms", greater_than_or_equal_to: 0),
+         :ok <- validate_agent_integer(agent_id, agent, "max_output_bytes", greater_than: 0) do
+      validate_codex_agent_config(agent_id, agent)
+    end
+  end
+
+  defp validate_agent(agent_id, _agent, _agents_configured) do
+    invalid_config("agents.#{agent_id} must be a map")
+  end
+
+  defp validate_agent_id(agent_id) when is_binary(agent_id) do
+    if String.trim(agent_id) == "" do
+      invalid_config("agents contains a blank agent id")
+    else
+      :ok
+    end
+  end
+
+  defp validate_agent_kind(_agent_id, kind) when kind in ["codex_app_server", "cli_run"], do: :ok
+
+  defp validate_agent_kind(agent_id, kind) do
+    invalid_config("agents.#{agent_id}.kind must be codex_app_server or cli_run, got #{inspect(kind)}")
+  end
+
+  defp validate_agent_command("codex", command, false) when is_binary(command) do
+    if command == "" do
+      invalid_config("agents.codex.command must be a non-empty string")
+    else
+      :ok
+    end
+  end
+
+  defp validate_agent_command(agent_id, command, _agents_configured) when is_binary(command) do
+    if String.trim(command) == "" do
+      invalid_config("agents.#{agent_id}.command must be a non-empty string")
+    else
+      :ok
+    end
+  end
+
+  defp validate_agent_command(agent_id, command, _agents_configured) do
+    invalid_config("agents.#{agent_id}.command must be a non-empty string, got #{inspect(command)}")
+  end
+
+  defp validate_agent_integer(agent_id, agent, field, opts) do
+    case Map.fetch(agent, field) do
+      :error ->
+        :ok
+
+      {:ok, value} when is_integer(value) ->
+        validate_integer_bound(agent_id, field, value, opts)
+
+      {:ok, value} ->
+        invalid_config("agents.#{agent_id}.#{field} must be an integer, got #{inspect(value)}")
+    end
+  end
+
+  defp validate_integer_bound(agent_id, field, value, opts) do
+    cond do
+      min = Keyword.get(opts, :greater_than) ->
+        if value > min,
+          do: :ok,
+          else: invalid_config("agents.#{agent_id}.#{field} must be an integer greater than #{min}")
+
+      min = Keyword.get(opts, :greater_than_or_equal_to) ->
+        if value >= min,
+          do: :ok,
+          else: invalid_config("agents.#{agent_id}.#{field} must be an integer greater than or equal to #{min}")
+    end
+  end
+
+  defp validate_codex_agent_config(agent_id, %{"kind" => "codex_app_server"} = agent) do
+    with :ok <- validate_optional_string_or_map(agent_id, agent, "approval_policy"),
+         :ok <- validate_optional_string(agent_id, agent, "thread_sandbox") do
+      validate_optional_map(agent_id, agent, "turn_sandbox_policy")
+    end
+  end
+
+  defp validate_codex_agent_config(_agent_id, _agent), do: :ok
+
+  defp validate_optional_string_or_map(agent_id, agent, field) do
+    case Map.fetch(agent, field) do
+      :error -> :ok
+      {:ok, value} when is_binary(value) or is_map(value) -> :ok
+      {:ok, value} -> invalid_config("agents.#{agent_id}.#{field} must be a string or map, got #{inspect(value)}")
+    end
+  end
+
+  defp validate_optional_string(agent_id, agent, field) do
+    case Map.fetch(agent, field) do
+      :error -> :ok
+      {:ok, value} when is_binary(value) -> :ok
+      {:ok, value} -> invalid_config("agents.#{agent_id}.#{field} must be a string, got #{inspect(value)}")
+    end
+  end
+
+  defp validate_optional_map(agent_id, agent, field) do
+    case Map.fetch(agent, field) do
+      :error -> :ok
+      {:ok, nil} -> :ok
+      {:ok, value} when is_map(value) -> :ok
+      {:ok, value} -> invalid_config("agents.#{agent_id}.#{field} must be a map, got #{inspect(value)}")
+    end
+  end
+
+  defp validate_routing(settings) do
+    agent_ids = MapSet.new(Map.keys(settings.agents || %{}))
+
+    with :ok <- validate_route_target(agent_ids, "routing.default_agent", settings.routing.default_agent),
+         :ok <- validate_route_targets(agent_ids, "routing.by_label", settings.routing.by_label) do
+      validate_route_targets(agent_ids, "routing.by_assignee", settings.routing.by_assignee)
+    end
+  end
+
+  defp validate_route_targets(agent_ids, field, routes) when is_map(routes) do
+    Enum.reduce_while(routes, :ok, fn {key, target}, :ok ->
+      field_with_key = "#{field}[#{key}]"
+
+      with :ok <- validate_route_key(field_with_key, key),
+           :ok <- validate_route_target(agent_ids, field_with_key, target) do
+        {:cont, :ok}
+      else
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_route_targets(_agent_ids, field, routes) do
+    invalid_config("#{field} must be a map, got #{inspect(routes)}")
+  end
+
+  defp validate_route_key(field, key) when is_binary(key) do
+    if String.trim(key) == "" do
+      invalid_config("#{field} must not be blank")
+    else
+      :ok
+    end
+  end
+
+  defp validate_route_key(_field, _key), do: :ok
+
+  defp validate_route_target(agent_ids, field, target) do
+    cond do
+      not is_binary(target) or String.trim(target) == "" ->
+        invalid_config("#{field} references blank agent")
+
+      MapSet.member?(agent_ids, target) ->
+        :ok
+
+      true ->
+        invalid_config("#{field} references unknown agent #{inspect(target)}")
+    end
+  end
+
+  defp invalid_config(message), do: {:error, {:invalid_workflow_config, message}}
 
   defp format_config_error(reason) do
     case reason do

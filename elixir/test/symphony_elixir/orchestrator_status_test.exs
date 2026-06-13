@@ -50,6 +50,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: make_ref(),
       identifier: issue.identifier,
       issue: issue,
+      agent_id: "mimocode",
+      agent_kind: "cli_run",
       session_id: nil,
       turn_count: 0,
       last_codex_message: nil,
@@ -91,6 +93,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.issue_id == issue_id
     assert snapshot_entry.issue_url == "https://example.org/issues/MT-188"
+    assert snapshot_entry.agent_id == "mimocode"
+    assert snapshot_entry.agent_kind == "cli_run"
     assert snapshot_entry.session_id == "thread-live-turn-live"
     assert snapshot_entry.turn_count == 1
     assert snapshot_entry.last_codex_timestamp == now
@@ -730,7 +734,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       due_at_ms: System.monotonic_time(:millisecond) + 5_000,
       identifier: "MT-500",
       issue_url: "https://example.org/issues/MT-500",
-      error: "agent exited: :boom"
+      error: "agent exited: :boom",
+      agent_id: "mimocode",
+      agent_kind: "cli_run"
     }
 
     initial_state = :sys.get_state(pid)
@@ -747,7 +753,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                due_in_ms: due_in_ms,
                identifier: "MT-500",
                issue_url: "https://example.org/issues/MT-500",
-               error: "agent exited: :boom"
+               error: "agent exited: :boom",
+               agent_id: "mimocode",
+               agent_kind: "cli_run"
              }
            ] = snapshot.retrying
 
@@ -1006,6 +1014,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         state: "In Progress",
         url: "https://example.org/issues/MT-MCP"
       },
+      agent_id: "mimocode",
+      agent_kind: "cli_run",
       worker_host: "dm-dev2",
       workspace_path: "/workspaces/MT-MCP",
       session_id: "thread-mcp-turn-mcp",
@@ -1037,6 +1047,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert %{
              identifier: "MT-MCP",
              error: "codex MCP elicitation requires operator input",
+             agent_id: "mimocode",
+             agent_kind: "cli_run",
              worker_host: "dm-dev2",
              workspace_path: "/workspaces/MT-MCP"
            } = state.blocked[issue_id]
@@ -1046,7 +1058,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                %{
                  identifier: "MT-MCP",
                  issue_url: "https://example.org/issues/MT-MCP",
-                 error: "codex MCP elicitation requires operator input"
+                 error: "codex MCP elicitation requires operator input",
+                 agent_id: "mimocode",
+                 agent_kind: "cli_run"
                }
              ]
            } =
@@ -1472,6 +1486,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       StatusDashboard.format_running_summary_for_test(%{
         identifier: "MT-233",
         state: "running",
+        agent_id: "mimocode",
         session_id: "thread-1234567890",
         codex_app_server_pid: "4242",
         codex_total_tokens: 12,
@@ -1489,6 +1504,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     plain = Regex.replace(~r/\e\[[\\d;]*m/, row, "")
 
     assert plain =~ "turn completed (completed)"
+    assert plain =~ "mimocode"
     assert (String.split(plain, "turn completed (completed)") |> length()) - 1 == 1
     refute plain =~ " notification "
   end
@@ -1530,6 +1546,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         %{
           identifier: "MT-598",
           state: "running",
+          agent_id: "mimocode",
           session_id: "thread-1234567890",
           codex_app_server_pid: "4242",
           codex_total_tokens: 123,
@@ -1550,6 +1567,34 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert String.length(plain) == terminal_columns
     assert plain =~ "turn completed (completed)"
+  end
+
+  test "status dashboard fits running rows in narrow terminals" do
+    terminal_columns = 80
+
+    row =
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-598",
+          state: "running",
+          agent_id: "mimocode",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 123,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_message: %{
+            event: :notification,
+            message: %{"method" => "turn/completed"}
+          }
+        },
+        terminal_columns
+      )
+
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+
+    assert String.length(plain) == terminal_columns
+    assert plain =~ "mimocode"
   end
 
   test "status dashboard humanizes full codex app-server event set" do
