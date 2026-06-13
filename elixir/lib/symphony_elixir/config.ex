@@ -6,6 +6,9 @@ defmodule SymphonyElixir.Config do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Workflow
 
+  @supported_agent_kinds ["codex_app_server", "cli_run", "acp_stdio"]
+  @acp_permission_policies ["reject", "fail", "allow"]
+
   @default_prompt_template """
   You are working on a Linear issue.
 
@@ -153,7 +156,7 @@ defmodule SymphonyElixir.Config do
          :ok <- validate_agent_integer(agent_id, agent, "read_timeout_ms", greater_than: 0),
          :ok <- validate_agent_integer(agent_id, agent, "stall_timeout_ms", greater_than_or_equal_to: 0),
          :ok <- validate_agent_integer(agent_id, agent, "max_output_bytes", greater_than: 0) do
-      validate_codex_agent_config(agent_id, agent)
+      validate_kind_specific_agent_config(agent_id, agent)
     end
   end
 
@@ -169,10 +172,12 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp validate_agent_kind(_agent_id, kind) when kind in ["codex_app_server", "cli_run"], do: :ok
+  defp validate_agent_kind(_agent_id, kind) when kind in @supported_agent_kinds, do: :ok
 
   defp validate_agent_kind(agent_id, kind) do
-    invalid_config("agents.#{agent_id}.kind must be codex_app_server or cli_run, got #{inspect(kind)}")
+    invalid_config(
+      "agents.#{agent_id}.kind must be one of #{Enum.join(@supported_agent_kinds, ", ")}, got #{inspect(kind)}"
+    )
   end
 
   defp validate_agent_command("codex", command, false) when is_binary(command) do
@@ -222,14 +227,20 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp validate_codex_agent_config(agent_id, %{"kind" => "codex_app_server"} = agent) do
+  defp validate_kind_specific_agent_config(agent_id, %{"kind" => "codex_app_server"} = agent) do
     with :ok <- validate_optional_string_or_map(agent_id, agent, "approval_policy"),
          :ok <- validate_optional_string(agent_id, agent, "thread_sandbox") do
       validate_optional_map(agent_id, agent, "turn_sandbox_policy")
     end
   end
 
-  defp validate_codex_agent_config(_agent_id, _agent), do: :ok
+  defp validate_kind_specific_agent_config(agent_id, %{"kind" => "acp_stdio"} = agent) do
+    with :ok <- validate_optional_string_list(agent_id, agent, "args") do
+      validate_optional_enum(agent_id, agent, "permission_policy", @acp_permission_policies)
+    end
+  end
+
+  defp validate_kind_specific_agent_config(_agent_id, _agent), do: :ok
 
   defp validate_optional_string_or_map(agent_id, agent, field) do
     case Map.fetch(agent, field) do
@@ -253,6 +264,37 @@ defmodule SymphonyElixir.Config do
       {:ok, nil} -> :ok
       {:ok, value} when is_map(value) -> :ok
       {:ok, value} -> invalid_config("agents.#{agent_id}.#{field} must be a map, got #{inspect(value)}")
+    end
+  end
+
+  defp validate_optional_string_list(agent_id, agent, field) do
+    case Map.fetch(agent, field) do
+      :error ->
+        :ok
+
+      {:ok, value} when is_list(value) ->
+        if Enum.all?(value, &is_binary/1) do
+          :ok
+        else
+          invalid_config("agents.#{agent_id}.#{field} must be a list of strings")
+        end
+
+      {:ok, value} ->
+        invalid_config("agents.#{agent_id}.#{field} must be a list of strings, got #{inspect(value)}")
+    end
+  end
+
+  defp validate_optional_enum(agent_id, agent, field, allowed) do
+    case Map.fetch(agent, field) do
+      :error ->
+        :ok
+
+      {:ok, value} ->
+        if Enum.member?(allowed, value) do
+          :ok
+        else
+          invalid_config("agents.#{agent_id}.#{field} must be one of #{Enum.join(allowed, ", ")}, got #{inspect(value)}")
+        end
     end
   end
 

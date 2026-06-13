@@ -138,6 +138,65 @@ defmodule SymphonyElixir.CoreTest do
     assert settings.routing.by_assignee == %{"mimo-user-id" => "mimocode"}
   end
 
+  test "workflow config accepts acp_stdio agents" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{
+          kind: "acp_stdio",
+          command: "mimo",
+          args: ["acp", "--cwd", "{{workspace}}"],
+          permission_policy: "reject",
+          timeout_ms: 3_600_000,
+          read_timeout_ms: 5_000,
+          stall_timeout_ms: 300_000
+        }
+      },
+      routing: %{default_agent: "codex", by_label: %{"agent:mimo" => "mimocode"}}
+    )
+
+    settings = Config.settings!()
+
+    assert settings.agents["mimocode"]["kind"] == "acp_stdio"
+    assert settings.agents["mimocode"]["args"] == ["acp", "--cwd", "{{workspace}}"]
+    assert settings.agents["mimocode"]["permission_policy"] == "reject"
+    assert settings.routing.by_label == %{"agent:mimo" => "mimocode"}
+  end
+
+  test "workflow config rejects invalid acp_stdio args" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        mimocode: %{
+          kind: "acp_stdio",
+          command: "mimo",
+          args: "acp",
+          permission_policy: "reject"
+        }
+      },
+      routing: %{default_agent: "mimocode"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.mimocode.args must be a list of strings"
+  end
+
+  test "workflow config rejects invalid acp_stdio permission policy" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        mimocode: %{
+          kind: "acp_stdio",
+          command: "mimo",
+          args: ["acp"],
+          permission_policy: "ask"
+        }
+      },
+      routing: %{default_agent: "mimocode"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.mimocode.permission_policy must be one of reject, fail, allow"
+  end
+
   test "codex app-server agents validate policy overlay types" do
     write_workflow_file!(Workflow.workflow_file_path(),
       agents: %{
