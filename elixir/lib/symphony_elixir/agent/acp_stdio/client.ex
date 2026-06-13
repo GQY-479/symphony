@@ -112,8 +112,10 @@ defmodule SymphonyElixir.Agent.AcpStdio.Client do
         {:error, {:acp_error, error}}
 
       {:ok, %{"id" => request_id, "method" => "session/request_permission", "params" => params}} ->
-        handle_permission_request(session, request_id, params)
-        handle_lines(rest, session, id, timeout_ms)
+        case handle_permission_request(session, request_id, params) do
+          :ok -> handle_lines(rest, session, id, timeout_ms)
+          {:error, reason} -> {:error, reason}
+        end
 
       {:ok, %{"method" => method} = notification} ->
         emit(session, notification_event(method), notification)
@@ -137,6 +139,8 @@ defmodule SymphonyElixir.Agent.AcpStdio.Client do
       "id" => request_id,
       "result" => %{"outcome" => %{"outcome" => "selected", "optionId" => "allow_once"}}
     })
+
+    :ok
   end
 
   defp handle_permission_request(%{permission_policy: "fail"} = session, request_id, params) do
@@ -147,6 +151,8 @@ defmodule SymphonyElixir.Agent.AcpStdio.Client do
       "id" => request_id,
       "result" => %{"outcome" => %{"outcome" => "cancelled"}}
     })
+
+    {:error, {:permission_required, params}}
   end
 
   defp handle_permission_request(session, request_id, params) do
@@ -157,6 +163,8 @@ defmodule SymphonyElixir.Agent.AcpStdio.Client do
       "id" => request_id,
       "result" => %{"outcome" => %{"outcome" => "rejected"}}
     })
+
+    :ok
   end
 
   defp notification_event("session/update"), do: :notification

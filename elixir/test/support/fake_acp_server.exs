@@ -16,11 +16,18 @@ defmodule SymphonyElixir.FakeAcpServer do
     def send(message):
         print(json.dumps(message), flush=True)
 
+    def trace(method):
+        trace_file = behavior.get("traceFile")
+        if trace_file:
+            with open(trace_file, "a", encoding="utf-8") as handle:
+                handle.write(method + "\\n")
+
     for line in sys.stdin:
         message = json.loads(line)
         method = message.get("method")
         request_id = message.get("id")
         session_id = behavior.get("sessionId", "fake-acp-session")
+        trace(method or "")
 
         if method == "initialize":
             send({"jsonrpc": "2.0", "id": request_id, "result": {"protocolVersion": 1, "agentCapabilities": {}, "authMethods": []}})
@@ -30,8 +37,15 @@ defmodule SymphonyElixir.FakeAcpServer do
             if behavior.get("permission"):
                 send({"jsonrpc": "2.0", "id": 9001, "method": "session/request_permission", "params": {"sessionId": session_id, "toolCall": {"title": "write"}, "options": [{"id": "allow_once"}, {"id": "reject"}]}})
                 json.loads(sys.stdin.readline())
+            if behavior.get("malformed"):
+                print("not-json", flush=True)
+            if behavior.get("delayPromptMs"):
+                import time
+                time.sleep(behavior.get("delayPromptMs") / 1000.0)
             send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": session_id, "update": {"kind": "text", "text": "working"}}})
             send({"jsonrpc": "2.0", "id": request_id, "result": {"stopReason": behavior.get("stopReason", "end_turn")}})
+        elif method == "session/cancel":
+            pass
         elif method == "session/close":
             send({"jsonrpc": "2.0", "id": request_id, "result": {}})
         else:
