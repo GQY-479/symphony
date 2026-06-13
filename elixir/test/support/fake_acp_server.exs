@@ -5,13 +5,13 @@ defmodule SymphonyElixir.FakeAcpServer do
     executable = Path.join(test_root, "fake-acp-server")
     script = Path.join(test_root, "fake_acp_server.py")
     behavior_json = Jason.encode!(behavior)
+    python_behavior_json = String.replace(behavior_json, "'''", "\\'\\'\\'")
 
     File.write!(script, """
     import json
-    import os
     import sys
 
-    behavior = json.loads(os.environ["FAKE_ACP_BEHAVIOR"])
+    behavior = json.loads('''#{python_behavior_json}''')
 
     def send(message):
         print(json.dumps(message), flush=True)
@@ -41,6 +41,6 @@ defmodule SymphonyElixir.FakeAcpServer do
     """)
 
     File.chmod!(executable, 0o755)
-    {executable, [{"FAKE_ACP_BEHAVIOR", behavior_json}]}
+    {executable, []}
   end
 end

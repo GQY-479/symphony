@@ -42,14 +42,16 @@ defmodule SymphonyElixir.Agent.Backend.AcpStdio do
   @spec run_turn(map(), Path.t(), map(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_turn(session, _workspace, _issue, prompt, opts) do
     timeout_ms = Keyword.get(opts, :timeout_ms, Map.get(session, :timeout_ms, @default_timeout_ms))
+    on_message = Keyword.get(opts, :on_message, &default_on_message/1)
+    turn_session = %{session | on_event: annotated_on_message(on_message, session.resolved_agent)}
 
-    case Client.prompt(session, prompt, timeout_ms: timeout_ms) do
+    case Client.prompt(turn_session, prompt, timeout_ms: timeout_ms) do
       {:ok, result} ->
-        emit_turn_completed(session, result)
-        {:ok, %{session_id: session.session_id, stop_reason: Map.get(result, "stop_reason"), raw: result}}
+        emit_turn_completed(turn_session, result)
+        {:ok, %{session_id: turn_session.session_id, stop_reason: Map.get(result, "stop_reason"), raw: result}}
 
       {:error, :acp_timeout} = error ->
-        Client.cancel(session)
+        Client.cancel(turn_session)
         error
 
       other ->

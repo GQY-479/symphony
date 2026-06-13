@@ -38,7 +38,7 @@ defmodule SymphonyElixir.AcpStdioBackendTest do
                  workspace,
                  %Issue{id: "issue-acp-backend", identifier: "MT-910"},
                  "perform acp task",
-                 []
+                 on_message: fn message -> send(parent, {:acp_backend_message, message}) end
                )
 
       assert result.session_id == "fake-acp-session"
