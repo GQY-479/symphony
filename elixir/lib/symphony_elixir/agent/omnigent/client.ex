@@ -58,7 +58,7 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
         "initial_items" => [],
         "title" => Map.get(params, :title),
         "labels" => Map.get(params, :labels),
-        "host_type" => Map.get(host, "mode", "external")
+        "host_type" => "external"
       }
       |> maybe_put("host_id", Map.get(host, "host_id"))
       |> maybe_put("workspace", Map.get(host, "workspace"))

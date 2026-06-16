@@ -44,6 +44,36 @@ defmodule SymphonyElixir.OmnigentClientTest do
     end
   end
 
+  test "create_session/1 忽略传入 host.mode 并固定发送 external host_type" do
+    server =
+      SymphonyElixir.FakeOmnigentServer.start!(%{
+        create_body: %{"id" => "conv_fake_1", "session_id" => "conv_fake_1"}
+      })
+
+    try do
+      base_url = SymphonyElixir.FakeOmnigentServer.base_url(server)
+
+      assert {:ok, _session} =
+               Client.create_session(%{
+                 base_url: base_url,
+                 agent: %{"type" => "agent_id", "id" => "ag_polly"},
+                 host: %{
+                   "mode" => "local_override",
+                   "host_id" => "host_local",
+                   "workspace" => "/tmp/work"
+                 },
+                 timeout_ms: 5_000
+               })
+
+      requests = SymphonyElixir.FakeOmnigentServer.requests(server)
+      create_request = Enum.find(requests, &(&1.name == "create_session"))
+
+      assert create_request.body["host_type"] == "external"
+    after
+      SymphonyElixir.FakeOmnigentServer.stop!(server)
+    end
+  end
+
   test "run_turn/3 发送 message 并消费 stream 到 completed" do
     parent = self()
 
