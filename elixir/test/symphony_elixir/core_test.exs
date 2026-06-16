@@ -191,11 +191,13 @@ defmodule SymphonyElixir.CoreTest do
         omnigent: %{
           kind: "omnigent_http",
           command: "omnigent",
+          base_url: "http://127.0.0.1:6767",
           host: %{
             mode: "external",
-            host_id: "host_local",
+            host_id: "",
             workspace: "{{workspace}}"
           },
+          stream_timeout_ms: 600_000,
           agent: %{
             type: "agent_id",
             id: "ag_polly"
@@ -206,7 +208,7 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agents.omnigent.base_url must be a non-empty string"
+    assert message == "agents.omnigent.host.host_id must be a non-empty string"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agents: %{
@@ -214,7 +216,35 @@ defmodule SymphonyElixir.CoreTest do
           kind: "omnigent_http",
           command: "omnigent",
           base_url: "http://127.0.0.1:6767",
-          host: %{mode: "managed"},
+          host: %{
+            mode: "external",
+            host_id: "host_local",
+            workspace: ""
+          },
+          stream_timeout_ms: 600_000,
+          agent: %{
+            type: "agent_id",
+            id: "ag_polly"
+          }
+        }
+      },
+      routing: %{default_agent: "omnigent"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message == "agents.omnigent.host.workspace must be a non-empty string"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        omnigent: %{
+          kind: "omnigent_http",
+          command: "omnigent",
+          base_url: "http://127.0.0.1:6767",
+          host: %{
+            mode: "managed",
+            host_id: "host_local",
+            workspace: "{{workspace}}"
+          },
           stream_timeout_ms: 600_000,
           agent: %{
             type: "agent_id",
@@ -227,6 +257,30 @@ defmodule SymphonyElixir.CoreTest do
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "agents.omnigent.host.mode must be external"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        omnigent: %{
+          kind: "omnigent_http",
+          command: "omnigent",
+          base_url: "http://127.0.0.1:6767",
+          host: %{
+            mode: "external",
+            host_id: "host_local",
+            workspace: ""
+          },
+          stream_timeout_ms: 600_000,
+          agent: %{
+            type: "agent_id",
+            id: "ag_polly"
+          }
+        }
+      },
+      routing: %{default_agent: "omnigent"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message == "agents.omnigent.host.workspace must be a non-empty string"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agents: %{

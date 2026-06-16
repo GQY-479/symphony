@@ -278,11 +278,11 @@ defmodule SymphonyElixir.Config do
       mode != "external" ->
         invalid_config("agents.#{agent_id}.host.mode must be external")
 
-      Map.has_key?(host, "host_id") and not is_binary(Map.get(host, "host_id")) ->
-        invalid_config("agents.#{agent_id}.host.host_id must be a string")
+      :ok != validate_optional_non_empty_string(host, "host_id") ->
+        invalid_config("agents.#{agent_id}.host.host_id must be a non-empty string")
 
-      Map.has_key?(host, "workspace") and not is_binary(Map.get(host, "workspace")) ->
-        invalid_config("agents.#{agent_id}.host.workspace must be a string")
+      :ok != validate_optional_non_empty_string(host, "workspace") ->
+        invalid_config("agents.#{agent_id}.host.workspace must be a non-empty string")
 
       true ->
         :ok
@@ -303,6 +303,23 @@ defmodule SymphonyElixir.Config do
 
       :error ->
         invalid_config("agents.#{agent_id}.#{field} must be a map")
+    end
+  end
+
+  defp validate_optional_non_empty_string(map, field) when is_map(map) do
+    case Map.fetch(map, field) do
+      :error ->
+        :ok
+
+      {:ok, value} when is_binary(value) ->
+        if String.trim(value) == "" do
+          :blank
+        else
+          :ok
+        end
+
+      {:ok, value} ->
+        invalid_config("agents.omnigent.host.#{field} must be a string, got #{inspect(value)}")
     end
   end
 

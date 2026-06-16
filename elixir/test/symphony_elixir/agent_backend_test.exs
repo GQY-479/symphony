@@ -33,6 +33,16 @@ defmodule SymphonyElixir.AgentBackendTest do
     end
   end
 
+  test "omnigent_http placeholder backend only supports session flow" do
+    assert SymphonyElixir.Agent.Backend.OmnigentHttp.run_issue(
+             "/tmp/work",
+             %{},
+             "prompt",
+             %{id: "omnigent", kind: "omnigent_http", config: %{}},
+             []
+           ) == {:error, :omnigent_http_session_backend_only}
+  end
+
   test "codex app-server backend annotates messages with resolved agent identity" do
     issue = %Issue{id: "issue-codex-backend", identifier: "MT-901", title: "Codex wrapper"}
 
