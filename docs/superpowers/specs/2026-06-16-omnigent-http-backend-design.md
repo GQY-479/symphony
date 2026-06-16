@@ -34,6 +34,39 @@ Omnigent 仓库暴露的能力和 MiMo-Code/OpenCode 不同：
 因此，Omnigent 不应被压扁成普通 `cli_run`，也不应伪装成 Codex app-server
 或 ACP runtime。它更适合以 HTTP session backend 的方式接入。
 
+## 第三方 agent 接入能力评估
+
+之前接入 MiMo-Code/OpenCode 时，已经沉淀过一组判断第三方 agent 是否适合接入
+Symphony 的能力标准。Omnigent 这次也按同一套标准评估，而不是只看它能否跑通
+一次命令。
+
+结论：Omnigent 已经足够作为第一阶段的顶层平级 backend 接入，但不应被描述成
+完整满足所有第三方 agent 标准。第一阶段满足“一个 Linear issue 由一个
+Omnigent 顶层 session 承接”的门槛；权限策略、Linear 工具桥、child session
+可观测性和 host 生命周期管理属于后续增强。
+
+| 标准 | Omnigent 暴露的能力 | 第一阶段结论 | 后续补强 |
+| --- | --- | --- | --- |
+| Linear issue 路由到平级 agent | Symphony 可通过 `agent:omnigent` 路由到独立 backend；Omnigent 侧用 session 承接任务。 | 满足。Linear 只看到 `omnigent` agent。 | 后续再评估 assignee/agent identity 的更细粒度展示。 |
+| per-issue workspace | `/v1/sessions` 创建参数支持 `workspace`，host 侧负责在该目录执行。 | 满足，但必须显式传入 Symphony issue workspace。 | 增加 host/workspace 校验和更清晰的错误提示。 |
+| 明确 issue owner | 一个 worker attempt 只绑定一个 Omnigent 顶层 session。 | 满足。child session 不改变 Symphony 顶层 owner。 | 如果未来展开 child session，需要单独设计 child ownership。 |
+| prompt 投递 | `POST /v1/sessions/{id}/events` 支持 `message` event。 | 满足。Symphony 标准 issue prompt 作为 user message 投递。 | 后续可加入附件、资源文件和上下文压缩策略。 |
+| 长生命周期 session | `/v1/sessions` 是 session-first API，支持 snapshot、SSE stream、fork。 | 满足。适合 continuation 复用同一 session。 | 补充重连、snapshot 去重和 session 恢复测试。 |
+| 成功/失败/取消/超时信号 | SSE 暴露 `response.completed`、`response.failed`、`response.incomplete`、`session.status`；事件接口支持 `interrupt` 和 `stop_session`。 | 基本满足，需要 adapter 映射到 Symphony turn result。 | 明确 incomplete reason、timeout 后 interrupt/stop 的兜底顺序。 |
+| 结构化事件流 | `GET /v1/sessions/{id}/stream` 输出 typed SSE event，包括 response 与 session 事件。 | 满足。第一阶段映射为 backend-neutral event。 | 后续保留 raw payload 以便 dashboard 展开。 |
+| 权限/审批/用户输入 | Agent YAML 支持 `policies`、`tools`、`os_env`、`terminals`，API 有 elicitation resolve 语义。 | 部分满足。第一阶段不把 Symphony approval/sandbox 语义完整注入 Omnigent。 | 设计显式权限策略映射和人工确认通道。 |
+| 可靠停止 | API 支持 `interrupt` 和 `stop_session`，YAML 有 `cancellable`。 | 满足第一阶段需要。 | 增加 stop 失败、断线和 host 掉线场景测试。 |
+| session id / usage / 可观测信息 | session 对象有 id、status、agent_id、runner_id；stream 可暴露 usage/status 类事件。 | 满足基础可观测。 | dashboard 后续展示 Omnigent session id、runner/host 和 usage 摘要。 |
+| Linear 工具 / 写回能力 | Omnigent 可声明 MCP/function tools，但不是 Symphony 的 Codex dynamic tools。 | 第一阶段不满足，也不注入 `linear_graphql`。 | 单独设计受控 MCP/tool bridge，复用 backend-neutral Linear 工具核心。 |
+| child session 可见性 | 父 stream 会发 `session.created`，包含 child conversation 信息。 | 部分满足。第一阶段只记录 `child_session_observed`。 | 第二阶段再映射为子运行记录或 dashboard 展开。 |
+| host / bootstrap 生命周期 | `omnigent server start` 和 `omnigent host` 需要外部准备；session 可绑定 runner/host。 | 部分满足。第一阶段要求用户预先启动 server/host。 | 后续评估 managed host、自动启动和健康检查。 |
+
+这意味着 Omnigent 与 MiMo-Code/OpenCode 的 `cli_run` 兜底形态不同：它已经具备
+服务化 session、结构化事件和停止控制面，所以第一阶段值得新增 `omnigent_http`
+backend。但它也不同于 Codex app-server：Codex 的 dynamic tools、approval 和
+sandbox 是协议内控制面；Omnigent 的对应能力分散在 Agent YAML、server API、
+host/runner 与 policy 机制中，需要通过 adapter 明确映射，不能假设天然等价。
+
 ## 产品模型
 
 Symphony 的工作单元仍然是 Linear issue。一个 issue 在一次 worker attempt
