@@ -1,1 +1,2 @@
 test/fixtures/status_dashboard_snapshots/* linguist-generated=true
+test/fixtures/status_dashboard_snapshots/*.evidence.md text eol=lf whitespace=-blank-at-eol
