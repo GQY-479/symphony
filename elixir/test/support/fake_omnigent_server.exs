@@ -16,7 +16,11 @@ defmodule SymphonyElixir.FakeOmnigentServer do
   end
 
   def stop!(server) do
-    GenServer.call(server, :stop)
+    if Process.alive?(server) do
+      GenServer.call(server, :stop)
+    else
+      :ok
+    end
   end
 
   def requests(server) do
@@ -27,21 +31,65 @@ defmodule SymphonyElixir.FakeOmnigentServer do
     GenServer.call(server, :port)
   end
 
+  def base_url(server), do: "http://127.0.0.1:#{port(server)}"
+
   def record_request(server, request) do
     GenServer.call(server, {:record, request})
   end
 
-  def send_request(server, conn, body) do
-    request = %{
-      method: conn.method,
-      path: conn.request_path,
-      query: conn.query_string,
-      headers: conn.req_headers,
-      body: body
-    }
+  def record_create_session_request(server, conn, body) do
+    record_request(server,
+      %{
+        name: "create_session",
+        method: conn.method,
+        path: conn.request_path,
+        query: conn.query_string,
+        headers: conn.req_headers,
+        body: decode_request_body(body)
+      }
+    )
+  end
 
-    record_request(server, request)
-    request
+  def record_get_session_request(server, conn, session_id) do
+    record_request(server,
+      %{
+        name: "get_session",
+        session_id: session_id,
+        method: conn.method,
+        path: conn.request_path,
+        query: conn.query_string,
+        headers: conn.req_headers,
+        body: decode_request_body("")
+      }
+    )
+  end
+
+  def record_post_event_request(server, conn, session_id, body) do
+    record_request(server,
+      %{
+        name: "post_event",
+        session_id: session_id,
+        method: conn.method,
+        path: conn.request_path,
+        query: conn.query_string,
+        headers: conn.req_headers,
+        body: decode_request_body(body)
+      }
+    )
+  end
+
+  def record_stream_request(server, conn, session_id) do
+    record_request(server,
+      %{
+        name: "stream",
+        session_id: session_id,
+        method: conn.method,
+        path: conn.request_path,
+        query: conn.query_string,
+        headers: conn.req_headers,
+        body: decode_request_body("")
+      }
+    )
   end
 
   def format_stream_event({event, data}), do: format_stream_event(%{event: event, data: data})
@@ -119,6 +167,17 @@ defmodule SymphonyElixir.FakeOmnigentServer do
 
   def response_body(body_template, _session_id), do: body_template
 
+  defp decode_request_body(""), do: ""
+
+  defp decode_request_body(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, decoded} -> decoded
+      {:error, _reason} -> body
+    end
+  end
+
+  defp decode_request_body(body), do: body
+
   def stream_events(behavior) do
     Map.get(behavior, :stream_events, @default_stream_events)
   end
@@ -166,7 +225,7 @@ defmodule SymphonyElixir.FakeOmnigentServer do
         {"POST", ["v1", "sessions"]} ->
           {:ok, body, conn} = read_body(conn)
           session_id = "fake-omnigent-session-" <> Integer.to_string(System.unique_integer([:positive]))
-          _request = SymphonyElixir.FakeOmnigentServer.send_request(server, conn, body)
+          :ok = SymphonyElixir.FakeOmnigentServer.record_create_session_request(server, conn, body)
           body = SymphonyElixir.FakeOmnigentServer.create_body(behavior, session_id)
 
           conn
@@ -175,21 +234,21 @@ defmodule SymphonyElixir.FakeOmnigentServer do
 
         {"GET", ["v1", "sessions", session_id]} ->
           {:ok, _body, conn} = read_body(conn)
-          _request = SymphonyElixir.FakeOmnigentServer.send_request(server, conn, "")
+          :ok = SymphonyElixir.FakeOmnigentServer.record_get_session_request(server, conn, session_id)
           body = SymphonyElixir.FakeOmnigentServer.snapshot_body(behavior, session_id)
 
           conn
           |> put_resp_content_type("application/json")
           |> send_resp(200, Jason.encode!(body))
 
-        {"POST", ["v1", "sessions", _session_id, "events"]} ->
+        {"POST", ["v1", "sessions", session_id, "events"]} ->
           {:ok, body, conn} = read_body(conn)
-          _request = SymphonyElixir.FakeOmnigentServer.send_request(server, conn, body)
+          :ok = SymphonyElixir.FakeOmnigentServer.record_post_event_request(server, conn, session_id, body)
           send_resp(conn, 204, "")
 
-        {"GET", ["v1", "sessions", _session_id, "stream"]} ->
+        {"GET", ["v1", "sessions", session_id, "stream"]} ->
           {:ok, _body, conn} = read_body(conn)
-          _request = SymphonyElixir.FakeOmnigentServer.send_request(server, conn, "")
+          :ok = SymphonyElixir.FakeOmnigentServer.record_stream_request(server, conn, session_id)
 
           conn =
             conn

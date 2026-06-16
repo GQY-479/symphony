@@ -58,7 +58,7 @@ defmodule SymphonyElixir.Agent.Omnigent.Sse do
       |> Enum.join("\n")
 
     case {event, data} do
-      {nil, ""} ->
+      {_, ""} ->
         []
 
       {event, data} ->
