@@ -244,6 +244,36 @@ MiMo-Code 的 server 代码也采用相同类型的 Hono route 结构，并有 s
 - 不建议作为 MiMo/OpenCode 的第一优先实现。
 - 适合后续需要共享常驻 agent server、远程 attach、多客户端 UI、或者比 ACP 更完整 HTTP observability 的场景。
 
+## Omnigent HTTP backend
+
+Omnigent 与 MiMo-Code/OpenCode 的一次性 CLI 形态不同。它已经暴露 session-first HTTP API、typed SSE stream、interrupt、stop_session、child session event，以及 Agent YAML 工具和 policy 配置，因此适合作为顶层平级 backend 第一阶段接入。
+
+第一阶段接入时，Symphony 把 Linear issue 路由给顶层 `omnigent` agent。Linear 中只需要看到 `omnigent`，Omnigent 内部再派给 Codex、Claude、Cursor 或其他子 agent，属于 Omnigent 的内部执行细节。
+
+满足的能力边界：
+
+- Linear issue 可通过 `agent:omnigent` label 路由到 `omnigent_http` backend。
+- per-issue workspace 可通过 `host.workspace: "{{workspace}}"` 显式传给 Omnigent host。
+- session 创建、turn message、typed SSE stream、completion/failure/cancel 事件可以映射到 Symphony backend-neutral event。
+- 同一个 worker attempt 内的 continuation 可以复用同一个 Omnigent session。
+- timeout、interrupt 和 stop_session 可以作为可靠停止路径。
+- child session event 可以被观测和记录，但不提升为 Symphony 顶层任务。
+
+部分满足的能力边界：
+
+- 权限和审批语义依赖 Omnigent Agent YAML 工具与 policy 配置，Symphony 第一阶段只做 backend 适配，不统一接管所有子 agent 权限决策。
+- usage、token 和成本展示取决于 Omnigent 事件 payload；Symphony 可以记录结构化事件，但不承诺第一阶段完成统一计费视图。
+- host 生命周期由用户或外部系统管理；Symphony 使用 `host.mode: external` 和显式 `host.host_id` 绑定已有 host。
+
+不在第一阶段满足的能力边界：
+
+- 不自动安装、登录或启动 Omnigent。
+- 不支持 `host.mode: managed`。
+- 不把 child session 映射成 Linear 子 issue。
+- 不直接把 Symphony Linear token 或 `linear_graphql` 注入 Omnigent。
+- 不处理多个 online host 的自动选择和调度。
+- 不把 Omnigent 的 `response.completed` 解释成 Linear issue 已完成；它只表示本轮 turn 完成，Linear terminal state 仍由 issue 状态和 Symphony 编排决定。
+
 ## 能力矩阵
 
 | 需求 | Codex app-server | `cli_run` | ACP stdio | HTTP server |
