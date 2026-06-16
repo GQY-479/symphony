@@ -46,7 +46,7 @@ agents:
     base_url: "http://127.0.0.1:6767"
     host:
       mode: external
-      host_id: "host_local"
+      host_id: "<真实 host id>"
       workspace: "{{workspace}}"
     agent:
       type: agent_id
@@ -65,7 +65,7 @@ routing:
 - `agents.omnigent.kind: omnigent_http` 让 Symphony 使用 Omnigent HTTP backend。
 - `base_url` 指向已启动的 Omnigent server。
 - `host.mode: external` 表示使用用户已经启动或登记的外部 host。
-- `host.host_id` 用于绑定本轮 session 使用的 host。
+- `host.host_id` 用于绑定本轮 session 使用的 host；示例中的 `<真实 host id>` 必须替换为 Omnigent 当前输出或登记的真实 host id。
 - `host.workspace: "{{workspace}}"` 会被替换为 Symphony 为当前 Linear issue 准备的 workspace 路径。
 - `agent.type: agent_id` 表示直接引用已有 Omnigent agent；示例中的 `id: "ag_polly"` 需要替换为真实 agent id。
 - `timeout_ms` 是本轮 turn 的总超时；`stream_timeout_ms` 是 SSE stream 等待事件的超时。
@@ -90,7 +90,7 @@ routing:
 - backend 事件中可看到 Omnigent session id，并带有 `agent_id=omnigent` 与 `agent_kind=omnigent_http`。
 - workspace 中出现 issue 要求的验证文件或其他可检查 evidence。
 - Linear issue 中有 Omnigent 或 Symphony 写回的结果说明，或者状态变化符合测试预期。
-- 超时、取消或停止 worker 时，Symphony 能调用 interrupt 和 stop session 的兜底路径。
+- 停止 session 时，Symphony 会调用 `stop_session` 做清理；`interrupt` 目前是 Omnigent client 已实现的控制事件能力，若要作为 worker 超时或取消的兜底路径，还需要补 runner wiring 和集成测试。
 
 需要特别注意：Omnigent 的 `response.completed` 只表示本轮 Omnigent turn 完成，不等于 Linear issue 已完成。Symphony 仍会刷新 Linear issue；如果 issue 仍处于 active state，并且仍路由到 `omnigent`，同一个 worker attempt 可以继续下一轮 turn。
 
