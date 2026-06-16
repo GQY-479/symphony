@@ -5,12 +5,16 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
 
   @default_timeout_ms 30_000
   @stream_ready_timeout_ms 1_000
+  @default_runner_ready_poll_ms 500
 
   @spec create_session(map()) :: {:ok, map()} | {:error, term()}
   def create_session(params) when is_map(params) do
     base_url = normalize_base_url(fetch!(params, :base_url))
     timeout_ms = Map.get(params, :timeout_ms, @default_timeout_ms)
     stream_timeout_ms = Map.get(params, :stream_timeout_ms, @default_timeout_ms)
+
+    runner_ready_timeout_ms = Map.get(params, :runner_ready_timeout_ms, 0)
+    runner_ready_poll_ms = Map.get(params, :runner_ready_poll_ms, @default_runner_ready_poll_ms)
 
     with {:ok, response} <-
            post_create_session(
@@ -23,14 +27,15 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
          {:ok, payload} <- decode_2xx(response) do
       session_id = payload["session_id"] || payload["id"]
 
-      {:ok,
-       %{
-         session_id: session_id,
-         base_url: base_url,
-         timeout_ms: timeout_ms,
-         stream_timeout_ms: stream_timeout_ms,
-         raw: payload
-       }}
+      session = %{
+        session_id: session_id,
+        base_url: base_url,
+        timeout_ms: timeout_ms,
+        stream_timeout_ms: stream_timeout_ms,
+        raw: payload
+      }
+
+      maybe_wait_runner_ready(session, runner_ready_timeout_ms, runner_ready_poll_ms)
     end
   end
 
@@ -205,6 +210,59 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
     end
   end
 
+  defp maybe_wait_runner_ready(session, timeout_ms, _poll_ms) when not is_integer(timeout_ms) or timeout_ms <= 0 do
+    {:ok, session}
+  end
+
+  defp maybe_wait_runner_ready(session, timeout_ms, poll_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    poll_ms = if is_integer(poll_ms) and poll_ms > 0, do: poll_ms, else: @default_runner_ready_poll_ms
+    wait_runner_ready(session, deadline, timeout_ms, poll_ms, session.raw)
+  end
+
+  defp wait_runner_ready(session, deadline, timeout_ms, poll_ms, last_snapshot) do
+    case get_session(session) do
+      {:ok, %{"runner_online" => true} = snapshot} ->
+        {:ok, %{session | raw: snapshot}}
+
+      {:ok, %{"status" => "failed"} = snapshot} ->
+        {:error, {:omnigent_failed, Map.get(snapshot, "last_task_error") || Map.get(snapshot, "error")}}
+
+      {:ok, snapshot} ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error, {:omnigent_runner_not_ready, timeout_ms, snapshot}}
+        else
+          Process.sleep(poll_ms)
+          wait_runner_ready(session, deadline, timeout_ms, poll_ms, snapshot)
+        end
+
+      {:error, _reason} = error ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          case last_snapshot do
+            snapshot when is_map(snapshot) ->
+              {:error, {:omnigent_runner_not_ready, timeout_ms, snapshot}}
+
+            _ ->
+              error
+          end
+        else
+          Process.sleep(poll_ms)
+          wait_runner_ready(session, deadline, timeout_ms, poll_ms, last_snapshot)
+        end
+    end
+  end
+
+  defp get_session(session) do
+    base_url = normalize_base_url(fetch!(session, :base_url))
+    session_id = fetch!(session, :session_id)
+    timeout_ms = Map.get(session, :timeout_ms, @default_timeout_ms)
+    url = base_url <> "/v1/sessions/" <> session_id <> "?include_items=false"
+
+    with {:ok, response} <- get(url, timeout_ms) do
+      decode_2xx(response)
+    end
+  end
+
   defp open_stream(url, timeout_ms) do
     case Req.get(url, into: :self, connect_options: [timeout: timeout_ms], receive_timeout: timeout_ms) do
       {:ok, %Req.Response{status: status} = response} when status >= 200 and status < 300 ->
@@ -365,6 +423,16 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
 
   defp post(url, body, timeout_ms) do
     case Req.post(url, json: body, connect_options: [timeout: timeout_ms], receive_timeout: timeout_ms) do
+      {:ok, %Req.Response{} = response} ->
+        {:ok, response}
+
+      {:error, reason} ->
+        {:error, {:omnigent_transport_error, reason}}
+    end
+  end
+
+  defp get(url, timeout_ms) do
+    case Req.get(url, connect_options: [timeout: timeout_ms], receive_timeout: timeout_ms) do
       {:ok, %Req.Response{} = response} ->
         {:ok, response}
 

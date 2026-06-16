@@ -338,7 +338,7 @@ defmodule SymphonyElixir.FakeOmnigentServer do
     behavior
     |> Map.get(:snapshot_body)
     |> case do
-      nil -> %{"id" => session_id, "status" => "running"}
+      nil -> %{"id" => session_id, "status" => "running", "runner_online" => true, "host_online" => true}
       body_template -> response_body(body_template, session_id)
     end
   end

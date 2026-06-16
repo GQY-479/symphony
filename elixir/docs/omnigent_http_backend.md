@@ -53,6 +53,8 @@ agents:
       id: "ag_polly"
     timeout_ms: 3600000
     stream_timeout_ms: 600000
+    runner_ready_timeout_ms: 60000
+    runner_ready_poll_ms: 500
 
 routing:
   default_agent: codex
@@ -69,6 +71,8 @@ routing:
 - `host.workspace: "{{workspace}}"` 会被替换为 Symphony 为当前 Linear issue 准备的 workspace 路径。
 - `agent.type: agent_id` 表示直接引用已有 Omnigent agent；示例中的 `id: "ag_polly"` 需要替换为真实 agent id。
 - `timeout_ms` 是本轮 turn 的总超时；`stream_timeout_ms` 是 SSE stream 等待事件的超时。
+- `runner_ready_timeout_ms` 表示创建 host-bound session 后最多等待多久，让 Omnigent runner 进入 `runner_online=true` 后再发送 message；默认 backend 会等待，设为 `0` 可禁用。
+- `runner_ready_poll_ms` 表示等待 runner 在线时轮询 session snapshot 的间隔。
 - `routing.by_label."agent:omnigent": omnigent` 表示 Linear issue 带 `agent:omnigent` label 时路由给这个 backend。
 
 ## Linear issue 使用步骤
@@ -103,6 +107,13 @@ routing:
 - 多个 online host 的自动选择不在第一阶段处理；建议显式配置 `host.host_id`。
 - `response.completed` 只表示本轮 turn 完成，不等于 Linear issue 完成。
 - Omnigent 内部派给 Codex、Claude、Cursor 或其他子 agent 的细节不会暴露成 Symphony 顶层 agent 路由。
+
+## 当前真实 smoke 结论
+
+- Polly agent 端到端 smoke 已通过。真实 Omnigent server 返回 session 后，Symphony 等到 `runner_online=true`，再发送 message，并收到 `response.output_text.delta` 与 `response.completed`。
+- `codex-native-ui` agent 已通过 session 创建、runner online 等待和 turn message 发送路径，但当前失败在 Omnigent native terminal 启动层：runner 报错 `linux_bwrap sandbox requires the 'bwrap' binary on PATH`。
+- 这个 `codex-native-ui` 失败不表示 Symphony HTTP adapter 协议路径不可用；它说明当前 Omnigent host runner 在自动创建 Codex terminal 时没有继承 agent YAML 中的 sandbox 配置，或运行环境缺少 `bubblewrap`。
+- 如果要继续体验 `codex-native-ui`，需要先在 WSL 环境安装 `bubblewrap`，或修复 Omnigent runner 的 terminal sandbox 继承逻辑。
 
 ## 真实 smoke 记录模板
 

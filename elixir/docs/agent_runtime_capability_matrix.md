@@ -255,6 +255,7 @@ Omnigent 与 MiMo-Code/OpenCode 的一次性 CLI 形态不同。它已经暴露 
 - Linear issue 可通过 `agent:omnigent` label 路由到 `omnigent_http` backend。
 - per-issue workspace 可通过 `host.workspace: "{{workspace}}"` 显式传给 Omnigent host。
 - session 创建、turn message、typed SSE stream、completion/failure/cancel 事件可以映射到 Symphony backend-neutral event。
+- 创建 host-bound session 后，backend 会等待 Omnigent snapshot 里的 `runner_online=true` 再发送 turn message，避免 message 早于 runner ready 导致 relaunch 或双 runner 竞态。
 - 同一个 worker attempt 内的 continuation 可以复用同一个 Omnigent session。
 - HTTP 请求和 SSE stream 已有 timeout；session cleanup 会调用 `stop_session`；`interrupt` 已有 client API，但尚未接入 runner 超时或取消兜底路径。
 - child session event 可以被观测和记录，但不提升为 Symphony 顶层任务。
@@ -273,6 +274,11 @@ Omnigent 与 MiMo-Code/OpenCode 的一次性 CLI 形态不同。它已经暴露 
 - 不直接把 Symphony Linear token 或 `linear_graphql` 注入 Omnigent。
 - 不处理多个 online host 的自动选择和调度。
 - 不把 Omnigent 的 `response.completed` 解释成 Linear issue 已完成；它只表示本轮 turn 完成，Linear terminal state 仍由 issue 状态和 Symphony 编排决定。
+
+真实 smoke 结论：
+
+- Polly agent 已完成端到端验证，证明 Omnigent HTTP backend 的 session、runner ready、message、SSE completion 和 cleanup 路径可用。
+- `codex-native-ui` agent 当前失败在 Omnigent native terminal/bubblewrap 环境层，而不是 Symphony adapter 协议层；后续需要安装 `bubblewrap` 或修复 Omnigent runner 的 terminal sandbox 继承逻辑后再复测。
 
 ## 能力矩阵
 

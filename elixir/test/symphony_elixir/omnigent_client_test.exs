@@ -208,6 +208,77 @@ defmodule SymphonyElixir.OmnigentClientTest do
     end
   end
 
+  test "create_session/1 可等待 external host runner 在线" do
+    parent = self()
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+    server =
+      SymphonyElixir.FakeOmnigentServer.start!(%{
+        create_body: %{"id" => "conv_fake_1", "session_id" => "conv_fake_1"},
+        snapshot_body: fn session_id ->
+          count = Agent.get_and_update(counter, fn count -> {count + 1, count + 1} end)
+          send(parent, {:omnigent_snapshot, count})
+
+          %{
+            "id" => session_id,
+            "status" => "running",
+            "runner_online" => count >= 3,
+            "host_online" => true
+          }
+        end
+      })
+
+    try do
+      assert {:ok, session} =
+               Client.create_session(%{
+                 base_url: SymphonyElixir.FakeOmnigentServer.base_url(server),
+                 agent: %{"type" => "agent_id", "id" => "ag_polly"},
+                 host: %{"host_id" => "host_local", "workspace" => "/tmp/work"},
+                 timeout_ms: 5_000,
+                 runner_ready_timeout_ms: 2_000,
+                 runner_ready_poll_ms: 10
+               })
+
+      assert session.raw["runner_online"] == true
+      assert_receive {:omnigent_snapshot, 1}
+      assert_receive {:omnigent_snapshot, 2}
+      assert_receive {:omnigent_snapshot, 3}
+    after
+      SymphonyElixir.FakeOmnigentServer.stop!(server)
+    end
+  end
+
+  test "create_session/1 等待 runner 超时时返回最后一次 snapshot" do
+    server =
+      SymphonyElixir.FakeOmnigentServer.start!(%{
+        create_body: %{"id" => "conv_fake_1", "session_id" => "conv_fake_1"},
+        snapshot_body: fn session_id ->
+          %{
+            "id" => session_id,
+            "status" => "running",
+            "runner_online" => false,
+            "host_online" => true
+          }
+        end
+      })
+
+    try do
+      assert {:error, {:omnigent_runner_not_ready, 20, snapshot}} =
+               Client.create_session(%{
+                 base_url: SymphonyElixir.FakeOmnigentServer.base_url(server),
+                 agent: %{"type" => "agent_id", "id" => "ag_polly"},
+                 host: %{"host_id" => "host_local", "workspace" => "/tmp/work"},
+                 runner_ready_timeout_ms: 20,
+                 runner_ready_poll_ms: 5
+               })
+
+      assert snapshot["runner_online"] == false
+      assert snapshot["id"] == "conv_fake_1"
+    after
+      SymphonyElixir.FakeOmnigentServer.stop!(server)
+    end
+  end
+
   test "create_session/1 返回的 session 可直接喂给 run_turn/3 并保留 stream_timeout_ms" do
     server =
       SymphonyElixir.FakeOmnigentServer.start!(%{

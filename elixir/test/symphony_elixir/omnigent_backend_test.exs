@@ -52,7 +52,12 @@ defmodule SymphonyElixir.OmnigentBackendTest do
                         agent_id: "omnigent",
                         agent_kind: "omnigent_http",
                         session_id: "conv_fake_1",
-                        payload: %{"id" => "conv_fake_1", "session_id" => "conv_fake_1"},
+                        payload: %{
+                          "id" => "conv_fake_1",
+                          "status" => "running",
+                          "runner_online" => true,
+                          "host_online" => true
+                        },
                         timestamp: %DateTime{}
                       }}
     after
@@ -180,8 +185,7 @@ defmodule SymphonyElixir.OmnigentBackendTest do
         create_body: %{"id" => "conv_fake_3", "session_id" => "conv_fake_3"},
         stream_events: [
           {"session.created", %{"type" => "session.created", "session_id" => "child-1"}},
-          {"response.failed",
-           %{"type" => "response.failed", "error" => %{"message" => "boom"}}},
+          {"response.failed", %{"type" => "response.failed", "error" => %{"message" => "boom"}}},
           {nil, "[DONE]"}
         ]
       })
@@ -246,8 +250,7 @@ defmodule SymphonyElixir.OmnigentBackendTest do
       SymphonyElixir.FakeOmnigentServer.start!(%{
         create_body: %{"id" => "conv_fake_4", "session_id" => "conv_fake_4"},
         stream_events: [
-          {"response.incomplete",
-           %{"type" => "response.incomplete", "reason" => "user_interrupt"}},
+          {"response.incomplete", %{"type" => "response.incomplete", "reason" => "user_interrupt"}},
           {nil, "[DONE]"}
         ]
       })

@@ -246,6 +246,8 @@ defmodule SymphonyElixir.Config do
          :ok <- validate_optional_map(agent_id, agent, "host"),
          {:ok, omnigent_agent} <- validate_required_map(agent_id, agent, "agent"),
          :ok <- validate_agent_integer(agent_id, agent, "stream_timeout_ms", greater_than: 0),
+         :ok <- validate_agent_integer(agent_id, agent, "runner_ready_timeout_ms", greater_than_or_equal_to: 0),
+         :ok <- validate_agent_integer(agent_id, agent, "runner_ready_poll_ms", greater_than: 0),
          :ok <- validate_omnigent_host(agent_id, Map.get(agent, "host") || %{}),
          :ok <- validate_omnigent_agent(agent_id, omnigent_agent) do
       :ok

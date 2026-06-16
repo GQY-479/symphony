@@ -156,6 +156,8 @@ defmodule SymphonyElixir.CoreTest do
             workspace: "{{workspace}}"
           },
           stream_timeout_ms: 600_000,
+          runner_ready_timeout_ms: 60_000,
+          runner_ready_poll_ms: 500,
           agent: %{
             type: "agent_id",
             id: "ag_polly"
@@ -174,6 +176,8 @@ defmodule SymphonyElixir.CoreTest do
     assert settings.agents["omnigent"]["kind"] == "omnigent_http"
     assert settings.agents["omnigent"]["base_url"] == "http://127.0.0.1:6767"
     assert settings.agents["omnigent"]["stream_timeout_ms"] == 600_000
+    assert settings.agents["omnigent"]["runner_ready_timeout_ms"] == 60_000
+    assert settings.agents["omnigent"]["runner_ready_poll_ms"] == 500
 
     assert settings.agents["omnigent"]["host"] == %{
              "mode" => "external",
@@ -305,6 +309,58 @@ defmodule SymphonyElixir.CoreTest do
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "agents.omnigent.stream_timeout_ms must be an integer greater than 0"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        omnigent: %{
+          kind: "omnigent_http",
+          command: "omnigent",
+          base_url: "http://127.0.0.1:6767",
+          host: %{
+            mode: "external",
+            host_id: "host_local",
+            workspace: "{{workspace}}"
+          },
+          stream_timeout_ms: 600_000,
+          runner_ready_timeout_ms: -1,
+          agent: %{
+            type: "agent_id",
+            id: "ag_polly"
+          }
+        }
+      },
+      routing: %{default_agent: "omnigent"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+
+    assert message =~
+             "agents.omnigent.runner_ready_timeout_ms must be an integer greater than or equal to 0"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        omnigent: %{
+          kind: "omnigent_http",
+          command: "omnigent",
+          base_url: "http://127.0.0.1:6767",
+          host: %{
+            mode: "external",
+            host_id: "host_local",
+            workspace: "{{workspace}}"
+          },
+          stream_timeout_ms: 600_000,
+          runner_ready_poll_ms: 0,
+          agent: %{
+            type: "agent_id",
+            id: "ag_polly"
+          }
+        }
+      },
+      routing: %{default_agent: "omnigent"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.omnigent.runner_ready_poll_ms must be an integer greater than 0"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       agents: %{

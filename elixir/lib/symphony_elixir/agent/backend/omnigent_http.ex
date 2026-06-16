@@ -7,6 +7,8 @@ defmodule SymphonyElixir.Agent.Backend.OmnigentHttp do
 
   @default_timeout_ms 3_600_000
   @default_stream_timeout_ms 600_000
+  @default_runner_ready_timeout_ms 60_000
+  @default_runner_ready_poll_ms 500
 
   @impl true
   def run_issue(_workspace, _issue, _prompt, _resolved_agent, _opts),
@@ -18,6 +20,8 @@ defmodule SymphonyElixir.Agent.Backend.OmnigentHttp do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
     timeout_ms = Map.get(config, "timeout_ms", @default_timeout_ms)
     stream_timeout_ms = Map.get(config, "stream_timeout_ms", @default_stream_timeout_ms)
+    runner_ready_timeout_ms = Map.get(config, "runner_ready_timeout_ms", @default_runner_ready_timeout_ms)
+    runner_ready_poll_ms = Map.get(config, "runner_ready_poll_ms", @default_runner_ready_poll_ms)
 
     client_config = %{
       base_url: Map.get(config, "base_url"),
@@ -29,7 +33,9 @@ defmodule SymphonyElixir.Agent.Backend.OmnigentHttp do
         "symphony_agent_kind" => agent_kind(resolved_agent)
       },
       timeout_ms: timeout_ms,
-      stream_timeout_ms: stream_timeout_ms
+      stream_timeout_ms: stream_timeout_ms,
+      runner_ready_timeout_ms: runner_ready_timeout_ms,
+      runner_ready_poll_ms: runner_ready_poll_ms
     }
 
     case Client.create_session(client_config) do
