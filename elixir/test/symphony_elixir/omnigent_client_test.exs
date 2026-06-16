@@ -110,6 +110,33 @@ defmodule SymphonyElixir.OmnigentClientTest do
     end
   end
 
+  test "create_session/1 规整 base_url 尾斜杠" do
+    server =
+      SymphonyElixir.FakeOmnigentServer.start!(%{
+        create_body: %{"id" => "conv_fake_1", "session_id" => "conv_fake_1"}
+      })
+
+    try do
+      base_url = SymphonyElixir.FakeOmnigentServer.base_url(server)
+
+      assert {:ok, session} =
+               Client.create_session(%{
+                 base_url: base_url <> "/",
+                 agent: %{"type" => "agent_id", "id" => "ag_polly"},
+                 host: %{"host_id" => "host_local", "workspace" => "/tmp/work"},
+                 timeout_ms: 5_000
+               })
+
+      assert session.base_url == base_url
+
+      requests = SymphonyElixir.FakeOmnigentServer.requests(server)
+      create_request = Enum.find(requests, &(&1.name == "create_session"))
+      assert create_request.path == "/v1/sessions"
+    after
+      SymphonyElixir.FakeOmnigentServer.stop!(server)
+    end
+  end
+
   test "run_turn/3 发送 message 并消费 stream 到 completed" do
     parent = self()
 
@@ -185,6 +212,38 @@ defmodule SymphonyElixir.OmnigentClientTest do
 
       assert {:error, {:omnigent_http_error, 500, %{"error" => "events failed"}}} =
                Client.run_turn(session, "hello omnigent", timeout_ms: 5_000)
+    after
+      SymphonyElixir.FakeOmnigentServer.stop!(server)
+    end
+  end
+
+  test "run_turn/3 在 message event 被拒绝时立即返回" do
+    server =
+      SymphonyElixir.FakeOmnigentServer.start!(%{
+        events_status: 500,
+        events_body: %{"error" => "nope"},
+        stream_delay_ms: 500,
+        stream_events: [
+          {"response.output_text.delta", %{"type" => "response.output_text.delta", "delta" => "late"}},
+          {"response.completed", %{"type" => "response.completed", "response" => %{"id" => "resp_1"}}},
+          {nil, "[DONE]"}
+        ]
+      })
+
+    try do
+      session = %{
+        base_url: SymphonyElixir.FakeOmnigentServer.base_url(server),
+        session_id: "conv_fake_1",
+        stream_timeout_ms: 2_000
+      }
+
+      started_at = System.monotonic_time(:millisecond)
+
+      assert {:error, {:omnigent_http_error, 500, %{"error" => "nope"}}} =
+               Client.run_turn(session, "hello omnigent", timeout_ms: 5_000)
+
+      elapsed_ms = System.monotonic_time(:millisecond) - started_at
+      assert elapsed_ms < 300
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)
     end
