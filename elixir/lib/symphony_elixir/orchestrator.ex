@@ -1665,9 +1665,23 @@ defmodule SymphonyElixir.Orchestrator do
        when is_integer(existing_count),
        do: existing_count + 1
 
-  defp turn_count_for_update(existing_count, _running_entry, %{event: :session_started, agent_kind: "acp_stdio"})
-       when is_integer(existing_count),
-       do: existing_count
+  defp turn_count_for_update(existing_count, running_entry, %{
+         event: :session_started,
+         agent_kind: agent_kind,
+         session_id: session_id
+       })
+       when is_integer(existing_count) and is_binary(session_id) and is_binary(agent_kind) do
+    cond do
+      session_lifecycle_agent_kind?(agent_kind) ->
+        existing_count
+
+      session_id == Map.get(running_entry, :session_id) ->
+        existing_count
+
+      true ->
+        existing_count + 1
+    end
+  end
 
   defp turn_count_for_update(existing_count, running_entry, %{
          event: :session_started,
@@ -1686,6 +1700,10 @@ defmodule SymphonyElixir.Orchestrator do
        do: existing_count
 
   defp turn_count_for_update(_existing_count, _running_entry, _update), do: 0
+
+  defp session_lifecycle_agent_kind?("acp_stdio"), do: true
+  defp session_lifecycle_agent_kind?("omnigent_http"), do: true
+  defp session_lifecycle_agent_kind?(_agent_kind), do: false
 
   defp summarize_codex_update(update) do
     %{

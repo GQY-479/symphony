@@ -73,7 +73,6 @@ defmodule SymphonyElixir.Agent.Backend.OmnigentHttp do
 
   @spec stop_session(map()) :: :ok
   def stop_session(session) when is_map(session) do
-    _ = Client.interrupt(session)
     _ = Client.stop_session(session)
     :ok
   end
@@ -82,6 +81,9 @@ defmodule SymphonyElixir.Agent.Backend.OmnigentHttp do
     fn
       %{"type" => "session.created"} = event ->
         emit(on_message, session.resolved_agent, session.session_id, :child_session_observed, event)
+
+      %{"type" => type} when type in ["response.completed", "response.failed", "response.incomplete"] ->
+        :ok
 
       event when is_map(event) ->
         emit(on_message, session.resolved_agent, session.session_id, :notification, event)

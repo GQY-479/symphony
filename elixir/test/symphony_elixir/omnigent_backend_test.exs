@@ -139,13 +139,20 @@ defmodule SymphonyElixir.OmnigentBackendTest do
                         },
                         timestamp: %DateTime{}
                       }}
+
+      refute_receive {:omnigent_backend_message,
+                      %{
+                        event: :notification,
+                        payload: %{"type" => "response.completed"}
+                      }},
+                     50
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)
       File.rm_rf(test_root)
     end
   end
 
-  test "stop_session/1 发送 interrupt 和 stop_session control event" do
+  test "stop_session/1 正常 cleanup 只发送 stop_session control event" do
     server = SymphonyElixir.FakeOmnigentServer.start!()
     {test_root, workspace} = unique_workspace!("stop-session")
 
@@ -160,10 +167,7 @@ defmodule SymphonyElixir.OmnigentBackendTest do
         SymphonyElixir.FakeOmnigentServer.requests(server)
         |> Enum.filter(&(&1.name == "post_event"))
 
-      assert Enum.map(requests, & &1.body) == [
-               %{"type" => "interrupt", "data" => %{}},
-               %{"type" => "stop_session", "data" => %{}}
-             ]
+      assert Enum.map(requests, & &1.body) == [%{"type" => "stop_session", "data" => %{}}]
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)
       File.rm_rf(test_root)
@@ -224,6 +228,13 @@ defmodule SymphonyElixir.OmnigentBackendTest do
                         payload: %{reason: {:omnigent_failed, %{"message" => "boom"}}},
                         timestamp: %DateTime{}
                       }}
+
+      refute_receive {:omnigent_backend_message,
+                      %{
+                        event: :notification,
+                        payload: %{"type" => "response.failed"}
+                      }},
+                     50
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)
       File.rm_rf(test_root)
@@ -273,6 +284,13 @@ defmodule SymphonyElixir.OmnigentBackendTest do
                         payload: %{reason: {:omnigent_incomplete, "user_interrupt"}},
                         timestamp: %DateTime{}
                       }}
+
+      refute_receive {:omnigent_backend_message,
+                      %{
+                        event: :notification,
+                        payload: %{"type" => "response.incomplete"}
+                      }},
+                     50
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)
       File.rm_rf(test_root)

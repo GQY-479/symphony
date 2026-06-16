@@ -380,6 +380,83 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.turn_count == 2
   end
 
+  test "orchestrator does not count omnigent session_started as a turn before turn_started" do
+    issue_id = "issue-omnigent-session-lifecycle"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-205",
+      title: "Omnigent session lifecycle",
+      description: "Do not count session_started as a turn",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-205"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :OmnigentSessionLifecycleOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      agent_id: "omnigent",
+      agent_kind: "omnigent_http",
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    now = DateTime.utc_now()
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :session_started,
+         agent_id: "omnigent",
+         agent_kind: "omnigent_http",
+         session_id: "omnigent-session-1",
+         timestamp: now
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :turn_started,
+         agent_id: "omnigent",
+         agent_kind: "omnigent_http",
+         session_id: "omnigent-session-1",
+         timestamp: now
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.session_id == "omnigent-session-1"
+    assert snapshot_entry.turn_count == 1
+  end
+
   test "orchestrator does not double count duplicate session_started updates for the same session" do
     issue_id = "issue-duplicate-session-started"
 
