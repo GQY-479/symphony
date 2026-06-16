@@ -507,6 +507,99 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
   end
 
+  test "phoenix MCP linear tools endpoint handles JSON-RPC tool requests" do
+    test_pid = self()
+
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :UnusedOrchestrator),
+      mcp_linear_client: fn query, variables, opts ->
+        send(test_pid, {:mcp_linear_client_called, query, variables, opts})
+        {:ok, %{"data" => %{"viewer" => %{"id" => "usr_http"}}}}
+      end
+    )
+
+    list_conn =
+      post(build_conn(), "/mcp/linear-tools", %{
+        "jsonrpc" => "2.0",
+        "id" => 41,
+        "method" => "tools/list",
+        "params" => %{}
+      })
+
+    assert %{
+             "id" => 41,
+             "jsonrpc" => "2.0",
+             "result" => %{"tools" => tools}
+           } = json_response(list_conn, 200)
+
+    assert Enum.map(tools, & &1["name"]) == [
+             "linear_issue_read",
+             "linear_comment_create",
+             "linear_issue_update_state",
+             "linear_graphql"
+           ]
+
+    call_conn =
+      post(build_conn(), "/mcp/linear-tools", %{
+        "jsonrpc" => "2.0",
+        "id" => 42,
+        "method" => "tools/call",
+        "params" => %{
+          "name" => "linear_graphql",
+          "arguments" => %{"query" => "query Viewer { viewer { id } }"}
+        }
+      })
+
+    assert_received {:mcp_linear_client_called, "query Viewer { viewer { id } }", %{}, []}
+
+    assert %{
+             "id" => 42,
+             "jsonrpc" => "2.0",
+             "result" => %{
+               "isError" => false,
+               "content" => [%{"type" => "text", "text" => output}]
+             }
+           } = json_response(call_conn, 200)
+
+    assert Jason.decode!(output) == %{"data" => %{"viewer" => %{"id" => "usr_http"}}}
+
+    assert json_response(get(build_conn(), "/mcp/linear-tools"), 405) == %{
+             "error" => %{"code" => "method_not_allowed", "message" => "Method not allowed"}
+           }
+  end
+
+  test "phoenix MCP linear tools endpoint does not log GraphQL request arguments" do
+    start_test_endpoint(
+      orchestrator: Module.concat(__MODULE__, :UnusedOrchestrator),
+      mcp_linear_client: fn _query, _variables, _opts ->
+        {:ok, %{"data" => %{"viewer" => %{"id" => "usr_http"}}}}
+      end
+    )
+
+    log =
+      capture_log(fn ->
+        conn =
+          post(build_conn(), "/mcp/linear-tools", %{
+            "jsonrpc" => "2.0",
+            "id" => 43,
+            "method" => "tools/call",
+            "params" => %{
+              "name" => "linear_graphql",
+              "arguments" => %{
+                "query" => "mutation SecretProbeMcpRequestLog { commentCreate(input: {body: \"hidden\"}) { success } }"
+              }
+            }
+          })
+
+        assert %{"id" => 43, "result" => %{"isError" => false}} = json_response(conn, 200)
+      end)
+
+    assert log =~ "MCP tools/call tool=\"linear_graphql\""
+    refute log =~ "SecretProbeMcpRequestLog"
+    refute log =~ "commentCreate"
+    refute log =~ "hidden"
+  end
+
   test "phoenix observability api preserves snapshot timeout behavior" do
     timeout_orchestrator = Module.concat(__MODULE__, :TimeoutOrchestrator)
     {:ok, _pid} = SlowOrchestrator.start_link(name: timeout_orchestrator)

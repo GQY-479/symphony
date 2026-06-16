@@ -171,15 +171,13 @@ defmodule SymphonyElixir.Linear.Client do
       {:ok, body}
     else
       {:ok, response} ->
-        Logger.error(
-          "Linear GraphQL request failed status=#{response.status}" <>
-            linear_error_context(payload, response)
-        )
+        error_category = non_200_error_category(response)
+        Logger.error("Linear GraphQL request failed status=#{response.status}#{linear_error_context(payload, error_category)}")
 
-        {:error, {:linear_api_status, response.status}}
+        {:error, non_200_error_reason(response.status, error_category)}
 
       {:error, reason} ->
-        Logger.error("Linear GraphQL request failed: #{inspect(reason)}")
+        Logger.error("Linear GraphQL request failed: #{sanitize_error_reason(reason)}")
         {:error, {:linear_api_request, reason}}
     end
   end
@@ -343,33 +341,38 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp maybe_put_operation_name(payload, _operation_name), do: payload
 
-  defp linear_error_context(payload, response) when is_map(payload) do
-    operation_name =
-      case Map.get(payload, "operationName") do
-        name when is_binary(name) and name != "" -> " operation=#{name}"
-        _ -> ""
-      end
+  defp linear_error_context(_payload, error_category), do: " error_category=#{error_category}"
 
-    body =
-      response
-      |> Map.get(:body)
-      |> summarize_error_body()
-
-    operation_name <> " body=" <> body
+  defp non_200_error_category(%{body: body}) do
+    if graphql_error_body?(body), do: "graphql_errors", else: "linear_api_status"
   end
 
-  defp summarize_error_body(body) when is_binary(body) do
-    body
-    |> String.replace(~r/\s+/, " ")
-    |> String.trim()
-    |> truncate_error_body()
-    |> inspect()
-  end
+  defp non_200_error_category(_response), do: "linear_api_status"
 
-  defp summarize_error_body(body) do
-    body
+  defp non_200_error_reason(status, "graphql_errors"), do: {:linear_api_graphql_errors, status}
+  defp non_200_error_reason(status, _category), do: {:linear_api_status, status}
+
+  defp graphql_error_body?(%{"errors" => errors}) when is_list(errors) and errors != [], do: true
+  defp graphql_error_body?(%{errors: errors}) when is_list(errors) and errors != [], do: true
+  defp graphql_error_body?(_body), do: false
+
+  defp sanitize_error_reason(reason) do
+    reason
     |> inspect(limit: 20, printable_limit: @max_error_body_log_bytes)
+    |> redact_linear_tokens()
+    |> redact_authorization_values()
     |> truncate_error_body()
+  end
+
+  defp redact_linear_tokens(text) when is_binary(text) do
+    String.replace(text, ~r/lin_api_[A-Za-z0-9_-]+/, "[REDACTED]")
+  end
+
+  defp redact_authorization_values(text) when is_binary(text) do
+    text
+    |> String.replace(~r/("authorization"\s*,\s*)"[^"]*"/i, "\\1\"[REDACTED]\"")
+    |> String.replace(~r/("authorization"\s*=>\s*)"[^"]*"/i, "\\1\"[REDACTED]\"")
+    |> String.replace(~r/(\{"Authorization",\s*)"[^"]*"/i, "\\1\"[REDACTED]\"")
   end
 
   defp truncate_error_body(body) when is_binary(body) do

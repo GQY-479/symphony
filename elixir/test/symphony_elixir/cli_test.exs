@@ -136,4 +136,53 @@ defmodule SymphonyElixir.CLITest do
 
     assert :ok = CLI.evaluate([@ack_flag, "WORKFLOW.md"], deps)
   end
+
+  test "runs linear tools MCP server without starting the orchestrator" do
+    parent = self()
+    workflow_path = "tmp/custom/WORKFLOW.md"
+    expanded_path = Path.expand(workflow_path)
+
+    deps = %{
+      file_regular?: fn path ->
+        send(parent, {:workflow_checked, path})
+        path == expanded_path
+      end,
+      set_workflow_file_path: fn path ->
+        send(parent, {:workflow_set, path})
+        :ok
+      end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      ensure_all_started: fn ->
+        send(parent, :started)
+        {:ok, [:symphony_elixir]}
+      end,
+      run_mcp_server: fn opts ->
+        send(parent, {:mcp_server_started, opts})
+        :ok
+      end
+    }
+
+    assert :halt = CLI.evaluate(["mcp", "linear-tools", "--workflow", workflow_path], deps)
+    assert_received {:workflow_checked, ^expanded_path}
+    assert_received {:mcp_server_started, opts}
+    assert Keyword.fetch!(opts, :workflow_path) == expanded_path
+    refute_received {:workflow_set, _path}
+    refute_received :started
+  end
+
+  test "returns usage when linear tools MCP workflow path is missing" do
+    deps = %{
+      file_regular?: fn _path -> true end,
+      set_workflow_file_path: fn _path -> :ok end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      ensure_all_started: fn -> {:ok, [:symphony_elixir]} end,
+      run_mcp_server: fn _opts -> :ok end
+    }
+
+    assert {:error, message} = CLI.evaluate(["mcp", "linear-tools"], deps)
+    assert message =~ "Usage:"
+    assert message =~ "mcp linear-tools --workflow"
+  end
 end

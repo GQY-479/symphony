@@ -441,10 +441,10 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
   end
 
-  test "linear client logs response bodies for non-200 graphql responses" do
+  test "linear client classifies non-200 graphql error bodies without logging response body" do
     log =
       ExUnit.CaptureLog.capture_log(fn ->
-        assert {:error, {:linear_api_status, 400}} =
+        assert {:error, {:linear_api_graphql_errors, 400}} =
                  Client.graphql(
                    "query Viewer { viewer { id } }",
                    %{},
@@ -466,8 +466,34 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       end)
 
     assert log =~ "Linear GraphQL request failed status=400"
-    assert log =~ ~s(body=%{"errors" => [%{"extensions" => %{"code" => "BAD_USER_INPUT"})
-    assert log =~ "Variable \\\"$ids\\\" got invalid value"
+    assert log =~ "error_category=graphql_errors"
+    refute log =~ "Variable \\\"$ids\\\" got invalid value"
+    refute log =~ "BAD_USER_INPUT"
+  end
+
+  test "linear client redacts request error details before logging" do
+    fake_token = "lin_api_SECRET_LINEAR_TOKEN"
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, {:linear_api_request, %Req.HTTPError{}}} =
+                 Client.graphql(
+                   "query SecretProbe { viewer { id } }",
+                   %{},
+                   request_fun: fn _payload, _headers ->
+                     {:error,
+                      %Req.HTTPError{
+                        protocol: :http1,
+                        reason: {:invalid_header_value, "authorization", "Bearer #{fake_token}"}
+                      }}
+                   end
+                 )
+      end)
+
+    assert log =~ "Linear GraphQL request failed"
+    assert log =~ "[REDACTED]"
+    refute log =~ fake_token
+    refute log =~ "SecretProbe"
   end
 
   test "orchestrator sorts dispatch by priority then oldest created_at" do

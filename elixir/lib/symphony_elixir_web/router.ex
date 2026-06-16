@@ -28,6 +28,11 @@ defmodule SymphonyElixirWeb.Router do
     live("/", DashboardLive, :index)
   end
 
+  scope "/", SymphonyElixirWeb, log: false do
+    post("/mcp/linear-tools", McpController, :linear_tools)
+    match(:*, "/mcp/linear-tools", McpController, :method_not_allowed)
+  end
+
   scope "/", SymphonyElixirWeb do
     get("/api/v1/state", ObservabilityApiController, :state)
 

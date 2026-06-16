@@ -3,23 +3,40 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   alias SymphonyElixir.Codex.DynamicTool
 
-  test "tool_specs advertises the linear_graphql input contract" do
-    assert [
-             %{
-               "description" => description,
-               "inputSchema" => %{
-                 "properties" => %{
-                   "query" => _,
-                   "variables" => _
-                 },
-                 "required" => ["query"],
-                 "type" => "object"
-               },
-               "name" => "linear_graphql"
-             }
-           ] = DynamicTool.tool_specs()
+  @linear_tool_names [
+    "linear_issue_read",
+    "linear_comment_create",
+    "linear_issue_update_state",
+    "linear_graphql"
+  ]
 
-    assert description =~ "Linear"
+  test "tool_specs advertises high-level Linear tools and the raw GraphQL fallback" do
+    specs = DynamicTool.tool_specs()
+
+    assert Enum.map(specs, & &1["name"]) == @linear_tool_names
+
+    assert %{"inputSchema" => %{"required" => ["issue_id"]}} =
+             Enum.find(specs, &(&1["name"] == "linear_issue_read"))
+
+    assert %{"inputSchema" => %{"required" => ["issue_id", "body"]}} =
+             Enum.find(specs, &(&1["name"] == "linear_comment_create"))
+
+    assert %{"inputSchema" => %{"required" => ["issue_id", "state_name"]}} =
+             Enum.find(specs, &(&1["name"] == "linear_issue_update_state"))
+
+    assert %{
+             "description" => description,
+             "inputSchema" => %{
+               "properties" => %{
+                 "query" => _,
+                 "variables" => _
+               },
+               "required" => ["query"],
+               "type" => "object"
+             }
+           } = Enum.find(specs, &(&1["name"] == "linear_graphql"))
+
+    assert description =~ "fallback"
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -30,7 +47,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"]) == %{
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql"]
+               "supportedTools" => @linear_tool_names
              }
            }
 
