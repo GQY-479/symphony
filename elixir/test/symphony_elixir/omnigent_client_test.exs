@@ -201,6 +201,8 @@ defmodule SymphonyElixir.OmnigentClientTest do
       create_request = Enum.find(requests, &(&1.name == "create_session"))
 
       assert create_request.body["host_type"] == "external"
+      refute Map.has_key?(create_request.body, "title")
+      refute Map.has_key?(create_request.body, "labels")
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)
     end
@@ -305,7 +307,12 @@ defmodule SymphonyElixir.OmnigentClientTest do
       assert_receive {:omnigent_event, %{"type" => "response.completed", "response" => %{"id" => "resp_1"}}}
 
       requests = SymphonyElixir.FakeOmnigentServer.requests(server)
+      request_names = Enum.map(requests, & &1.name)
+      stream_index = Enum.find_index(request_names, &(&1 == "stream"))
+      post_event_index = Enum.find_index(request_names, &(&1 == "post_event"))
       post_event_request = Enum.find(requests, &(&1.name == "post_event"))
+
+      assert stream_index < post_event_index
 
       assert post_event_request.body == %{
                "type" => "message",
@@ -371,7 +378,7 @@ defmodule SymphonyElixir.OmnigentClientTest do
                Client.run_turn(session, "hello omnigent", timeout_ms: 5_000)
 
       elapsed_ms = System.monotonic_time(:millisecond) - started_at
-      assert elapsed_ms < 300
+      assert elapsed_ms < 1_200
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)
     end
@@ -419,6 +426,34 @@ defmodule SymphonyElixir.OmnigentClientTest do
       }
 
       assert {:error, {:omnigent_failed, %{"message" => "boom"}}} =
+               Client.run_turn(session, "hello omnigent", timeout_ms: 5_000)
+    after
+      SymphonyElixir.FakeOmnigentServer.stop!(server)
+    end
+  end
+
+  test "run_turn/3 在 session.status failed 时返回 Omnigent 失败原因" do
+    server =
+      SymphonyElixir.FakeOmnigentServer.start!(%{
+        stream_events: [
+          {"session.status",
+           %{
+             "type" => "session.status",
+             "status" => "failed",
+             "error" => %{"code" => "runner_failed_to_start", "message" => "runner unavailable"}
+           }},
+          {nil, "[DONE]"}
+        ]
+      })
+
+    try do
+      session = %{
+        base_url: SymphonyElixir.FakeOmnigentServer.base_url(server),
+        session_id: "conv_fake_1",
+        stream_timeout_ms: 1_000
+      }
+
+      assert {:error, {:omnigent_failed, %{"code" => "runner_failed_to_start", "message" => "runner unavailable"}}} =
                Client.run_turn(session, "hello omnigent", timeout_ms: 5_000)
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)

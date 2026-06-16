@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
   alias SymphonyElixir.Agent.Omnigent.Sse
 
   @default_timeout_ms 30_000
+  @stream_ready_timeout_ms 1_000
 
   @spec create_session(map()) :: {:ok, map()} | {:error, term()}
   def create_session(params) when is_map(params) do
@@ -44,20 +45,22 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
     stream_url = base_url <> "/v1/sessions/" <> session_id <> "/stream"
     events_url = base_url <> "/v1/sessions/" <> session_id <> "/events"
 
-    with {:ok, stream_response} <- open_stream(stream_url, stream_timeout_ms) do
+    stream_task = start_stream_consumer(stream_url, stream_timeout_ms, session_id, on_event)
+
+    with :ok <- wait_stream_ready(stream_task) do
       case post(events_url, message_event_body(input_text), timeout_ms) do
         {:ok, response} ->
           case decode_2xx(response) do
             {:ok, _payload} ->
-              consume_stream(stream_response, session_id, on_event)
+              await_stream_consumer(stream_task, stream_timeout_ms)
 
             {:error, _reason} = error ->
-              cancel_stream(stream_response)
+              stop_stream_consumer(stream_task)
               error
           end
 
         {:error, _reason} = error ->
-          cancel_stream(stream_response)
+          stop_stream_consumer(stream_task)
           error
       end
     end
@@ -100,10 +103,10 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
       %{
         "agent_id" => agent_id,
         "initial_items" => [],
-        "title" => Map.get(params, :title),
-        "labels" => Map.get(params, :labels),
         "host_type" => "external"
       }
+      |> maybe_put("title", Map.get(params, :title))
+      |> maybe_put("labels", Map.get(params, :labels))
       |> maybe_put("host_id", Map.get(host, "host_id"))
       |> maybe_put("workspace", Map.get(host, "workspace"))
 
@@ -120,10 +123,10 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
       "agent_type" => "bundle_path",
       "bundle_path" => path,
       "initial_items" => [],
-      "title" => Map.get(params, :title),
-      "labels" => Map.get(params, :labels),
       "host_type" => "external"
     }
+    |> maybe_put("title", Map.get(params, :title))
+    |> maybe_put("labels", Map.get(params, :labels))
     |> maybe_put("host_id", Map.get(host, "host_id"))
     |> maybe_put("workspace", Map.get(host, "workspace"))
   end
@@ -215,14 +218,15 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
     end
   end
 
-  defp consume_stream(response, session_id, on_event) do
+  defp consume_stream(response, session_id, on_event, ready_signal) do
     try do
       result =
-        Enum.reduce_while(response.body, {:cont, {Sse.new(), ""}}, fn chunk, {:cont, {sse, output_text}} ->
+        Enum.reduce_while(response.body, {:cont, {Sse.new(), "", false}}, fn chunk, {:cont, {sse, output_text, ready?}} ->
           {events, next_sse} = Sse.feed(sse, chunk)
+          ready? = maybe_notify_stream_ready(ready_signal, ready?, events)
 
           case handle_stream_events(events, next_sse, output_text, session_id, on_event) do
-            {:cont, next_state} -> {:cont, {:cont, next_state}}
+            {:cont, {sse, output_text}} -> {:cont, {:cont, {sse, output_text, ready?}}}
             {:halt, outcome} -> {:halt, outcome}
           end
         end)
@@ -239,6 +243,65 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
         {:error, {:omnigent_transport_error, {kind, reason}}}
     end
   end
+
+  defp start_stream_consumer(url, timeout_ms, session_id, on_event) do
+    parent = self()
+    ref = make_ref()
+
+    task =
+      Task.async(fn ->
+        case open_stream(url, timeout_ms) do
+          {:ok, response} ->
+            consume_stream(response, session_id, on_event, {parent, ref})
+
+          {:error, reason} = error ->
+            send(parent, {:omnigent_stream_open_failed, ref, reason})
+            error
+        end
+      end)
+
+    %{task: task, ref: ref}
+  end
+
+  defp wait_stream_ready(%{task: task, ref: ref}) do
+    receive do
+      {:omnigent_stream_ready, ^ref} ->
+        :ok
+
+      {:omnigent_stream_open_failed, ^ref, reason} ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, reason}
+
+      {task_ref, {:error, reason}} when task_ref == task.ref ->
+        Process.demonitor(task.ref, [:flush])
+        {:error, reason}
+    after
+      @stream_ready_timeout_ms ->
+        :ok
+    end
+  end
+
+  defp await_stream_consumer(%{task: task}, timeout_ms) do
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      nil -> {:error, {:omnigent_transport_error, :timeout}}
+    end
+  end
+
+  defp stop_stream_consumer(%{task: task}) do
+    Task.shutdown(task, :brutal_kill)
+    :ok
+  end
+
+  defp maybe_notify_stream_ready(_ready_signal, true, _events), do: true
+  defp maybe_notify_stream_ready(_ready_signal, false, []), do: false
+
+  defp maybe_notify_stream_ready({parent, ref}, false, _events) do
+    send(parent, {:omnigent_stream_ready, ref})
+    true
+  end
+
+  defp maybe_notify_stream_ready(nil, false, _events), do: true
 
   defp handle_stream_events([], sse, output_text, _session_id, _on_event) do
     {:cont, {sse, output_text}}
@@ -277,6 +340,9 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
       "response.failed" ->
         {:halt, {:error, {:omnigent_failed, Map.get(data, "error")}}}
 
+      "session.status" ->
+        handle_session_status_event(data, output_text)
+
       "response.incomplete" ->
         {:halt, {:error, {:omnigent_incomplete, Map.get(data, "reason")}}}
 
@@ -286,6 +352,14 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
   end
 
   defp handle_stream_event(_event, output_text, _session_id, _on_event) do
+    {:cont, output_text}
+  end
+
+  defp handle_session_status_event(%{"status" => "failed"} = data, _output_text) do
+    {:halt, {:error, {:omnigent_failed, Map.get(data, "error")}}}
+  end
+
+  defp handle_session_status_event(_data, output_text) do
     {:cont, output_text}
   end
 
@@ -324,14 +398,6 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, ""), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
-  defp cancel_stream(response) do
-    try do
-      Req.cancel_async_response(response)
-    rescue
-      _error -> :ok
-    end
-  end
 
   defp normalize_base_url(base_url) when is_binary(base_url) do
     String.trim_trailing(base_url, "/")
