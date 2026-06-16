@@ -7,8 +7,9 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
 
   @spec create_session(map()) :: {:ok, map()} | {:error, term()}
   def create_session(params) when is_map(params) do
-    base_url = fetch!(params, :base_url)
+    base_url = normalize_base_url(fetch!(params, :base_url))
     timeout_ms = Map.get(params, :timeout_ms, @default_timeout_ms)
+    stream_timeout_ms = Map.get(params, :stream_timeout_ms, @default_timeout_ms)
 
     with {:ok, body} <- create_session_body(fetch!(params, :agent), Map.get(params, :host, %{}), params),
          {:ok, response} <- post(base_url <> "/v1/sessions", body, timeout_ms),
@@ -19,6 +20,8 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
        %{
          session_id: session_id,
          base_url: base_url,
+         timeout_ms: timeout_ms,
+         stream_timeout_ms: stream_timeout_ms,
          raw: payload
        }}
     end
@@ -26,18 +29,31 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
 
   @spec run_turn(map(), binary(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_turn(session, input_text, opts \\ []) when is_map(session) and is_binary(input_text) do
-    base_url = fetch!(session, :base_url)
+    base_url = normalize_base_url(fetch!(session, :base_url))
     session_id = fetch!(session, :session_id)
-    timeout_ms = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
+    timeout_ms = Keyword.get(opts, :timeout_ms, Map.get(session, :timeout_ms, @default_timeout_ms))
     stream_timeout_ms = Map.get(session, :stream_timeout_ms, timeout_ms)
     on_event = Keyword.get(opts, :on_event, fn _event -> :ok end)
 
     stream_url = base_url <> "/v1/sessions/" <> session_id <> "/stream"
     events_url = base_url <> "/v1/sessions/" <> session_id <> "/events"
 
-    with {:ok, stream_response} <- open_stream(stream_url, stream_timeout_ms),
-         {:ok, _response} <- post(events_url, message_event_body(input_text), timeout_ms) do
-      consume_stream(stream_response, session_id, on_event)
+    with {:ok, stream_response} <- open_stream(stream_url, stream_timeout_ms) do
+      case post(events_url, message_event_body(input_text), timeout_ms) do
+        {:ok, response} ->
+          case decode_2xx(response) do
+            {:ok, _payload} ->
+              consume_stream(stream_response, session_id, on_event)
+
+            {:error, _reason} = error ->
+              cancel_stream(stream_response)
+              error
+          end
+
+        {:error, _reason} = error ->
+          cancel_stream(stream_response)
+          error
+      end
     end
   end
 
@@ -85,7 +101,7 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
   end
 
   defp post_control_event(session, body) do
-    base_url = fetch!(session, :base_url)
+    base_url = normalize_base_url(fetch!(session, :base_url))
     session_id = fetch!(session, :session_id)
     timeout_ms = Map.get(session, :timeout_ms, @default_timeout_ms)
     url = base_url <> "/v1/sessions/" <> session_id <> "/events"
@@ -196,6 +212,18 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, ""), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp cancel_stream(response) do
+    try do
+      Req.cancel_async_response(response)
+    rescue
+      _error -> :ok
+    end
+  end
+
+  defp normalize_base_url(base_url) when is_binary(base_url) do
+    String.trim_trailing(base_url, "/")
+  end
 
   defp fetch!(map, key) do
     case Map.fetch(map, key) do

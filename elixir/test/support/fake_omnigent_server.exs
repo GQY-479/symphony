@@ -207,6 +207,16 @@ defmodule SymphonyElixir.FakeOmnigentServer do
     end
   end
 
+  def events_status(behavior) do
+    Map.get(behavior, :events_status, 204)
+  end
+
+  def events_body(behavior, session_id) do
+    behavior
+    |> Map.get(:events_body, "")
+    |> response_body(session_id)
+  end
+
   defp normalize_behavior(behavior) when is_map(behavior), do: Map.new(behavior)
   defp normalize_behavior(behavior) when is_list(behavior), do: Map.new(behavior)
   defp normalize_behavior(behavior), do: Map.new(behavior)
@@ -250,7 +260,16 @@ defmodule SymphonyElixir.FakeOmnigentServer do
         {"POST", ["v1", "sessions", session_id, "events"]} ->
           {:ok, body, conn} = read_body(conn)
           :ok = SymphonyElixir.FakeOmnigentServer.record_post_event_request(server, conn, session_id, body)
-          send_resp(conn, 204, "")
+          status = SymphonyElixir.FakeOmnigentServer.events_status(behavior)
+          body = SymphonyElixir.FakeOmnigentServer.events_body(behavior, session_id)
+
+          if status == 204 and body in ["", nil] do
+            send_resp(conn, 204, "")
+          else
+            conn
+            |> put_resp_content_type("application/json")
+            |> send_resp(status, Jason.encode!(body))
+          end
 
         {"GET", ["v1", "sessions", session_id, "stream"]} ->
           {:ok, _body, conn} = read_body(conn)
