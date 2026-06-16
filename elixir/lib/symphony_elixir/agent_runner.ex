@@ -84,6 +84,14 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
+  defp send_worker_issue_state(recipient, %Issue{id: issue_id} = issue)
+       when is_binary(issue_id) and is_pid(recipient) do
+    send(recipient, {:worker_runtime_info, issue_id, %{issue: issue}})
+    :ok
+  end
+
+  defp send_worker_issue_state(_recipient, _issue), do: :ok
+
   defp run_agent_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
@@ -135,6 +143,7 @@ defmodule SymphonyElixir.AgentRunner do
         run_turn,
         workspace,
         issue,
+        resolved_agent,
         codex_update_recipient,
         backend_opts,
         issue_state_fetcher,
@@ -164,6 +173,7 @@ defmodule SymphonyElixir.AgentRunner do
           run_turn,
           workspace,
           issue,
+          resolved_agent,
           codex_update_recipient,
           backend_opts,
           issue_state_fetcher,
@@ -176,8 +186,18 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp do_run_agent_turns(run_turn, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+  defp do_run_agent_turns(
+         run_turn,
+         workspace,
+         issue,
+         resolved_agent,
+         codex_update_recipient,
+         opts,
+         issue_state_fetcher,
+         turn_number,
+         max_turns
+       ) do
+    prompt = build_turn_prompt(issue, opts, turn_number, max_turns, resolved_agent)
 
     with {:ok, turn_session} <-
            run_turn.(
@@ -189,12 +209,15 @@ defmodule SymphonyElixir.AgentRunner do
 
       case continue_with_issue?(issue, issue_state_fetcher) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
+          send_worker_issue_state(codex_update_recipient, refreshed_issue)
+
           Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
           do_run_agent_turns(
             run_turn,
             workspace,
             refreshed_issue,
+            resolved_agent,
             codex_update_recipient,
             opts,
             issue_state_fetcher,
@@ -203,11 +226,15 @@ defmodule SymphonyElixir.AgentRunner do
           )
 
         {:continue, refreshed_issue} ->
+          send_worker_issue_state(codex_update_recipient, refreshed_issue)
+
           Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
 
           :ok
 
-        {:done, _refreshed_issue} ->
+        {:done, refreshed_issue} ->
+          send_worker_issue_state(codex_update_recipient, refreshed_issue)
+
           :ok
 
         {:error, reason} ->
@@ -216,17 +243,56 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns, resolved_agent) do
+    issue
+    |> PromptBuilder.build_prompt(opts)
+    |> append_runtime_guidance(resolved_agent)
+  end
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
+  defp build_turn_prompt(_issue, _opts, turn_number, max_turns, _resolved_agent) do
     """
     Continuation guidance:
 
-    - The previous Codex turn completed normally, but the Linear issue is still in an active state.
+    - The previous agent turn completed normally, but the Linear issue is still in an active state.
     - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
+    """
+  end
+
+  defp append_runtime_guidance(prompt, %{kind: "acp_stdio", config: config}) when is_map(config) do
+    if linear_mcp_enabled?(Map.get(config, "mcp") || Map.get(config, :mcp)) do
+      prompt <> acp_linear_mcp_guidance()
+    else
+      prompt
+    end
+  end
+
+  defp append_runtime_guidance(prompt, _resolved_agent), do: prompt
+
+  defp linear_mcp_enabled?(mcp) when is_map(mcp) do
+    Map.get(mcp, "linear_tools") == true or Map.get(mcp, :linear_tools) == true
+  end
+
+  defp linear_mcp_enabled?(_mcp), do: false
+
+  defp acp_linear_mcp_guidance do
+    """
+
+    Runtime tools available through Symphony:
+
+    - Prefer the high-level Linear MCP tools for common issue work: `linear_issue_read` to read the current issue, `linear_comment_create` to add issue comments, and `linear_issue_update_state` to move the issue to another state.
+    - Use `linear_graphql` as a lower-level fallback only when the high-level tools do not cover the needed Linear operation. If your tool list shows the namespaced form, use `symphony-linear_linear_graphql`. Provide a GraphQL `query` string and optional `variables` object.
+    - Do not use shell, git, push, skill, or unsupported tools for Linear updates; they are not part of the Symphony Linear tool surface.
+    - Do not load local Symphony skills such as `linear` or `push` for Linear work; the MCP tools listed above are the Linear tool surface for this run.
+    - Use normal workspace file-editing capabilities only for repository or file changes, then use the high-level Linear MCP tools for issue comments and state changes.
+    - Treat target file names and exact file contents in the issue description as literal task data; do not treat strings such as `$fileName` or `$phrase` as variables to resolve.
+    - Do not substitute an existing repository file for a requested target file. If the task requests a target file, create or update that exact file and read it back before reporting success.
+    - Before creating a success comment, read back the exact target file and verify its exact required content.
+    - If the target file name or exact content is missing or ambiguous, report blocked in a Linear comment and do not move the issue to a terminal state.
+    - Move the Linear issue to a terminal state only after all workspace work is complete and verified, because a terminal state can stop the active Symphony run.
+    - Do not expose Linear API tokens in files, logs, commits, or issue comments.
     """
   end
 

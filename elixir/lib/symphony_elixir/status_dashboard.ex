@@ -1310,6 +1310,8 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
+  defp humanize_codex_method("session/update", payload), do: humanize_acp_session_update(payload)
+
   defp humanize_codex_method("item/started", payload), do: humanize_item_lifecycle("started", payload)
   defp humanize_codex_method("item/completed", payload), do: humanize_item_lifecycle("completed", payload)
 
@@ -1429,6 +1431,96 @@ defmodule SymphonyElixir.StatusDashboard do
 
       _ ->
         base
+    end
+  end
+
+  defp humanize_acp_session_update(payload) do
+    update =
+      map_path(payload, ["params", "update"]) ||
+        map_path(payload, [:params, :update]) ||
+        %{}
+
+    kind = update |> map_value(["kind", :kind]) |> humanize_item_type()
+
+    cond do
+      tool_summary = acp_update_tool_summary(update) ->
+        tool_summary
+
+      text = acp_update_text(update) ->
+        "agent update: #{text}"
+
+      is_binary(kind) and kind != "" ->
+        "agent update (#{kind})"
+
+      true ->
+        "agent update"
+    end
+  end
+
+  defp acp_update_tool_summary(update) do
+    with title when is_binary(title) <- acp_update_tool_title(update) do
+      name = acp_update_tool_name(update)
+      display_name = if generic_invalid_tool_title?(title) and is_binary(name), do: name, else: title
+      status = acp_update_status(update)
+      prefix = if status in ["failed", "error"], do: "agent tool call failed", else: "agent tool call"
+      suffix = if display_name != title and title != "", do: " (#{title})", else: ""
+
+      "#{prefix}: #{display_name}#{suffix}"
+    end
+  end
+
+  defp acp_update_tool_title(update) do
+    title =
+      map_value(update, ["title", :title, "name", :name]) ||
+        map_path(update, ["toolCall", "title"]) ||
+        map_path(update, [:toolCall, :title]) ||
+        map_path(update, ["toolCall", "name"]) ||
+        map_path(update, [:toolCall, :name])
+
+    if is_binary(title) and String.trim(title) != "" do
+      inline_text(title)
+    else
+      nil
+    end
+  end
+
+  defp acp_update_tool_name(update) do
+    name =
+      map_path(update, ["toolCall", "name"]) ||
+        map_path(update, [:toolCall, :name]) ||
+        map_path(update, ["toolCall", "title"]) ||
+        map_path(update, [:toolCall, :title])
+
+    if is_binary(name) and String.trim(name) != "" do
+      inline_text(name)
+    else
+      nil
+    end
+  end
+
+  defp acp_update_status(update) do
+    update
+    |> map_value(["status", :status, "state", :state])
+    |> humanize_status()
+  end
+
+  defp generic_invalid_tool_title?(title) when is_binary(title) do
+    title
+    |> String.trim()
+    |> String.downcase()
+    |> Kernel.==("invalid tool")
+  end
+
+  defp acp_update_text(update) do
+    text =
+      map_value(update, ["text", :text, "content", :content, "message", :message, "delta", :delta]) ||
+        map_path(update, ["content", "text"]) ||
+        map_path(update, [:content, :text])
+
+    if is_binary(text) and String.trim(text) != "" do
+      inline_text(text)
+    else
+      nil
     end
   end
 

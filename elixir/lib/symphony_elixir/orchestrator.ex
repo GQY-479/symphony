@@ -151,6 +151,7 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry
           |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
           |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
+          |> maybe_put_runtime_issue(runtime_info[:issue])
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -199,22 +200,35 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
-    if input_required_blocker?(running_entry) do
-      block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
-    else
-      Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+    terminal_states = terminal_state_set()
 
-      state
-      |> complete_issue(issue_id)
-      |> schedule_issue_retry(issue_id, 1, %{
-        identifier: running_entry.identifier,
-        issue_url: running_entry.issue.url,
-        delay_type: :continuation,
-        agent_id: Map.get(running_entry, :agent_id),
-        agent_kind: Map.get(running_entry, :agent_kind),
-        worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path)
-      })
+    cond do
+      input_required_blocker?(running_entry) ->
+        block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
+
+      running_entry_terminal_issue?(running_entry, terminal_states) ->
+        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; refreshed issue is terminal, releasing claim")
+
+        cleanup_issue_workspace(running_entry.identifier, Map.get(running_entry, :worker_host))
+
+        state
+        |> complete_issue(issue_id)
+        |> release_issue_claim(issue_id)
+
+      true ->
+        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+
+        state
+        |> complete_issue(issue_id)
+        |> schedule_issue_retry(issue_id, 1, %{
+          identifier: running_entry.identifier,
+          issue_url: running_entry.issue.url,
+          delay_type: :continuation,
+          agent_id: Map.get(running_entry, :agent_id),
+          agent_kind: Map.get(running_entry, :agent_kind),
+          worker_host: Map.get(running_entry, :worker_host),
+          workspace_path: Map.get(running_entry, :workspace_path)
+        })
     end
   end
 
@@ -583,12 +597,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_stalled_running_issues(%State{} = state) do
-    timeout_ms = Config.settings!().codex.stall_timeout_ms
+    settings = Config.settings!()
+    default_timeout_ms = settings.codex.stall_timeout_ms
 
     cond do
-      timeout_ms <= 0 ->
-        state
-
       map_size(state.running) == 0 ->
         state
 
@@ -596,18 +608,44 @@ defmodule SymphonyElixir.Orchestrator do
         now = DateTime.utc_now()
 
         Enum.reduce(state.running, state, fn {issue_id, running_entry}, state_acc ->
+          timeout_ms = stall_timeout_ms_for_running_entry(running_entry, settings, default_timeout_ms)
           maybe_restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
         end)
     end
   end
 
   defp maybe_restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
-    if Map.has_key?(state.blocked, issue_id) do
-      state
-    else
-      restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms)
+    cond do
+      timeout_ms <= 0 ->
+        state
+
+      Map.has_key?(state.blocked, issue_id) ->
+        state
+
+      true ->
+        restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms)
     end
   end
+
+  defp stall_timeout_ms_for_running_entry(running_entry, settings, default_timeout_ms) do
+    entry_timeout = Map.get(running_entry, :agent_stall_timeout_ms)
+    agent_timeout = configured_agent_stall_timeout_ms(settings, Map.get(running_entry, :agent_id))
+
+    cond do
+      is_integer(entry_timeout) and entry_timeout >= 0 -> entry_timeout
+      is_integer(agent_timeout) and agent_timeout >= 0 -> agent_timeout
+      true -> default_timeout_ms
+    end
+  end
+
+  defp configured_agent_stall_timeout_ms(settings, agent_id) when is_binary(agent_id) do
+    settings
+    |> Map.get(:agents, %{})
+    |> Map.get(agent_id, %{})
+    |> agent_stall_timeout_ms()
+  end
+
+  defp configured_agent_stall_timeout_ms(_settings, _agent_id), do: nil
 
   defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
     elapsed_ms = stall_elapsed_ms(running_entry, now)
@@ -901,6 +939,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp terminal_issue_state?(_state_name, _terminal_states), do: false
 
+  defp running_entry_terminal_issue?(%{issue: %Issue{state: state_name}}, terminal_states) do
+    terminal_issue_state?(state_name, terminal_states)
+  end
+
+  defp running_entry_terminal_issue?(_running_entry, _terminal_states), do: false
+
   defp active_issue_state?(state_name, active_states) when is_binary(state_name) do
     MapSet.member?(active_states, normalize_issue_state(state_name))
   end
@@ -999,6 +1043,7 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_input_tokens: 0,
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
+            agent_stall_timeout_ms: agent_stall_timeout_ms(resolved_agent.config),
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
@@ -1035,6 +1080,16 @@ defmodule SymphonyElixir.Orchestrator do
         Router.resolve(issue, Config.settings!())
     end
   end
+
+  defp agent_stall_timeout_ms(config) when is_map(config) do
+    value = Map.get(config, "stall_timeout_ms") || Map.get(config, :stall_timeout_ms)
+
+    if is_integer(value) and value >= 0 do
+      value
+    end
+  end
+
+  defp agent_stall_timeout_ms(_config), do: nil
 
   defp resolve_agent_by_id_for_dispatch(agent_id) do
     settings = Config.settings!()
@@ -1196,7 +1251,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp cleanup_issue_workspace(identifier, worker_host \\ nil)
 
   defp cleanup_issue_workspace(identifier, worker_host) when is_binary(identifier) do
-    Workspace.remove_issue_workspaces(identifier, worker_host)
+    if Config.settings!().workspace.preserve_terminal do
+      :ok
+    else
+      Workspace.remove_issue_workspaces(identifier, worker_host)
+    end
   end
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
@@ -1314,6 +1373,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_put_runtime_value(running_entry, key, value) when is_map(running_entry) do
     Map.put(running_entry, key, value)
   end
+
+  defp maybe_put_runtime_issue(running_entry, %Issue{} = issue) when is_map(running_entry) do
+    Map.put(running_entry, :issue, issue)
+  end
+
+  defp maybe_put_runtime_issue(running_entry, _issue), do: running_entry
 
   defp select_worker_host(%State{} = state, preferred_worker_host) do
     case Config.settings!().worker.ssh_hosts do
@@ -1572,7 +1637,7 @@ defmodule SymphonyElixir.Orchestrator do
         codex_last_reported_input_tokens: max(last_reported_input, token_delta.input_reported),
         codex_last_reported_output_tokens: max(last_reported_output, token_delta.output_reported),
         codex_last_reported_total_tokens: max(last_reported_total, token_delta.total_reported),
-        turn_count: turn_count_for_update(turn_count, running_entry.session_id, update)
+        turn_count: turn_count_for_update(turn_count, running_entry, update)
       }),
       token_delta
     }
@@ -1596,23 +1661,31 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp session_id_for_update(existing, _update), do: existing
 
-  defp turn_count_for_update(existing_count, existing_session_id, %{
+  defp turn_count_for_update(existing_count, _running_entry, %{event: :turn_started})
+       when is_integer(existing_count),
+       do: existing_count + 1
+
+  defp turn_count_for_update(existing_count, _running_entry, %{event: :session_started, agent_kind: "acp_stdio"})
+       when is_integer(existing_count),
+       do: existing_count
+
+  defp turn_count_for_update(existing_count, running_entry, %{
          event: :session_started,
          session_id: session_id
        })
        when is_integer(existing_count) and is_binary(session_id) do
-    if session_id == existing_session_id do
+    if session_id == Map.get(running_entry, :session_id) do
       existing_count
     else
       existing_count + 1
     end
   end
 
-  defp turn_count_for_update(existing_count, _existing_session_id, _update)
+  defp turn_count_for_update(existing_count, _running_entry, _update)
        when is_integer(existing_count),
        do: existing_count
 
-  defp turn_count_for_update(_existing_count, _existing_session_id, _update), do: 0
+  defp turn_count_for_update(_existing_count, _running_entry, _update), do: 0
 
   defp summarize_codex_update(update) do
     %{

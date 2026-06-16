@@ -279,6 +279,171 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert completed_state.codex_totals.total_tokens == 16
   end
 
+  test "orchestrator counts continuation turns within the same agent session" do
+    issue_id = "issue-continuation-turn-count"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-203",
+      title: "Continuation turn count test",
+      description: "Count multiple turns in one ACP session",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-203"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ContinuationTurnCountOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      agent_id: "mimocode",
+      agent_kind: "acp_stdio",
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    now = DateTime.utc_now()
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :session_started,
+         agent_id: "mimocode",
+         agent_kind: "acp_stdio",
+         session_id: "acp-session-1",
+         timestamp: now
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :turn_started,
+         agent_id: "mimocode",
+         agent_kind: "acp_stdio",
+         session_id: "acp-session-1",
+         timestamp: now
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :turn_completed,
+         agent_id: "mimocode",
+         agent_kind: "acp_stdio",
+         session_id: "acp-session-1",
+         timestamp: now
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :turn_started,
+         agent_id: "mimocode",
+         agent_kind: "acp_stdio",
+         session_id: "acp-session-1",
+         timestamp: now
+       }}
+    )
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.session_id == "acp-session-1"
+    assert snapshot_entry.turn_count == 2
+  end
+
+  test "orchestrator does not double count duplicate session_started updates for the same session" do
+    issue_id = "issue-duplicate-session-started"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-204",
+      title: "Duplicate session started test",
+      description: "Keep legacy session_started de-duplication",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-204"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :DuplicateSessionStartedOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      agent_id: "codex",
+      agent_kind: "codex_app_server",
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    now = DateTime.utc_now()
+
+    update = %{
+      event: :session_started,
+      agent_id: "codex",
+      agent_kind: "codex_app_server",
+      session_id: "codex-session-1",
+      timestamp: now
+    }
+
+    send(pid, {:codex_worker_update, issue_id, update})
+    send(pid, {:codex_worker_update, issue_id, update})
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot_entry.session_id == "codex-session-1"
+    assert snapshot_entry.turn_count == 1
+  end
+
   test "orchestrator snapshot tracks codex token-count cumulative usage payloads" do
     issue_id = "issue-token-count-snapshot"
 
@@ -978,6 +1143,69 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert remaining_ms <= 10_500
   end
 
+  test "orchestrator honors disabled stall timeout for a specific agent" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      codex_stall_timeout_ms: 1_000
+    )
+
+    issue_id = "issue-cli-stall-disabled"
+    orchestrator_name = Module.concat(__MODULE__, :AgentStallDisabledOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: make_ref(),
+      identifier: "MT-CLI-STALL",
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-CLI-STALL",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-CLI-STALL"
+      },
+      agent_id: "mimocode",
+      agent_kind: "cli_run",
+      agent_stall_timeout_ms: 0,
+      session_id: "mimocode-123",
+      last_codex_message: nil,
+      last_codex_timestamp: stale_activity_at,
+      last_codex_event: :session_started,
+      started_at: stale_activity_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, :tick)
+    Process.sleep(100)
+    state = :sys.get_state(pid)
+
+    assert Process.alive?(worker_pid)
+    assert Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+
+    Process.exit(worker_pid, :normal)
+  end
+
   test "orchestrator blocks stalled workers that are waiting on MCP elicitation" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -1673,6 +1901,51 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert StatusDashboard.humanize_codex_message(unsupported) =~
              "unsupported dynamic tool call rejected (unknown_tool)"
+  end
+
+  test "status dashboard humanizes ACP session updates" do
+    text_update = %{
+      event: :notification,
+      message: %{
+        "method" => "session/update",
+        "params" => %{
+          "update" => %{"kind" => "text", "text" => "working on tests"}
+        }
+      }
+    }
+
+    tool_update = %{
+      event: :notification,
+      message: %{
+        "method" => "session/update",
+        "params" => %{
+          "update" => %{"kind" => "tool_call", "title" => "Edit file"}
+        }
+      }
+    }
+
+    assert StatusDashboard.humanize_codex_message(text_update) == "agent update: working on tests"
+    assert StatusDashboard.humanize_codex_message(tool_update) == "agent tool call: Edit file"
+  end
+
+  test "status dashboard prefers ACP tool name when title is a generic invalid-tool label" do
+    message = %{
+      event: :notification,
+      message: %{
+        "method" => "session/update",
+        "params" => %{
+          "update" => %{
+            "kind" => "tool_call",
+            "title" => "Invalid Tool",
+            "status" => "failed",
+            "toolCall" => %{"name" => "symphony-linear_linear_graphql"}
+          }
+        }
+      }
+    }
+
+    assert StatusDashboard.humanize_codex_message(message) ==
+             "agent tool call failed: symphony-linear_linear_graphql (Invalid Tool)"
   end
 
   test "status dashboard unwraps nested codex payload envelopes" do

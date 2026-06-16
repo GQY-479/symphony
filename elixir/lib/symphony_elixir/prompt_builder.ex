@@ -23,6 +23,30 @@ defmodule SymphonyElixir.PromptBuilder do
       @render_opts
     )
     |> IO.iodata_to_binary()
+    |> ensure_valid_utf8()
+  end
+
+  defp ensure_valid_utf8(binary) when is_binary(binary) do
+    if String.valid?(binary) do
+      binary
+    else
+      replace_invalid_utf8(binary, "")
+    end
+  end
+
+  defp replace_invalid_utf8("", acc), do: acc
+
+  defp replace_invalid_utf8(binary, acc) do
+    case :unicode.characters_to_binary(binary, :utf8, :utf8) do
+      converted when is_binary(converted) ->
+        acc <> converted
+
+      {:error, valid_prefix, <<_invalid, rest::binary>>} ->
+        replace_invalid_utf8(rest, acc <> valid_prefix <> "�")
+
+      {:incomplete, valid_prefix, _rest} ->
+        acc <> valid_prefix <> "�"
+    end
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
