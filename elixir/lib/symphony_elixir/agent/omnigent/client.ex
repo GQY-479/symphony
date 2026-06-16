@@ -11,8 +11,14 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
     timeout_ms = Map.get(params, :timeout_ms, @default_timeout_ms)
     stream_timeout_ms = Map.get(params, :stream_timeout_ms, @default_timeout_ms)
 
-    with {:ok, body} <- create_session_body(fetch!(params, :agent), Map.get(params, :host, %{}), params),
-         {:ok, response} <- post(base_url <> "/v1/sessions", body, timeout_ms),
+    with {:ok, response} <-
+           post_create_session(
+             base_url <> "/v1/sessions",
+             fetch!(params, :agent),
+             Map.get(params, :host, %{}),
+             params,
+             timeout_ms
+           ),
          {:ok, payload} <- decode_2xx(response) do
       session_id = payload["session_id"] || payload["id"]
 
@@ -67,8 +73,30 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
     post_control_event(session, %{"type" => "stop_session", "data" => %{}})
   end
 
+  defp post_create_session(url, %{"type" => "agent_id"} = agent, host, params, timeout_ms) do
+    with {:ok, body} <- create_session_body(agent, host, params) do
+      post(url, body, timeout_ms)
+    end
+  end
+
+  defp post_create_session(url, %{"type" => "bundle_path", "path" => path} = agent, host, params, timeout_ms) do
+    with {:ok, tar_path} <- pack_bundle(path) do
+      try do
+        metadata = create_session_metadata(agent, host, params)
+        fields = bundle_multipart_fields(metadata, tar_path)
+        post_multipart(url, fields, timeout_ms)
+      after
+        File.rm(tar_path)
+      end
+    end
+  end
+
+  defp post_create_session(_url, agent, _host, _params, _timeout_ms) do
+    {:error, {:omnigent_invalid_agent, agent}}
+  end
+
   defp create_session_body(%{"type" => "agent_id", "id" => agent_id}, host, params) do
-    body =
+    metadata =
       %{
         "agent_id" => agent_id,
         "initial_items" => [],
@@ -79,15 +107,49 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
       |> maybe_put("host_id", Map.get(host, "host_id"))
       |> maybe_put("workspace", Map.get(host, "workspace"))
 
-    {:ok, body}
-  end
-
-  defp create_session_body(%{"type" => "bundle_path", "path" => path}, _host, _params) do
-    {:error, {:omnigent_bundle_upload_not_supported_yet, path}}
+    {:ok, metadata}
   end
 
   defp create_session_body(agent, _host, _params) do
     {:error, {:omnigent_invalid_agent, agent}}
+  end
+
+  defp create_session_metadata(%{"type" => "bundle_path", "path" => path}, host, params) do
+    %{
+      "agent" => %{"type" => "bundle_path", "path" => path},
+      "agent_type" => "bundle_path",
+      "bundle_path" => path,
+      "initial_items" => [],
+      "title" => Map.get(params, :title),
+      "labels" => Map.get(params, :labels),
+      "host_type" => "external"
+    }
+    |> maybe_put("host_id", Map.get(host, "host_id"))
+    |> maybe_put("workspace", Map.get(host, "workspace"))
+  end
+
+  defp bundle_multipart_fields(metadata, tar_path) do
+    [
+      metadata: {Jason.encode!(metadata), content_type: "application/json"},
+      bundle: {File.stream!(tar_path, [], 2048), filename: "bundle.tar.gz", content_type: "application/gzip", size: File.stat!(tar_path).size}
+    ]
+  end
+
+  defp pack_bundle(path) when is_binary(path) do
+    tar_path = Path.join(System.tmp_dir!(), "omnigent_bundle_#{System.unique_integer([:positive])}.tar.gz")
+    expanded_path = Path.expand(path)
+
+    case System.cmd("tar", ["-czf", tar_path, "-C", expanded_path, "."], stderr_to_stdout: true) do
+      {_output, 0} ->
+        {:ok, tar_path}
+
+      {output, status} ->
+        File.rm(tar_path)
+        {:error, {:bundle_pack_failed, status, output}}
+    end
+  rescue
+    error ->
+      {:error, {:bundle_pack_failed, :exception, Exception.message(error)}}
   end
 
   defp message_event_body(input_text) do
@@ -201,6 +263,20 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
 
   defp post(url, body, timeout_ms) do
     case Req.post(url, json: body, connect_options: [timeout: timeout_ms], receive_timeout: timeout_ms) do
+      {:ok, %Req.Response{} = response} ->
+        {:ok, response}
+
+      {:error, reason} ->
+        {:error, {:omnigent_transport_error, reason}}
+    end
+  end
+
+  defp post_multipart(url, fields, timeout_ms) do
+    case Req.post(url,
+           form_multipart: fields,
+           connect_options: [timeout: timeout_ms],
+           receive_timeout: timeout_ms
+         ) do
       {:ok, %Req.Response{} = response} ->
         {:ok, response}
 

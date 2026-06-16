@@ -3,6 +3,80 @@ defmodule SymphonyElixir.OmnigentClientTest do
 
   alias SymphonyElixir.Agent.Omnigent.Client
 
+  test "create_session/1 支持 bundle_path 并上传 multipart bundle" do
+    server =
+      SymphonyElixir.FakeOmnigentServer.start!(%{
+        create_body: %{"id" => "conv_bundle_1", "session_id" => "conv_bundle_1"}
+      })
+
+    bundle_dir = Path.join(System.tmp_dir!(), "omnigent_bundle_#{System.unique_integer([:positive])}")
+
+    try do
+      File.mkdir_p!(bundle_dir)
+      File.write!(Path.join(bundle_dir, "agent.yaml"), "name: bundle-agent\n")
+
+      base_url = SymphonyElixir.FakeOmnigentServer.base_url(server)
+
+      assert {:ok, session} =
+               Client.create_session(%{
+                 base_url: base_url,
+                 agent: %{"type" => "bundle_path", "path" => bundle_dir},
+                 host: %{
+                   "mode" => "external",
+                   "host_id" => "host_local",
+                   "workspace" => "/tmp/work"
+                 },
+                 title: "YQE-1: bundle",
+                 labels: %{"symphony_issue_id" => "issue-bundle"},
+                 timeout_ms: 5_000,
+                 stream_timeout_ms: 1_234
+               })
+
+      assert session.session_id == "conv_bundle_1"
+      assert session.base_url == base_url
+      assert session.timeout_ms == 5_000
+      assert session.stream_timeout_ms == 1_234
+      assert session.raw == %{"id" => "conv_bundle_1", "session_id" => "conv_bundle_1"}
+
+      requests = SymphonyElixir.FakeOmnigentServer.requests(server)
+      create_request = Enum.find(requests, &(&1.name == "create_session"))
+
+      assert {"content-type", content_type} =
+               Enum.find(create_request.headers, fn {key, _value} -> key == "content-type" end)
+
+      assert String.starts_with?(content_type, "multipart/form-data")
+      assert create_request.body["metadata"]["host_type"] == "external"
+      assert create_request.body["metadata"]["host_id"] == "host_local"
+      assert create_request.body["metadata"]["workspace"] == "/tmp/work"
+      assert create_request.body["metadata"]["title"] == "YQE-1: bundle"
+      assert create_request.body["metadata"]["labels"] == %{"symphony_issue_id" => "issue-bundle"}
+      assert create_request.body["metadata"]["agent"] == %{"type" => "bundle_path", "path" => bundle_dir}
+      assert create_request.body["metadata"]["initial_items"] == []
+      assert create_request.body["bundle"]["filename"] == "bundle.tar.gz"
+      assert create_request.body["bundle"]["size"] > 0
+    after
+      File.rm_rf!(bundle_dir)
+      SymphonyElixir.FakeOmnigentServer.stop!(server)
+    end
+  end
+
+  test "create_session/1 在 bundle_path 打包失败时返回结构化错误" do
+    missing_bundle_dir =
+      Path.join(System.tmp_dir!(), "missing_omnigent_bundle_#{System.unique_integer([:positive])}")
+
+    assert {:error, {:bundle_pack_failed, status, output}} =
+             Client.create_session(%{
+               base_url: "http://127.0.0.1:1",
+               agent: %{"type" => "bundle_path", "path" => missing_bundle_dir},
+               host: %{},
+               timeout_ms: 5_000
+             })
+
+    assert is_integer(status) or status == :exception
+    assert is_binary(output)
+    assert output != ""
+  end
+
   test "create_session/1 创建 session 并发送正确请求" do
     server =
       SymphonyElixir.FakeOmnigentServer.start!(%{
@@ -170,11 +244,9 @@ defmodule SymphonyElixir.OmnigentClientTest do
 
       assert_receive {:omnigent_event, %{"type" => "session.status", "status" => "running"}}
 
-      assert_receive {:omnigent_event,
-                      %{"type" => "response.output_text.delta", "delta" => "done"}}
+      assert_receive {:omnigent_event, %{"type" => "response.output_text.delta", "delta" => "done"}}
 
-      assert_receive {:omnigent_event,
-                      %{"type" => "response.completed", "response" => %{"id" => "resp_1"}}}
+      assert_receive {:omnigent_event, %{"type" => "response.completed", "response" => %{"id" => "resp_1"}}}
 
       requests = SymphonyElixir.FakeOmnigentServer.requests(server)
       post_event_request = Enum.find(requests, &(&1.name == "post_event"))
@@ -278,8 +350,7 @@ defmodule SymphonyElixir.OmnigentClientTest do
     server =
       SymphonyElixir.FakeOmnigentServer.start!(%{
         stream_events: [
-          {"response.failed",
-           %{"type" => "response.failed", "error" => %{"message" => "boom"}}},
+          {"response.failed", %{"type" => "response.failed", "error" => %{"message" => "boom"}}},
           {nil, "[DONE]"}
         ]
       })

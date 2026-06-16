@@ -44,20 +44,22 @@ defmodule SymphonyElixir.FakeOmnigentServer do
   end
 
   def record_create_session_request(server, conn, body) do
-    record_request(server,
+    record_request(
+      server,
       %{
         name: "create_session",
         method: conn.method,
         path: conn.request_path,
         query: conn.query_string,
         headers: conn.req_headers,
-        body: decode_request_body(body)
+        body: decode_request_body(body, conn.req_headers)
       }
     )
   end
 
   def record_get_session_request(server, conn, session_id) do
-    record_request(server,
+    record_request(
+      server,
       %{
         name: "get_session",
         session_id: session_id,
@@ -71,7 +73,8 @@ defmodule SymphonyElixir.FakeOmnigentServer do
   end
 
   def record_post_event_request(server, conn, session_id, body) do
-    record_request(server,
+    record_request(
+      server,
       %{
         name: "post_event",
         session_id: session_id,
@@ -85,7 +88,8 @@ defmodule SymphonyElixir.FakeOmnigentServer do
   end
 
   def record_stream_request(server, conn, session_id) do
-    record_request(server,
+    record_request(
+      server,
       %{
         name: "stream",
         session_id: session_id,
@@ -173,6 +177,24 @@ defmodule SymphonyElixir.FakeOmnigentServer do
 
   def response_body(body_template, _session_id), do: body_template
 
+  defp decode_request_body(body, headers) when is_binary(body) do
+    content_type =
+      headers
+      |> Enum.find_value(fn
+        {"content-type", value} -> value
+        {"Content-Type", value} -> value
+        _other -> nil
+      end)
+
+    if is_binary(content_type) and String.starts_with?(content_type, "multipart/form-data") do
+      decode_multipart_body(body, content_type)
+    else
+      decode_request_body(body)
+    end
+  end
+
+  defp decode_request_body(body, _headers), do: decode_request_body(body)
+
   defp decode_request_body(""), do: ""
 
   defp decode_request_body(body) when is_binary(body) do
@@ -183,6 +205,120 @@ defmodule SymphonyElixir.FakeOmnigentServer do
   end
 
   defp decode_request_body(body), do: body
+
+  defp decode_multipart_body(body, content_type) do
+    case Regex.run(~r/boundary=(?:"([^"]+)"|([^;]+))/, content_type) do
+      [_, quoted_boundary, unquoted_boundary] ->
+        decode_multipart_parts(body, quoted_boundary || unquoted_boundary)
+
+      _other ->
+        body
+    end
+  end
+
+  defp decode_multipart_parts(body, boundary) do
+    body
+    |> :binary.split("--" <> boundary, [:global])
+    |> Enum.reduce(%{}, fn part, acc ->
+      part = trim_multipart_prefix(part)
+
+      cond do
+        part in ["", "--", "--\r\n", "--\n"] ->
+          acc
+
+        true ->
+          decode_multipart_part(part, acc)
+      end
+    end)
+  end
+
+  defp decode_multipart_part(part, acc) do
+    with [raw_headers, raw_value] <- split_multipart_part(part),
+         disposition when is_binary(disposition) <- multipart_header(raw_headers, "content-disposition"),
+         name when is_binary(name) <- multipart_disposition_param(disposition, "name") do
+      value = trim_multipart_suffix(raw_value)
+      Map.put(acc, name, decode_multipart_value(name, disposition, value))
+    else
+      _other -> acc
+    end
+  end
+
+  defp split_multipart_part(part) do
+    case :binary.split(part, "\r\n\r\n") do
+      [_headers, _value] = split -> split
+      [_only] -> :binary.split(part, "\n\n")
+    end
+  end
+
+  defp trim_multipart_prefix(<<"\r\n", rest::binary>>), do: rest
+  defp trim_multipart_prefix(<<"\n", rest::binary>>), do: rest
+  defp trim_multipart_prefix(part), do: part
+
+  defp trim_multipart_suffix(value) do
+    cond do
+      has_binary_suffix?(value, "\r\n") -> trim_binary_suffix(value, "\r\n")
+      has_binary_suffix?(value, "\n") -> trim_binary_suffix(value, "\n")
+      true -> value
+    end
+  end
+
+  defp has_binary_suffix?(value, suffix) do
+    value_size = byte_size(value)
+    suffix_size = byte_size(suffix)
+
+    value_size >= suffix_size and
+      binary_part(value, value_size - suffix_size, suffix_size) == suffix
+  end
+
+  defp trim_binary_suffix(value, suffix) do
+    value_size = byte_size(value)
+    suffix_size = byte_size(suffix)
+
+    if has_binary_suffix?(value, suffix) do
+      binary_part(value, 0, value_size - suffix_size)
+    else
+      value
+    end
+  end
+
+  defp multipart_header(raw_headers, wanted_name) do
+    raw_headers
+    |> String.split(~r/\r?\n/, trim: true)
+    |> Enum.find_value(fn line ->
+      case String.split(line, ":", parts: 2) do
+        [name, value] ->
+          if String.downcase(String.trim(name)) == wanted_name do
+            String.trim(value)
+          end
+
+        _other ->
+          nil
+      end
+    end)
+  end
+
+  defp multipart_disposition_param(disposition, name) do
+    case Regex.run(~r/(?:^|;\s*)#{Regex.escape(name)}="([^"]*)"/, disposition) do
+      [_, value] -> value
+      _other -> nil
+    end
+  end
+
+  defp decode_multipart_value("metadata", _disposition, value) do
+    case Jason.decode(value) do
+      {:ok, decoded} -> decoded
+      {:error, _reason} -> value
+    end
+  end
+
+  defp decode_multipart_value("bundle", disposition, value) do
+    %{
+      "filename" => multipart_disposition_param(disposition, "filename"),
+      "size" => byte_size(value)
+    }
+  end
+
+  defp decode_multipart_value(_name, _disposition, value), do: value
 
   def stream_events(behavior) do
     Map.get(behavior, :stream_events, @default_stream_events)
