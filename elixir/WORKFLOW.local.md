@@ -59,10 +59,26 @@ agents:
     timeout_ms: 600000
     read_timeout_ms: 15000
     close_timeout_ms: 1000
+  omnigent:
+    kind: omnigent_http
+    command: omnigent
+    base_url: "http://127.0.0.1:27748"
+    host:
+      mode: external
+      host_id: "host_cbfe34ada4064a3cb4e294896b8cf349"
+      workspace: "{{workspace}}"
+    agent:
+      type: agent_id
+      id: "ag_057995d1517418e6839f51d340785dd6"
+    timeout_ms: 3600000
+    stream_timeout_ms: 600000
+    runner_ready_timeout_ms: 60000
+    runner_ready_poll_ms: 500
 routing:
   default_agent: codex
   by_label:
     "agent:mimo": mimocode
+    "agent:omnigent": omnigent
 server:
   port: 4000
 ---
