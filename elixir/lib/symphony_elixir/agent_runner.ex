@@ -14,7 +14,7 @@ defmodule SymphonyElixir.AgentRunner do
           {:continue, Issue.t()} | {:done, Issue.t()} | {:error, term()}
   def continue_with_issue_for_test(%Issue{} = issue, issue_state_fetcher)
       when is_function(issue_state_fetcher, 1) do
-    continue_with_issue?(issue, issue_state_fetcher)
+    continue_with_issue?(issue, nil, issue_state_fetcher, false)
   end
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
@@ -98,7 +98,10 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, resolved_agent} <- resolve_agent(issue, opts),
          {:ok, backend_module} <- backend_module(resolved_agent) do
-      backend_opts = Keyword.put(opts, :worker_host, worker_host)
+      backend_opts =
+        opts
+        |> Keyword.put(:worker_host, worker_host)
+        |> Keyword.put(:enforce_continuation_route?, not Keyword.has_key?(opts, :agent_id))
 
       run_agent_turns_with_backend(
         backend_module,
@@ -207,7 +210,7 @@ defmodule SymphonyElixir.AgentRunner do
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{session_id(turn_session)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
+      case continue_with_issue?(issue, resolved_agent, issue_state_fetcher, Keyword.get(opts, :enforce_continuation_route?, true)) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
           send_worker_issue_state(codex_update_recipient, refreshed_issue)
 
@@ -296,10 +299,13 @@ defmodule SymphonyElixir.AgentRunner do
     """
   end
 
-  defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
+  defp continue_with_issue?(%Issue{id: issue_id} = issue, resolved_agent, issue_state_fetcher, enforce_route?)
+       when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
-        if active_issue_state?(refreshed_issue.state) and issue_routable?(refreshed_issue) do
+        if active_issue_state?(refreshed_issue.state) and
+             issue_routable?(refreshed_issue) and
+             issue_still_routed_to_agent?(refreshed_issue, resolved_agent, enforce_route?) do
           {:continue, refreshed_issue}
         else
           {:done, refreshed_issue}
@@ -313,7 +319,7 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+  defp continue_with_issue?(issue, _resolved_agent, _issue_state_fetcher, _enforce_route?), do: {:done, issue}
 
   defp active_issue_state?(state_name) when is_binary(state_name) do
     normalized_state = normalize_issue_state(state_name)
@@ -326,6 +332,17 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp issue_routable?(%Issue{} = issue) do
     Issue.routable?(issue, Config.settings!().tracker.required_labels)
+  end
+
+  defp issue_still_routed_to_agent?(_issue, _resolved_agent, false), do: true
+
+  defp issue_still_routed_to_agent?(_issue, nil, true), do: true
+
+  defp issue_still_routed_to_agent?(%Issue{} = issue, %{id: agent_id, kind: agent_kind}, true) do
+    case Router.resolve(issue, Config.settings!()) do
+      {:ok, %{id: ^agent_id, kind: ^agent_kind}} -> true
+      _other -> false
+    end
   end
 
   defp resolve_agent(%Issue{} = issue, opts) do
