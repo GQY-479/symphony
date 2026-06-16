@@ -154,6 +154,7 @@ defmodule SymphonyElixir.Config do
          :ok <- validate_agent_command(agent_id, Map.get(agent, "command"), agents_configured),
          :ok <- validate_agent_integer(agent_id, agent, "timeout_ms", greater_than: 0),
          :ok <- validate_agent_integer(agent_id, agent, "read_timeout_ms", greater_than: 0),
+         :ok <- validate_agent_integer(agent_id, agent, "close_timeout_ms", greater_than: 0),
          :ok <- validate_agent_integer(agent_id, agent, "stall_timeout_ms", greater_than_or_equal_to: 0),
          :ok <- validate_agent_integer(agent_id, agent, "max_output_bytes", greater_than: 0) do
       validate_kind_specific_agent_config(agent_id, agent)
@@ -175,9 +176,7 @@ defmodule SymphonyElixir.Config do
   defp validate_agent_kind(_agent_id, kind) when kind in @supported_agent_kinds, do: :ok
 
   defp validate_agent_kind(agent_id, kind) do
-    invalid_config(
-      "agents.#{agent_id}.kind must be one of #{Enum.join(@supported_agent_kinds, ", ")}, got #{inspect(kind)}"
-    )
+    invalid_config("agents.#{agent_id}.kind must be one of #{Enum.join(@supported_agent_kinds, ", ")}, got #{inspect(kind)}")
   end
 
   defp validate_agent_command("codex", command, false) when is_binary(command) do
@@ -235,7 +234,9 @@ defmodule SymphonyElixir.Config do
   end
 
   defp validate_kind_specific_agent_config(agent_id, %{"kind" => "acp_stdio"} = agent) do
-    with :ok <- validate_optional_string_list(agent_id, agent, "args") do
+    with :ok <- validate_optional_string_list(agent_id, agent, "args"),
+         :ok <- validate_optional_string_map(agent_id, agent, "config_options"),
+         :ok <- validate_optional_acp_mcp_config(agent_id, agent) do
       validate_optional_enum(agent_id, agent, "permission_policy", @acp_permission_policies)
     end
   end
@@ -283,6 +284,92 @@ defmodule SymphonyElixir.Config do
         invalid_config("agents.#{agent_id}.#{field} must be a list of strings, got #{inspect(value)}")
     end
   end
+
+  defp validate_optional_string_map(agent_id, agent, field) do
+    case Map.fetch(agent, field) do
+      :error ->
+        :ok
+
+      {:ok, value} when is_map(value) ->
+        if Enum.all?(value, fn {key, option_value} -> is_binary(key) and is_binary(option_value) end) do
+          :ok
+        else
+          invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string values")
+        end
+
+      {:ok, value} ->
+        invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string values, got #{inspect(value)}")
+    end
+  end
+
+  defp validate_optional_acp_mcp_config(agent_id, agent) do
+    case Map.fetch(agent, "mcp") do
+      :error ->
+        :ok
+
+      {:ok, nil} ->
+        :ok
+
+      {:ok, mcp} when is_map(mcp) ->
+        with :ok <- validate_optional_boolean(agent_id, mcp, "mcp.linear_tools"),
+             :ok <- validate_nested_optional_string(agent_id, mcp, "mcp.url"),
+             :ok <- validate_nested_optional_enum(agent_id, mcp, "mcp.type", ["http", "sse"]),
+             :ok <- validate_nested_optional_list(agent_id, mcp, "mcp.headers") do
+          validate_nested_optional_list(agent_id, mcp, "mcp.env")
+        end
+
+      {:ok, value} ->
+        invalid_config("agents.#{agent_id}.mcp must be a map, got #{inspect(value)}")
+    end
+  end
+
+  defp validate_optional_boolean(agent_id, config, field) do
+    key = nested_field_key(field)
+
+    case Map.fetch(config, key) do
+      :error -> :ok
+      {:ok, value} when is_boolean(value) -> :ok
+      {:ok, value} -> invalid_config("agents.#{agent_id}.#{field} must be a boolean, got #{inspect(value)}")
+    end
+  end
+
+  defp validate_nested_optional_string(agent_id, config, field) do
+    key = nested_field_key(field)
+
+    case Map.fetch(config, key) do
+      :error -> :ok
+      {:ok, value} when is_binary(value) -> :ok
+      {:ok, value} -> invalid_config("agents.#{agent_id}.#{field} must be a string, got #{inspect(value)}")
+    end
+  end
+
+  defp validate_nested_optional_list(agent_id, config, field) do
+    key = nested_field_key(field)
+
+    case Map.fetch(config, key) do
+      :error -> :ok
+      {:ok, value} when is_list(value) -> :ok
+      {:ok, value} -> invalid_config("agents.#{agent_id}.#{field} must be a list, got #{inspect(value)}")
+    end
+  end
+
+  defp validate_nested_optional_enum(agent_id, config, field, allowed) do
+    key = nested_field_key(field)
+
+    case Map.fetch(config, key) do
+      :error ->
+        :ok
+
+      {:ok, value} ->
+        if value in allowed do
+          :ok
+        else
+          invalid_config("agents.#{agent_id}.#{field} must be one of #{Enum.join(allowed, ", ")}, got #{inspect(value)}")
+        end
+    end
+  end
+
+  defp nested_field_key(field), do: field |> String.split(".") |> List.last()
 
   defp validate_optional_enum(agent_id, agent, field, allowed) do
     case Map.fetch(agent, field) do

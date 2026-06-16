@@ -19,6 +19,7 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.active_states == ["Todo", "In Progress"]
     assert config.tracker.terminal_states == ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]
     assert config.tracker.assignee == nil
+    assert config.workspace.preserve_terminal == false
     assert config.agent.max_turns == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
@@ -32,6 +33,9 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
     assert Config.settings!().polling.interval_ms == 45_000
+
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_preserve_terminal: true)
+    assert Config.settings!().workspace.preserve_terminal == true
 
     write_workflow_file!(Workflow.workflow_file_path(), max_turns: 0)
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
@@ -147,8 +151,14 @@ defmodule SymphonyElixir.CoreTest do
           command: "mimo",
           args: ["acp", "--cwd", "{{workspace}}"],
           permission_policy: "reject",
+          config_options: %{model: "mimo/mimo-auto"},
+          mcp: %{
+            linear_tools: true,
+            url: "http://127.0.0.1:4000/mcp/linear-tools"
+          },
           timeout_ms: 3_600_000,
           read_timeout_ms: 5_000,
+          close_timeout_ms: 1_000,
           stall_timeout_ms: 300_000
         }
       },
@@ -160,6 +170,14 @@ defmodule SymphonyElixir.CoreTest do
     assert settings.agents["mimocode"]["kind"] == "acp_stdio"
     assert settings.agents["mimocode"]["args"] == ["acp", "--cwd", "{{workspace}}"]
     assert settings.agents["mimocode"]["permission_policy"] == "reject"
+    assert settings.agents["mimocode"]["config_options"] == %{"model" => "mimo/mimo-auto"}
+
+    assert settings.agents["mimocode"]["mcp"] == %{
+             "linear_tools" => true,
+             "url" => "http://127.0.0.1:4000/mcp/linear-tools"
+           }
+
+    assert settings.agents["mimocode"]["close_timeout_ms"] == 1_000
     assert settings.routing.by_label == %{"agent:mimo" => "mimocode"}
   end
 
@@ -195,6 +213,72 @@ defmodule SymphonyElixir.CoreTest do
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "agents.mimocode.permission_policy must be one of reject, fail, allow"
+  end
+
+  test "workflow config rejects invalid acp_stdio close timeout" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        mimocode: %{
+          kind: "acp_stdio",
+          command: "mimo",
+          args: ["acp"],
+          close_timeout_ms: 0
+        }
+      },
+      routing: %{default_agent: "mimocode"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.mimocode.close_timeout_ms must be an integer greater than 0"
+  end
+
+  test "workflow config rejects invalid acp_stdio config options" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        mimocode: %{
+          kind: "acp_stdio",
+          command: "mimo",
+          args: ["acp"],
+          config_options: %{model: 123}
+        }
+      },
+      routing: %{default_agent: "mimocode"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.mimocode.config_options must be a map of string keys to string values"
+  end
+
+  test "workflow config rejects invalid acp_stdio mcp config" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        mimocode: %{
+          kind: "acp_stdio",
+          command: "mimo",
+          args: ["acp"],
+          mcp: %{linear_tools: "yes"}
+        }
+      },
+      routing: %{default_agent: "mimocode"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.mimocode.mcp.linear_tools must be a boolean"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        mimocode: %{
+          kind: "acp_stdio",
+          command: "mimo",
+          args: ["acp"],
+          mcp: %{linear_tools: true, url: 123}
+        }
+      },
+      routing: %{default_agent: "mimocode"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.mimocode.mcp.url must be a string"
   end
 
   test "codex app-server agents validate policy overlay types" do
@@ -661,6 +745,71 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "terminal issue state preserves workspace when configured" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-terminal-preserve-#{System.unique_integer([:positive])}"
+      )
+
+    issue_id = "issue-preserve-terminal"
+    issue_identifier = "MT-557"
+    workspace = Path.join(test_root, issue_identifier)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: test_root,
+        workspace_preserve_terminal: true,
+        tracker_active_states: ["Todo", "In Progress", "In Review"],
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"]
+      )
+
+      File.mkdir_p!(test_root)
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "mimo-smoke-result.txt"), "keep evidence\n")
+
+      agent_pid =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: issue_identifier,
+            issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      issue = %Issue{
+        id: issue_id,
+        identifier: issue_identifier,
+        state: "Closed",
+        title: "Done",
+        description: "Completed",
+        labels: []
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+      refute Map.has_key?(updated_state.running, issue_id)
+      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Process.alive?(agent_pid)
+      assert File.exists?(Path.join(workspace, "mimo-smoke-result.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "missing running issues stop active agents without cleaning the workspace" do
     test_root =
       Path.join(
@@ -991,6 +1140,67 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 500, 1_100)
   end
 
+  test "normal worker exit with refreshed terminal state does not schedule continuation retry" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-terminal-normal-exit-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    workspace = Path.join(workspace_root, "MT-559")
+
+    try do
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "marker.txt"), "terminal")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root
+      )
+
+      issue_id = "issue-terminal-normal-exit"
+      ref = make_ref()
+      orchestrator_name = Module.concat(__MODULE__, :TerminalNormalExitOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      initial_state = :sys.get_state(pid)
+
+      running_entry = %{
+        pid: self(),
+        ref: ref,
+        identifier: "MT-559",
+        issue: %Issue{id: issue_id, identifier: "MT-559", state: "Done"},
+        started_at: DateTime.utc_now()
+      }
+
+      :sys.replace_state(pid, fn _ ->
+        initial_state
+        |> Map.put(:running, %{issue_id => running_entry})
+        |> Map.put(:claimed, MapSet.new([issue_id]))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      send(pid, {:DOWN, ref, :process, self(), :normal})
+      Process.sleep(50)
+      state = :sys.get_state(pid)
+
+      refute Map.has_key?(state.running, issue_id)
+      assert MapSet.member?(state.completed, issue_id)
+      refute MapSet.member?(state.claimed, issue_id)
+      refute Map.has_key?(state.retry_attempts, issue_id)
+      refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
 
@@ -1223,6 +1433,57 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Ticket S-1 Refactor backend request path"
     assert prompt =~ "labels=backend"
     assert prompt =~ "attempt=3"
+  end
+
+  test "prompt builder preserves utf-8 when workflow template contains chinese text" do
+    workflow_prompt = "处理工单 {{ issue.identifier }}，请直接回复完成。"
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
+
+    issue = %Issue{
+      identifier: "S-UTF8",
+      title: "UTF-8 prompt",
+      description: "验证中文模板",
+      state: "Todo",
+      url: "https://example.org/issues/S-UTF8",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert String.valid?(prompt)
+    assert prompt == "处理工单 S-UTF8，请直接回复完成。"
+  end
+
+  test "prompt builder preserves utf-8 when chinese text follows a multiline template" do
+    workflow_prompt = """
+    You are working on `{{ issue.identifier }}`.
+
+    Description:
+    {{ issue.description }}
+
+    执行要求：
+    1. 只为当前 ticket 做最小且安全的修改。
+    2. 最终回复只总结已完成动作和阻塞项。
+    """
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
+
+    issue = %Issue{
+      identifier: "S-UTF8-LONG",
+      title: "UTF-8 prompt",
+      description: "desc",
+      state: "Todo",
+      url: "https://example.org/issues/S-UTF8-LONG",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert String.valid?(prompt)
+    assert Jason.encode!(%{"prompt" => prompt})
+    assert prompt =~ "执行要求"
+    refute String.contains?(prompt, <<0xE5, 0x0A, 0xA8>>)
   end
 
   test "prompt builder renders issue datetime fields without crashing" do

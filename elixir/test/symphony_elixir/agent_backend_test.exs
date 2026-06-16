@@ -184,6 +184,64 @@ defmodule SymphonyElixir.AgentBackendTest do
     end
   end
 
+  test "cli backend emits session metadata and normalized MiMo token usage" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-cli-backend-mimo-usage-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace = Path.join(test_root, "workspace")
+      executable = Path.join(test_root, "fake-mimo-cli")
+      File.mkdir_p!(workspace)
+
+      File.write!(executable, """
+      #!/bin/sh
+      printf '%s\\n' '{"type":"step_start","sessionID":"ses_mimo_123","part":{"type":"step-start"}}'
+      printf '%s\\n' '{"type":"step_finish","sessionID":"ses_mimo_123","part":{"type":"step-finish","tokens":{"input":12,"output":4,"total":16}}}'
+      """)
+
+      File.chmod!(executable, 0o755)
+
+      resolved_agent = %{
+        id: "mimocode",
+        kind: "cli_run",
+        config: %{"command" => executable, "timeout_ms" => 5_000}
+      }
+
+      parent = self()
+
+      assert {:ok, _result} =
+               Backend.CliRun.run_issue(
+                 workspace,
+                 %Issue{id: "issue-cli-mimo-usage", identifier: "MT-908"},
+                 "prompt",
+                 resolved_agent,
+                 on_message: fn message -> send(parent, {:cli_message, message}) end
+               )
+
+      assert_receive {:cli_message,
+                      %{
+                        event: :session_started,
+                        session_id: session_id,
+                        agent_id: "mimocode",
+                        agent_kind: "cli_run"
+                      }}
+
+      assert session_id =~ "mimocode-"
+
+      assert_receive {:cli_message,
+                      %{
+                        event: :cli_output,
+                        session_id: "ses_mimo_123",
+                        usage: %{"input_tokens" => 12, "output_tokens" => 4, "total_tokens" => 16}
+                      }}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "cli backend returns an error for non-zero exits" do
     test_root =
       Path.join(
@@ -315,6 +373,92 @@ defmodule SymphonyElixir.AgentBackendTest do
       assert output == "abcdefghij"
     after
       File.rm_rf(test_root)
+    end
+  end
+
+  test "cli backend cleans up child processes on timeout" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-cli-backend-timeout-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    child_pid_file = Path.join(test_root, "child.pid")
+
+    try do
+      workspace = Path.join(test_root, "workspace")
+      executable = Path.join(test_root, "parent-cli")
+      child_executable = Path.join(test_root, "child-cli")
+      File.mkdir_p!(workspace)
+
+      File.write!(child_executable, """
+      #!/bin/sh
+      sleep 60
+      """)
+
+      File.write!(executable, """
+      #!/bin/sh
+      "#{child_executable}" &
+      printf '%s\\n' "$!" > "#{child_pid_file}"
+      wait
+      """)
+
+      File.chmod!(child_executable, 0o755)
+      File.chmod!(executable, 0o755)
+
+      timeout_agent = %{
+        id: "slow-cli",
+        kind: "cli_run",
+        config: %{"command" => executable, "timeout_ms" => 50}
+      }
+
+      assert {:error, :cli_timeout} =
+               Backend.CliRun.run_issue(
+                 workspace,
+                 %Issue{id: "issue-cli-timeout-cleanup", identifier: "MT-909"},
+                 "prompt",
+                 timeout_agent,
+                 []
+               )
+
+      child_pid = child_pid_file |> File.read!() |> String.trim() |> String.to_integer()
+
+      refute eventually_process_alive?(child_pid, 1_000)
+    after
+      if File.exists?(child_pid_file) do
+        child_pid = child_pid_file |> File.read!() |> String.trim()
+        System.cmd("kill", ["-KILL", child_pid], stderr_to_stdout: true)
+      end
+
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp eventually_process_alive?(pid, timeout_ms) when is_integer(pid) and timeout_ms >= 0 do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    eventually_process_alive?(pid, deadline, true)
+  end
+
+  defp eventually_process_alive?(pid, deadline, last_seen_alive?) do
+    alive? = process_alive?(pid)
+
+    cond do
+      not alive? ->
+        false
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        last_seen_alive?
+
+      true ->
+        Process.sleep(25)
+        eventually_process_alive?(pid, deadline, alive?)
+    end
+  end
+
+  defp process_alive?(pid) when is_integer(pid) do
+    case System.cmd("kill", ["-0", Integer.to_string(pid)], stderr_to_stdout: true) do
+      {_output, 0} -> true
+      {_output, _status} -> false
     end
   end
 end
