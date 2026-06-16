@@ -16,10 +16,16 @@ defmodule SymphonyElixir.FakeOmnigentServer do
   end
 
   def stop!(server) do
-    if Process.alive?(server) do
-      GenServer.call(server, :stop)
-    else
-      :ok
+    try do
+      if Process.alive?(server) do
+        GenServer.call(server, :stop)
+      else
+        :ok
+      end
+    catch
+      :exit, {:noproc, _} -> :ok
+      :exit, :normal -> :ok
+      :exit, {:normal, _} -> :ok
     end
   end
 

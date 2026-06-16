@@ -30,38 +30,36 @@ defmodule SymphonyElixir.Agent.Omnigent.Sse do
   end
 
   defp parse_frame(frame) do
-    {event, data_lines} =
+    {event, data_lines, has_data_line?} =
       frame
       |> String.split("\n")
-      |> Enum.reduce({nil, []}, fn line, {event, data_lines} ->
+      |> Enum.reduce({nil, [], false}, fn line, {event, data_lines, has_data_line?} ->
         cond do
           line == "" ->
-            {event, data_lines}
+            {event, data_lines, has_data_line?}
 
           String.starts_with?(line, ":") ->
-            {event, data_lines}
+            {event, data_lines, has_data_line?}
 
           String.starts_with?(line, "event:") ->
-            {parse_value(line, "event:"), data_lines}
+            {parse_value(line, "event:"), data_lines, has_data_line?}
 
           String.starts_with?(line, "data:") ->
-            {event, [parse_value(line, "data:") | data_lines]}
+            {event, [parse_value(line, "data:") | data_lines], true}
 
           true ->
-            {event, data_lines}
+            {event, data_lines, has_data_line?}
         end
       end)
 
-    data =
-      data_lines
-      |> Enum.reverse()
-      |> Enum.join("\n")
-
-    case {event, data} do
-      {_, ""} ->
+    case {has_data_line?, event, data_lines |> Enum.reverse() |> Enum.join("\n")} do
+      {false, _, _} ->
         []
 
-      {event, data} ->
+      {true, event, ""} ->
+        [%{event: event, data: ""}]
+
+      {true, event, data} ->
         [%{event: event, data: decode_data(data)}]
     end
   end
