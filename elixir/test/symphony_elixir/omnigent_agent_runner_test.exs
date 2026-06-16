@@ -188,6 +188,8 @@ defmodule SymphonyElixir.OmnigentAgentRunnerTest do
       stop_events =
         Enum.filter(post_events, &(&1.body == %{"type" => "stop_session", "data" => %{}}))
 
+      interrupt_events = Enum.filter(post_events, &(&1.body["type"] == "interrupt"))
+
       first_message_text = request_message_text(Enum.at(message_events, 0))
       second_message_text = request_message_text(Enum.at(message_events, 1))
 
@@ -195,8 +197,9 @@ defmodule SymphonyElixir.OmnigentAgentRunnerTest do
       assert length(post_events) == 3
       assert length(message_events) == 2
       assert length(stop_events) == 1
+      assert length(interrupt_events) == 0
       assert Enum.map(message_events, & &1.session_id) == ["conv_fake_1", "conv_fake_1"]
-      assert first_message_text =~ "You are an agent for this repository."
+      refute first_message_text =~ "Continuation guidance:"
       assert second_message_text =~ "Continuation guidance:"
       assert second_message_text =~ "continuation turn #2 of 2"
     after
