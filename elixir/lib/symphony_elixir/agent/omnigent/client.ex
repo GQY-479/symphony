@@ -126,19 +126,27 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
   end
 
   defp consume_stream(response, session_id, on_event) do
-    result =
-      Enum.reduce_while(response.body, {:cont, {Sse.new(), ""}}, fn chunk, {:cont, {sse, output_text}} ->
-        {events, next_sse} = Sse.feed(sse, chunk)
+    try do
+      result =
+        Enum.reduce_while(response.body, {:cont, {Sse.new(), ""}}, fn chunk, {:cont, {sse, output_text}} ->
+          {events, next_sse} = Sse.feed(sse, chunk)
 
-        case handle_stream_events(events, next_sse, output_text, session_id, on_event) do
-          {:cont, next_state} -> {:cont, {:cont, next_state}}
-          {:halt, outcome} -> {:halt, outcome}
-        end
-      end)
+          case handle_stream_events(events, next_sse, output_text, session_id, on_event) do
+            {:cont, next_state} -> {:cont, {:cont, next_state}}
+            {:halt, outcome} -> {:halt, outcome}
+          end
+        end)
 
-    case result do
-      {:cont, _state} -> {:error, :omnigent_stream_ended}
-      other -> other
+      case result do
+        {:cont, _state} -> {:error, :omnigent_stream_ended}
+        other -> other
+      end
+    rescue
+      error ->
+        {:error, {:omnigent_transport_error, error}}
+    catch
+      kind, reason ->
+        {:error, {:omnigent_transport_error, {kind, reason}}}
     end
   end
 

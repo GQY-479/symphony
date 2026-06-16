@@ -190,6 +190,31 @@ defmodule SymphonyElixir.OmnigentClientTest do
     end
   end
 
+  test "run_turn/3 在 stream async 超时后返回 transport 错误而不是抛异常" do
+    server =
+      SymphonyElixir.FakeOmnigentServer.start!(%{
+        stream_delay_ms: 100,
+        stream_events: [
+          {"response.output_text.delta", %{"type" => "response.output_text.delta", "delta" => "late"}},
+          {"response.completed", %{"type" => "response.completed", "response" => %{"id" => "resp_1"}}},
+          {nil, "[DONE]"}
+        ]
+      })
+
+    try do
+      session = %{
+        base_url: SymphonyElixir.FakeOmnigentServer.base_url(server),
+        session_id: "conv_fake_1",
+        stream_timeout_ms: 10
+      }
+
+      assert {:error, {:omnigent_transport_error, _reason}} =
+               Client.run_turn(session, "hello omnigent", timeout_ms: 5_000)
+    after
+      SymphonyElixir.FakeOmnigentServer.stop!(server)
+    end
+  end
+
   test "run_turn/3 遇到 response.failed 返回错误" do
     server =
       SymphonyElixir.FakeOmnigentServer.start!(%{

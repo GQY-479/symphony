@@ -217,6 +217,10 @@ defmodule SymphonyElixir.FakeOmnigentServer do
     |> response_body(session_id)
   end
 
+  def stream_delay_ms(behavior) do
+    Map.get(behavior, :stream_delay_ms, 0)
+  end
+
   defp normalize_behavior(behavior) when is_map(behavior), do: Map.new(behavior)
   defp normalize_behavior(behavior) when is_list(behavior), do: Map.new(behavior)
   defp normalize_behavior(behavior), do: Map.new(behavior)
@@ -281,6 +285,8 @@ defmodule SymphonyElixir.FakeOmnigentServer do
             |> put_resp_header("cache-control", "no-cache")
             |> put_resp_header("connection", "keep-alive")
             |> send_chunked(200)
+
+          Process.sleep(SymphonyElixir.FakeOmnigentServer.stream_delay_ms(behavior))
 
           Enum.reduce(SymphonyElixir.FakeOmnigentServer.stream_events(behavior), conn, fn event, conn ->
             {:ok, conn} = chunk(conn, SymphonyElixir.FakeOmnigentServer.format_stream_event(event))
