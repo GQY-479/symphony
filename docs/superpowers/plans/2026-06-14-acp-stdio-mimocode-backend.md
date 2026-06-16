@@ -1,1151 +1,613 @@
 # ACP Stdio MiMo-Code Backend 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向 agent worker：** 实施本计划时必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，并按任务逐项执行。步骤使用 checkbox（`- [ ]`）语法跟踪进度。
 
-**Goal:** 让 MiMo-Code 通过 ACP stdio 作为平级 session backend 接入 Symphony，并能通过 `agent:mimo` 路由承接 Linear issue。
+**目标:** 让 MiMo-Code 通过 ACP stdio 作为与 Codex 平级的 agent backend 接入 Symphony，并能通过 Linear issue 路由承接任务。
 
-**Architecture:** 在现有 multi-agent 架构上新增 `acp_stdio` backend kind。`AgentRunner` 已经能识别实现 `start_session/3`、`run_turn/5`、`stop_session/1` 的 session backend，因此本计划把 ACP client 做成独立模块，再由 `AcpStdio` backend 映射 Symphony 的 session/turn/event 语义。真实 MiMo-Code 验证必须作为阶段门禁；如果实测 ACP 行为与官方协议或源码明显不一致，暂停实现并回到设计文档修订。
+**架构:** 在现有多 agent 编排模型上新增 `acp_stdio` session backend。Symphony 仍然以 Linear issue 为任务边界，Orchestrator 负责调度、并发、重试和 workspace 生命周期，AgentRunner 只依赖 `start_session/3`、`run_turn/5`、`stop_session/1` 这类 session backend contract。MiMo-Code 的 ACP 协议细节封装在 `AcpStdio.Client` 中，避免污染 Codex app-server backend 和 Orchestrator。
 
-**Tech Stack:** Elixir、ExUnit、Jason、Erlang Port、ACP v1 JSON-RPC over ndjson stdio、MiMo-Code `mimo acp`。
-
----
-
-## 阶段门禁
-
-每个阶段都遵循：前期调研 -> 局部设计 -> 实现 -> 验证。
-
-- 阶段 1：确认真实 `mimo acp` 能启动，且官方 ACP 基础方法与 MiMo-Code 源码一致。
-- 阶段 2：配置层允许 `kind: acp_stdio`，并能拒绝错误配置。
-- 阶段 3：backend dispatcher 能解析 `acp_stdio`。
-- 阶段 4：ACP client 能通过 fake ACP server 完成 initialize、session/new、session/prompt、session/cancel。
-- 阶段 5：`AcpStdio` backend 能被 `AgentRunner` 当作 session backend 使用。
-- 阶段 6：真实 `mimo acp` smoke test 能证明 Linear issue 可被 MiMo-Code 承接，或给出明确阻塞原因。
-
-如果任一阶段发现事实推翻设计，例如 `mimo acp` 不使用 ACP v1 方法、不能以非交互方式启动、或必须依赖 HTTP server 才能 prompt，则停止后续代码实现，更新 `docs/superpowers/specs/2026-06-14-acp-stdio-mimocode-backend-design.md` 后重新评审。
-
-## 文件结构
-
-- Modify: `elixir/lib/symphony_elixir/config.ex`
-  - 负责语义校验，新增 `acp_stdio` kind、`args` 类型校验、`permission_policy` 校验。
-- Modify: `elixir/lib/symphony_elixir/agent/backend.ex`
-  - 负责 backend kind 到模块的分发，新增 `acp_stdio`。
-- Create: `elixir/lib/symphony_elixir/agent/acp_stdio/client.ex`
-  - 负责 ACP JSON-RPC over stdio：启动子进程、发送 request/notification、读取 response/notification、处理 permission request、timeout 和 cancel。
-- Create: `elixir/lib/symphony_elixir/agent/backend/acp_stdio.ex`
-  - 负责实现 Symphony session backend contract，包装 `AcpStdio.Client`，并统一 annotation agent event。
-- Modify: `elixir/test/symphony_elixir/core_test.exs`
-  - 覆盖配置解析和验证。
-- Modify: `elixir/test/symphony_elixir/agent_backend_test.exs`
-  - 覆盖 dispatcher、ACP client 和 backend 行为。
-- Create: `elixir/docs/mimocode_acp_smoke_test.md`
-  - 记录真实 MiMo-Code 调研和 smoke test 命令。
-- Modify: `elixir/docs/multi_agent_backends.md`
-  - 增加 `acp_stdio` 配置示例和当前能力边界。
+**技术栈:** Elixir、ExUnit、Jason、Erlang Port、ACP v1 JSON-RPC over ndjson stdio、MiMo-Code `mimo acp`、Linear issue routing。
 
 ---
 
-### Task 1: 真实 ACP 前期调研门禁
+## 本轮范围
 
-**Files:**
-- Create: `elixir/docs/mimocode_acp_smoke_test.md`
+本轮只做 MiMo-Code 的 ACP stdio 接入闭环。
 
-- [ ] **Step 1: 确认官方 ACP 基础方法**
+包含：
+- 新增 `acp_stdio` agent backend kind。
+- 实现 ACP stdio client 和 `AcpStdio` session backend。
+- 通过 `agent:mimo -> mimocode` 这类路由规则把 Linear issue 派给 MiMo-Code。
+- 用 fake ACP server 覆盖协议行为。
+- 做真实 `mimo acp` smoke test，并记录真实环境差异。
 
-依据：
+不包含：
+- OpenCode 复用同一 backend（仅保留为后续占位）。
+- OpenCode 的 `acp` / `serve` 能力验证。
+- HTTP server backend。
+- 将 dashboard 历史字段从 `codex_*` 一次性迁移到 `agent_*`。
+- 修改 MiMo-Code 本体实现。
 
-- `https://agentclientprotocol.com/protocol/v1/overview`
-- `https://agentclientprotocol.com/protocol/v1/schema`
-- `https://raw.githubusercontent.com/XiaomiMiMo/MiMo-Code/main/packages/opencode/src/cli/cmd/acp.ts`
+OpenCode 复用只作为后续占位保留，本轮明确跳过，不进入执行任务，也不作为本轮验收条件。
 
-已知事实：
+## 阶段执行原则
 
-- ACP 使用 JSON-RPC 2.0。
-- 典型流程是 `initialize` -> `session/new` -> `session/prompt`。
-- prompt 过程中 agent 会发送 `session/update`。
-- cancel 使用 `session/cancel` notification。
-- permission 请求由 agent 调 client 的 `session/request_permission`。
-- MiMo-Code `acp` 命令使用 `@agentclientprotocol/sdk` 的 `AgentSideConnection` 和 `ndJsonStream`，并支持 `--cwd`。
+本轮纳入执行的阶段只有阶段 0、1、2、3 和 3B。每个阶段都按“前期调研 -> 设计 -> 实现 -> 验证”的顺序推进；如果真实 MiMo-Code 行为推翻当前假设，先修订方案文档，再继续后续实现。OpenCode 复用只作为原阶段 4 占位保留，本轮跳过，也不允许在本轮验收中要求 OpenCode smoke 通过。
 
-- [ ] **Step 2: 在本机确认 `mimo acp` 可发现**
+## 设计依据
 
-Run:
-
-```powershell
-wsl.exe -e bash -lc 'command -v mimo && mimo acp --help'
-```
-
-Expected: 输出 `mimo` 路径，并显示 `acp` 命令帮助，帮助中包含 `--cwd` 或 working directory 相关参数。
-
-如果失败，执行：
-
-```powershell
-wsl.exe -e bash -lc 'command -v mimocode || command -v mimo-code || true'
-```
-
-Expected: 如果存在替代命令，记录真实命令名；如果没有命令，停止真实 smoke，但继续 fake server 实现。
-
-- [ ] **Step 3: 写调研记录**
-
-Create `elixir/docs/mimocode_acp_smoke_test.md`:
-
-```markdown
-# MiMo-Code ACP Smoke Test
-
-## 调研结论
-
-- ACP 官方流程：`initialize` -> `session/new` -> `session/prompt`，运行中通过 `session/update` 推送事件，取消通过 `session/cancel`。
-- MiMo-Code 源码中的 `acp` 命令使用 `@agentclientprotocol/sdk` 的 `AgentSideConnection` 和 `ndJsonStream`。
-- 本机命令探测结果：
-- `mimo` 路径：粘贴 Step 2 的命令输出。
-  - `mimo acp --help`：记录是否可启动，以及是否支持 `--cwd`。
-
-## 方案门禁
-
-如果本机 `mimo acp` 无法启动，Symphony 侧仍先用 fake ACP server 实现协议适配，但真实验收保持未通过。
-
-如果 `mimo acp` 不支持 ACP v1 的 `initialize`、`session/new`、`session/prompt`，暂停实现并回到设计文档修订。
-
-## 后续 smoke 命令
-
-```powershell
-wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mimo acp --cwd "$PWD"'
-```
-```
-
-- [ ] **Step 4: 提交调研文档**
-
-Run:
-
-```powershell
-git add elixir/docs/mimocode_acp_smoke_test.md
-git commit -m "docs: 记录 MiMo-Code ACP 调研门禁"
-```
-
-Expected: 只提交 `elixir/docs/mimocode_acp_smoke_test.md`。
-
----
-
-### Task 2: 配置层支持 `acp_stdio`
-
-**Files:**
-- Modify: `elixir/lib/symphony_elixir/config.ex`
-- Modify: `elixir/test/symphony_elixir/core_test.exs`
-
-- [ ] **Step 1: 写失败测试：允许 acp_stdio agent 配置**
-
-Modify `elixir/test/symphony_elixir/core_test.exs`，在已有 agent 配置测试附近加入：
-
-```elixir
-test "workflow config accepts acp_stdio agents" do
-  settings =
-    parse!(%{
-      agents: %{
-        codex: %{kind: "codex_app_server", command: "codex app-server"},
-        mimocode: %{
-          kind: "acp_stdio",
-          command: "mimo",
-          args: ["acp", "--cwd", "{{workspace}}"],
-          permission_policy: "reject",
-          timeout_ms: 3_600_000,
-          read_timeout_ms: 5_000,
-          stall_timeout_ms: 300_000
-        }
-      },
-      routing: %{default_agent: "codex", by_label: %{"agent:mimo" => "mimocode"}}
-    })
-
-  assert settings.agents["mimocode"]["kind"] == "acp_stdio"
-  assert settings.agents["mimocode"]["args"] == ["acp", "--cwd", "{{workspace}}"]
-  assert settings.agents["mimocode"]["permission_policy"] == "reject"
-  assert settings.routing.by_label == %{"agent:mimo" => "mimocode"}
-end
-```
-
-- [ ] **Step 2: 写失败测试：拒绝错误 ACP 配置**
-
-Modify `elixir/test/symphony_elixir/core_test.exs`:
-
-```elixir
-test "workflow config rejects invalid acp_stdio args" do
-  write_workflow_file!(Workflow.workflow_file_path(),
-    agents: %{
-      mimocode: %{
-        kind: "acp_stdio",
-        command: "mimo",
-        args: "acp",
-        permission_policy: "reject"
-      }
-    },
-    routing: %{default_agent: "mimocode"}
-  )
-
-  assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-  assert message =~ "agents.mimocode.args must be a list of strings"
-end
-```
-
-- [ ] **Step 3: 写失败测试：拒绝未知 permission policy**
-
-Modify `elixir/test/symphony_elixir/core_test.exs`:
-
-```elixir
-test "workflow config rejects invalid acp_stdio permission policy" do
-  write_workflow_file!(Workflow.workflow_file_path(),
-    agents: %{
-      mimocode: %{
-        kind: "acp_stdio",
-        command: "mimo",
-        args: ["acp"],
-        permission_policy: "ask"
-      }
-    },
-    routing: %{default_agent: "mimocode"}
-  )
-
-  assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-  assert message =~ "agents.mimocode.permission_policy must be one of reject, fail, allow"
-end
-```
-
-- [ ] **Step 4: 实现配置校验**
-
-Modify `elixir/lib/symphony_elixir/config.ex`:
-
-```elixir
-@supported_agent_kinds ["codex_app_server", "cli_run", "acp_stdio"]
-@acp_permission_policies ["reject", "fail", "allow"]
-```
-
-替换 kind 校验：
-
-```elixir
-defp validate_agent_kind(_agent_id, kind) when kind in @supported_agent_kinds, do: :ok
-
-defp validate_agent_kind(agent_id, kind) do
-  invalid_config(
-    "agents.#{agent_id}.kind must be one of #{Enum.join(@supported_agent_kinds, ", ")}, got #{inspect(kind)}"
-  )
-end
-```
-
-在 `validate_agent/3` 中把最后一行改为：
-
-```elixir
-validate_kind_specific_agent_config(agent_id, agent)
-```
-
-新增：
-
-```elixir
-defp validate_kind_specific_agent_config(agent_id, %{"kind" => "codex_app_server"} = agent) do
-  with :ok <- validate_optional_string_or_map(agent_id, agent, "approval_policy"),
-       :ok <- validate_optional_string(agent_id, agent, "thread_sandbox") do
-    validate_optional_map(agent_id, agent, "turn_sandbox_policy")
-  end
-end
-
-defp validate_kind_specific_agent_config(agent_id, %{"kind" => "acp_stdio"} = agent) do
-  with :ok <- validate_optional_string_list(agent_id, agent, "args") do
-    validate_optional_enum(agent_id, agent, "permission_policy", @acp_permission_policies)
-  end
-end
-
-defp validate_kind_specific_agent_config(_agent_id, _agent), do: :ok
-```
-
-保留旧的 `validate_codex_agent_config/2` 逻辑时，必须避免两个函数同时被调用。推荐直接改名为 `validate_kind_specific_agent_config/2`。
-
-新增 helper：
-
-```elixir
-defp validate_optional_string_list(agent_id, agent, field) do
-  case Map.fetch(agent, field) do
-    :error ->
-      :ok
-
-    {:ok, value} when is_list(value) ->
-      if Enum.all?(value, &is_binary/1) do
-        :ok
-      else
-        invalid_config("agents.#{agent_id}.#{field} must be a list of strings")
-      end
-
-    {:ok, value} ->
-      invalid_config("agents.#{agent_id}.#{field} must be a list of strings, got #{inspect(value)}")
-  end
-end
-
-defp validate_optional_enum(agent_id, agent, field, allowed) do
-  case Map.fetch(agent, field) do
-    :error ->
-      :ok
-
-    {:ok, value} when value in allowed ->
-      :ok
-
-    {:ok, value} ->
-      invalid_config("agents.#{agent_id}.#{field} must be one of #{Enum.join(allowed, ", ")}, got #{inspect(value)}")
-  end
-end
-```
-
-- [ ] **Step 5: 运行配置测试**
-
-Run:
-
-```powershell
-wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/core_test.exs'
-```
-
-Expected: core test 文件通过。
-
-- [ ] **Step 6: 提交配置层变更**
-
-Run:
-
-```powershell
-git add elixir/lib/symphony_elixir/config.ex elixir/test/symphony_elixir/core_test.exs
-git commit -m "feat: 支持 acp_stdio agent 配置"
-```
-
-Expected: 只提交配置和配置测试。
-
----
-
-### Task 3: 注册 `acp_stdio` backend
-
-**Files:**
-- Modify: `elixir/lib/symphony_elixir/agent/backend.ex`
-- Modify: `elixir/test/symphony_elixir/agent_backend_test.exs`
-- Create: `elixir/lib/symphony_elixir/agent/backend/acp_stdio.ex`
-
-- [ ] **Step 1: 写失败测试：dispatcher 支持 acp_stdio**
-
-Modify `elixir/test/symphony_elixir/agent_backend_test.exs`:
-
-```elixir
-test "module_for resolves supported backend kinds and rejects unknown kinds" do
-  assert Backend.module_for("codex_app_server") == SymphonyElixir.Agent.Backend.CodexAppServer
-  assert Backend.module_for("cli_run") == SymphonyElixir.Agent.Backend.CliRun
-  assert Backend.module_for("acp_stdio") == SymphonyElixir.Agent.Backend.AcpStdio
-
-  assert_raise ArgumentError, ~r/unknown agent backend kind/, fn ->
-    Backend.module_for("not-real")
-  end
-end
-```
-
-- [ ] **Step 2: 实现 dispatcher 映射**
-
-Modify `elixir/lib/symphony_elixir/agent/backend.ex`:
-
-```elixir
-def module_for("acp_stdio"), do: SymphonyElixir.Agent.Backend.AcpStdio
-```
-
-- [ ] **Step 3: 创建最小 backend 模块**
-
-Create `elixir/lib/symphony_elixir/agent/backend/acp_stdio.ex`:
-
-```elixir
-defmodule SymphonyElixir.Agent.Backend.AcpStdio do
-  @moduledoc """
-  Agent backend that runs an ACP-compatible agent over stdio.
-  """
-
-  @behaviour SymphonyElixir.Agent.Backend
-
-  @impl true
-  def run_issue(_workspace, _issue, _prompt, _resolved_agent, _opts) do
-    {:error, :acp_stdio_session_backend_only}
-  end
-
-  @spec start_session(Path.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def start_session(_workspace, _resolved_agent, _opts) do
-    {:error, :acp_stdio_not_implemented}
-  end
-
-  @spec run_turn(map(), Path.t(), map(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def run_turn(_session, _workspace, _issue, _prompt, _opts) do
-    {:error, :acp_stdio_not_implemented}
-  end
-
-  @spec stop_session(map()) :: :ok
-  def stop_session(_session), do: :ok
-end
-```
-
-- [ ] **Step 4: 运行 backend dispatcher 测试**
-
-Run:
-
-```powershell
-wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/agent_backend_test.exs'
-```
-
-Expected: 只有未实现行为相关测试失败；dispatcher 测试通过。如果该文件仍只有 dispatcher 新断言，则全文件通过。
-
-- [ ] **Step 5: 提交 backend 注册**
-
-Run:
-
-```powershell
-git add elixir/lib/symphony_elixir/agent/backend.ex elixir/lib/symphony_elixir/agent/backend/acp_stdio.ex elixir/test/symphony_elixir/agent_backend_test.exs
-git commit -m "feat: 注册 acp_stdio backend"
-```
-
-Expected: 只提交 dispatcher、最小 backend 和对应测试。
-
----
-
-### Task 4: 实现 ACP stdio client
-
-**Files:**
-- Create: `elixir/lib/symphony_elixir/agent/acp_stdio/client.ex`
-- Modify: `elixir/test/symphony_elixir/agent_backend_test.exs`
-
-- [ ] **Step 1: 写 fake ACP server helper**
-
-Modify `elixir/test/symphony_elixir/agent_backend_test.exs`，新增 helper：
-
-```elixir
-defp write_fake_acp_server!(test_root, behavior) do
-  executable = Path.join(test_root, "fake-acp-server")
-  behavior_json = Jason.encode!(behavior)
-
-  File.write!(executable, """
-  #!/bin/sh
-  elixir -e '
-  behavior = Jason.decode!(System.get_env("FAKE_ACP_BEHAVIOR"))
-
-  read_loop = fn read_loop ->
-    case IO.read(:line) do
-      :eof ->
-        :ok
-
-      line ->
-        message = Jason.decode!(String.trim(line))
-        method = Map.get(message, "method")
-        id = Map.get(message, "id")
-
-        response =
-          case method do
-            "initialize" ->
-              %{"jsonrpc" => "2.0", "id" => id, "result" => %{"protocolVersion" => 1, "agentCapabilities" => %{}, "authMethods" => []}}
-
-            "session/new" ->
-              %{"jsonrpc" => "2.0", "id" => id, "result" => %{"sessionId" => Map.get(behavior, "sessionId", "fake-acp-session")}}
-
-            "session/prompt" ->
-              if Map.get(behavior, "permission") do
-                IO.puts(Jason.encode!(%{"jsonrpc" => "2.0", "id" => 9001, "method" => "session/request_permission", "params" => %{"sessionId" => Map.get(behavior, "sessionId", "fake-acp-session"), "toolCall" => %{"title" => "write"}, "options" => [%{"id" => "allow_once"}, %{"id" => "reject"}]}}))
-              end
-
-              IO.puts(Jason.encode!(%{"jsonrpc" => "2.0", "method" => "session/update", "params" => %{"sessionId" => Map.get(behavior, "sessionId", "fake-acp-session"), "update" => %{"kind" => "text", "text" => "working"}}}))
-              %{"jsonrpc" => "2.0", "id" => id, "result" => %{"stopReason" => Map.get(behavior, "stopReason", "end_turn")}}
-
-            "session/close" ->
-              %{"jsonrpc" => "2.0", "id" => id, "result" => %{}}
-
-            _ ->
-              %{"jsonrpc" => "2.0", "id" => id, "error" => %{"code" => -32601, "message" => "method not found"}}
-          end
-
-        if response, do: IO.puts(Jason.encode!(response))
-        read_loop.(read_loop)
-    end
-  end
-
-  read_loop.(read_loop)
-  '
-  """)
-
-  File.chmod!(executable, 0o755)
-  {executable, [{"FAKE_ACP_BEHAVIOR", behavior_json}]}
-end
-```
-
-- [ ] **Step 2: 写失败测试：client 完成基础流程**
-
-Modify `elixir/test/symphony_elixir/agent_backend_test.exs`:
-
-```elixir
-test "acp stdio client starts a session and completes a prompt" do
-  test_root = Path.join(System.tmp_dir!(), "symphony-acp-client-#{System.unique_integer([:positive])}")
-
-  try do
-    workspace = Path.join(test_root, "workspace")
-    File.mkdir_p!(workspace)
-    {executable, env} = write_fake_acp_server!(test_root, %{"sessionId" => "fake-acp-session"})
-
-    parent = self()
-
-    assert {:ok, session} =
-             SymphonyElixir.Agent.AcpStdio.Client.start_session(
-               workspace,
-               %{command: executable, args: [], env: env, permission_policy: "reject", timeout_ms: 5_000},
-               fn event -> send(parent, {:acp_event, event}) end
-             )
-
-    assert session.session_id == "fake-acp-session"
-
-    assert {:ok, result} =
-             SymphonyElixir.Agent.AcpStdio.Client.prompt(session, "hello", timeout_ms: 5_000)
-
-    assert Map.get(result, "stop_reason") == "end_turn"
-
-    assert_receive {:acp_event, %{event: :session_started, session_id: "fake-acp-session"}}
-    assert_receive {:acp_event, %{event: :notification, payload: %{"method" => "session/update"}}}
-
-    assert :ok = SymphonyElixir.Agent.AcpStdio.Client.stop_session(session)
-  after
-    File.rm_rf(test_root)
-  end
-end
-```
-
-- [ ] **Step 3: 实现 client 基础结构**
-
-Create `elixir/lib/symphony_elixir/agent/acp_stdio/client.ex`:
-
-```elixir
-defmodule SymphonyElixir.Agent.AcpStdio.Client do
-  @moduledoc """
-  Minimal ACP JSON-RPC client over newline-delimited stdio.
-  """
-
-  @type session :: %{
-          port: port(),
-          session_id: String.t(),
-          os_pid: integer() | nil,
-          permission_policy: String.t(),
-          on_event: (map() -> term())
-        }
-
-  @spec start_session(Path.t(), map(), (map() -> term())) :: {:ok, session()} | {:error, term()}
-  def start_session(workspace, config, on_event) when is_binary(workspace) and is_function(on_event, 1) do
-    with {:ok, executable} <- resolve_command(Map.fetch!(config, :command)),
-         {:ok, port} <- start_port(executable, Map.get(config, :args, []), workspace, Map.get(config, :env, [])),
-         session0 <- %{
-           port: port,
-           session_id: nil,
-           os_pid: port_os_pid(port),
-           permission_policy: Map.get(config, :permission_policy, "reject"),
-           on_event: on_event
-         },
-         {:ok, _init} <- request(session0, "initialize", initialize_params(), Map.get(config, :timeout_ms, 5_000)),
-         {:ok, result} <- request(session0, "session/new", %{"cwd" => Path.expand(workspace)}, Map.get(config, :timeout_ms, 5_000)),
-         {:ok, session_id} <- extract_session_id(result) do
-      session = %{session0 | session_id: session_id}
-      emit(session, :session_started, %{"result" => result})
-      {:ok, session}
-    else
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @spec prompt(session(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def prompt(%{session_id: session_id} = session, prompt, opts) when is_binary(prompt) do
-    timeout_ms = Keyword.get(opts, :timeout_ms, 3_600_000)
-    params = %{"sessionId" => session_id, "prompt" => [%{"type" => "text", "text" => prompt}]}
-
-    case request(session, "session/prompt", params, timeout_ms) do
-      {:ok, result} ->
-        {:ok, %{"stop_reason" => Map.get(result, "stopReason"), "raw" => result}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @spec cancel(session()) :: :ok
-  def cancel(%{session_id: session_id} = session) do
-    notify(session, "session/cancel", %{"sessionId" => session_id})
-  end
-
-  @spec stop_session(session()) :: :ok
-  def stop_session(%{session_id: session_id} = session) when is_binary(session_id) do
-    _ = request(session, "session/close", %{"sessionId" => session_id}, 1_000)
-    close_port(session.port)
-  end
-
-  def stop_session(%{port: port}), do: close_port(port)
-
-  defp initialize_params do
-    %{
-      "protocolVersion" => 1,
-      "clientInfo" => %{"name" => "Symphony", "version" => "dev"},
-      "clientCapabilities" => %{
-        "fs" => %{"readTextFile" => false, "writeTextFile" => false},
-        "terminal" => false
-      }
-    }
-  end
-
-  defp request(session, method, params, timeout_ms) do
-    id = System.unique_integer([:positive])
-    send_json(session.port, %{"jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params})
-    await_response(session, id, timeout_ms)
-  end
-
-  defp notify(session, method, params) do
-    send_json(session.port, %{"jsonrpc" => "2.0", "method" => method, "params" => params})
-    :ok
-  end
-
-  defp await_response(session, id, timeout_ms) do
-    receive do
-      {port, {:data, data}} when port == session.port ->
-        data
-        |> to_string()
-        |> String.split("\n", trim: true)
-        |> handle_lines(session, id, timeout_ms)
-
-      {port, {:exit_status, status}} when port == session.port ->
-        {:error, {:acp_exit, status}}
-    after
-      timeout_ms ->
-        cancel(session)
-        {:error, :acp_timeout}
-    end
-  end
-
-  defp handle_lines([], session, id, timeout_ms), do: await_response(session, id, timeout_ms)
-
-  defp handle_lines([line | rest], session, id, timeout_ms) do
-    case Jason.decode(line) do
-      {:ok, %{"id" => ^id, "result" => result}} ->
-        {:ok, result}
-
-      {:ok, %{"id" => ^id, "error" => error}} ->
-        {:error, {:acp_error, error}}
-
-      {:ok, %{"id" => request_id, "method" => "session/request_permission", "params" => params}} ->
-        handle_permission_request(session, request_id, params)
-        handle_lines(rest, session, id, timeout_ms)
-
-      {:ok, %{"method" => method} = notification} ->
-        emit(session, notification_event(method), notification)
-        handle_lines(rest, session, id, timeout_ms)
-
-      {:error, reason} ->
-        emit(session, :malformed, %{"line" => line, "reason" => inspect(reason)})
-        handle_lines(rest, session, id, timeout_ms)
-    end
-  end
-
-  defp handle_permission_request(%{permission_policy: "allow"} = session, request_id, params) do
-    emit(session, :approval_auto_approved, params)
-    send_json(session.port, %{"jsonrpc" => "2.0", "id" => request_id, "result" => %{"outcome" => %{"outcome" => "selected", "optionId" => "allow_once"}}})
-  end
-
-  defp handle_permission_request(%{permission_policy: "fail"} = session, request_id, params) do
-    emit(session, :approval_required, params)
-    send_json(session.port, %{"jsonrpc" => "2.0", "id" => request_id, "result" => %{"outcome" => %{"outcome" => "cancelled"}}})
-  end
-
-  defp handle_permission_request(session, request_id, params) do
-    emit(session, :permission_rejected, params)
-    send_json(session.port, %{"jsonrpc" => "2.0", "id" => request_id, "result" => %{"outcome" => %{"outcome" => "rejected"}}})
-  end
-
-  defp notification_event("session/update"), do: :notification
-  defp notification_event(_method), do: :other_message
-
-  defp send_json(port, payload) do
-    Port.command(port, Jason.encode!(payload) <> "\n")
-  end
-
-  defp start_port(executable, args, workspace, env) do
-    port =
-      Port.open(
-        {:spawn_executable, String.to_charlist(executable)},
-        [
-          :binary,
-          :exit_status,
-          args: Enum.map(args, &String.to_charlist(to_string(&1))),
-          cd: String.to_charlist(workspace),
-          env: Enum.map(env, fn {key, value} -> {String.to_charlist(key), String.to_charlist(value)} end)
-        ]
-      )
-
-    {:ok, port}
-  rescue
-    error in [ArgumentError, ErlangError] ->
-      {:error, {:acp_start_failed, executable, Exception.message(error)}}
-  end
-
-  defp resolve_command(command) when is_binary(command) do
-    cond do
-      Path.type(command) == :absolute and File.exists?(command) -> {:ok, command}
-      executable = System.find_executable(command) -> {:ok, executable}
-      true -> {:error, {:acp_command_not_found, command}}
-    end
-  end
-
-  defp extract_session_id(%{"sessionId" => session_id}) when is_binary(session_id), do: {:ok, session_id}
-  defp extract_session_id(result), do: {:error, {:acp_session_id_missing, result}}
-
-  defp emit(session, event, payload) do
-    session.on_event.(%{
-      event: event,
-      timestamp: DateTime.utc_now(),
-      session_id: session.session_id,
-      codex_app_server_pid: os_pid_string(session.os_pid),
-      payload: payload
-    })
-  end
-
-  defp port_os_pid(port) do
-    case :erlang.port_info(port, :os_pid) do
-      {:os_pid, os_pid} when is_integer(os_pid) -> os_pid
-      _ -> nil
-    end
-  end
-
-  defp os_pid_string(os_pid) when is_integer(os_pid), do: Integer.to_string(os_pid)
-  defp os_pid_string(_os_pid), do: nil
-
-  defp close_port(port) when is_port(port) do
-    Port.close(port)
-    :ok
-  rescue
-    ArgumentError -> :ok
-  end
-end
-```
-
-- [ ] **Step 4: 运行 client 测试**
-
-Run:
-
-```powershell
-wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/agent_backend_test.exs'
-```
-
-Expected: 新增 client 基础流程测试通过。
-
-- [ ] **Step 5: 提交 ACP client**
-
-Run:
-
-```powershell
-git add elixir/lib/symphony_elixir/agent/acp_stdio/client.ex elixir/test/symphony_elixir/agent_backend_test.exs
-git commit -m "feat: 添加 ACP stdio client"
-```
-
-Expected: 只提交 client 和测试。
-
----
-
-### Task 5: 实现 `AcpStdio` backend
-
-**Files:**
-- Modify: `elixir/lib/symphony_elixir/agent/backend/acp_stdio.ex`
-- Modify: `elixir/test/symphony_elixir/agent_backend_test.exs`
-
-- [ ] **Step 1: 写失败测试：backend annotation 和 prompt**
-
-Modify `elixir/test/symphony_elixir/agent_backend_test.exs`:
-
-```elixir
-test "acp backend starts session, annotates events, and runs prompt" do
-  test_root = Path.join(System.tmp_dir!(), "symphony-acp-backend-#{System.unique_integer([:positive])}")
-
-  try do
-    workspace = Path.join(test_root, "workspace")
-    File.mkdir_p!(workspace)
-    {executable, env} = write_fake_acp_server!(test_root, %{"sessionId" => "fake-acp-session"})
-
-    resolved_agent = %{
-      id: "mimocode",
-      kind: "acp_stdio",
-      config: %{
-        "command" => executable,
-        "args" => [],
-        "permission_policy" => "reject",
-        "timeout_ms" => 5_000,
-        "env" => env
-      }
-    }
-
-    parent = self()
-
-    assert {:ok, session} =
-             Backend.AcpStdio.start_session(
-               workspace,
-               resolved_agent,
-               on_message: fn message -> send(parent, {:acp_backend_message, message}) end
-             )
-
-    assert {:ok, result} =
-             Backend.AcpStdio.run_turn(
-               session,
-               workspace,
-               %Issue{id: "issue-acp-backend", identifier: "MT-910"},
-               "perform acp task",
-               on_message: fn message -> send(parent, {:acp_backend_message, message}) end
-             )
-
-    assert result.session_id == "fake-acp-session"
-
-    assert_receive {:acp_backend_message,
-                    %{
-                      event: :session_started,
-                      agent_id: "mimocode",
-                      agent_kind: "acp_stdio",
-                      session_id: "fake-acp-session"
-                    }}
-
-    assert_receive {:acp_backend_message,
-                    %{
-                      event: :turn_completed,
-                      agent_id: "mimocode",
-                      agent_kind: "acp_stdio",
-                      session_id: "fake-acp-session"
-                    }}
-
-    assert :ok = Backend.AcpStdio.stop_session(session)
-  after
-    File.rm_rf(test_root)
-  end
-end
-```
-
-- [ ] **Step 2: 实现 backend**
-
-Modify `elixir/lib/symphony_elixir/agent/backend/acp_stdio.ex`:
-
-```elixir
-defmodule SymphonyElixir.Agent.Backend.AcpStdio do
-  @moduledoc """
-  Agent backend that runs an ACP-compatible agent over stdio.
-  """
-
-  @behaviour SymphonyElixir.Agent.Backend
-
-  alias SymphonyElixir.Agent.AcpStdio.Client
-
-  @default_timeout_ms 3_600_000
-
-  @impl true
-  def run_issue(_workspace, _issue, _prompt, _resolved_agent, _opts) do
-    {:error, :acp_stdio_session_backend_only}
-  end
-
-  @spec start_session(Path.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
-  def start_session(workspace, resolved_agent, opts) do
-    config = agent_config(resolved_agent)
-    on_message = Keyword.get(opts, :on_message, &default_on_message/1)
-
-    client_config = %{
-      command: Map.get(config, "command"),
-      args: build_args(config, workspace),
-      env: Map.get(config, "env", []),
-      permission_policy: Map.get(config, "permission_policy", "reject"),
-      timeout_ms: Map.get(config, "read_timeout_ms", Map.get(config, "timeout_ms", 5_000))
-    }
-
-    Client.start_session(workspace, client_config, annotated_on_message(on_message, resolved_agent))
-    |> case do
-      {:ok, session} ->
-        {:ok, Map.merge(session, %{resolved_agent: resolved_agent, timeout_ms: Map.get(config, "timeout_ms", @default_timeout_ms)})}
-
-      error ->
-        error
-    end
-  end
-
-  @spec run_turn(map(), Path.t(), map(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def run_turn(session, _workspace, _issue, prompt, opts) do
-    timeout_ms = Keyword.get(opts, :timeout_ms, Map.get(session, :timeout_ms, @default_timeout_ms))
-
-    case Client.prompt(session, prompt, timeout_ms: timeout_ms) do
-      {:ok, result} ->
-        emit_turn_completed(session, result)
-        {:ok, %{session_id: session.session_id, stop_reason: Map.get(result, "stop_reason"), raw: result}}
-
-      {:error, :acp_timeout} = error ->
-        Client.cancel(session)
-        error
-
-      error ->
-        error
-    end
-  end
-
-  @spec stop_session(map()) :: :ok
-  def stop_session(session) when is_map(session), do: Client.stop_session(session)
-
-  defp build_args(config, workspace) do
-    config
-    |> Map.get("args", [])
-    |> Enum.map(&String.replace(to_string(&1), "{{workspace}}", workspace))
-  end
-
-  defp annotated_on_message(on_message, resolved_agent) do
-    fn message ->
-      message
-      |> Map.put(:agent_id, agent_id(resolved_agent))
-      |> Map.put(:agent_kind, agent_kind(resolved_agent))
-      |> Map.put_new(:timestamp, DateTime.utc_now())
-      |> on_message.()
-    end
-  end
-
-  defp emit_turn_completed(session, result) do
-    session.on_event.(%{
-      event: :turn_completed,
-      timestamp: DateTime.utc_now(),
-      agent_id: agent_id(session.resolved_agent),
-      agent_kind: agent_kind(session.resolved_agent),
-      session_id: session.session_id,
-      codex_app_server_pid: Map.get(session, :codex_app_server_pid),
-      payload: result
-    })
-  end
-
-  defp agent_id(resolved_agent), do: Map.get(resolved_agent, :id) || Map.get(resolved_agent, "id")
-  defp agent_kind(resolved_agent), do: Map.get(resolved_agent, :kind) || Map.get(resolved_agent, "kind")
-  defp agent_config(resolved_agent), do: Map.get(resolved_agent, :config) || Map.get(resolved_agent, "config") || %{}
-  defp default_on_message(_message), do: :ok
-end
-```
-
-注意：实现时如果 `Client` session 使用字符串 key，就统一改为 atom key。不要混用。
-
-- [ ] **Step 3: 运行 backend 测试**
-
-Run:
-
-```powershell
-wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/agent_backend_test.exs'
-```
-
-Expected: 新增 ACP backend 测试通过。
-
-- [ ] **Step 4: 提交 backend 实现**
-
-Run:
-
-```powershell
-git add elixir/lib/symphony_elixir/agent/backend/acp_stdio.ex elixir/test/symphony_elixir/agent_backend_test.exs
-git commit -m "feat: 实现 acp_stdio backend"
-```
-
-Expected: 只提交 backend 和测试。
-
----
-
-### Task 6: AgentRunner 集成验证
-
-**Files:**
-- Modify: `elixir/test/symphony_elixir/core_test.exs`
-- Modify: `elixir/test/symphony_elixir/agent_backend_test.exs`
-
-- [ ] **Step 1: 写集成测试：session backend 被 AgentRunner 使用**
-
-在现有 `AgentRunner` 相关测试附近增加一条测试。使用 fake ACP executable，并配置 `routing.default_agent: "mimocode"`。
-
-测试形态：
-
-```elixir
-test "AgentRunner runs acp_stdio agents as session backends" do
-  test_root = Path.join(System.tmp_dir!(), "symphony-acp-runner-#{System.unique_integer([:positive])}")
-
-  try do
-    workspace_root = Path.join(test_root, "workspaces")
-    workspace = Path.join(workspace_root, "MT-911-acp-runner")
-    File.mkdir_p!(workspace)
-    {executable, env} = write_fake_acp_server!(test_root, %{"sessionId" => "fake-acp-session"})
-
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_kind: "memory",
-      workspace_root: workspace_root,
-      agents: %{
-        mimocode: %{
-          kind: "acp_stdio",
-          command: executable,
-          args: [],
-          permission_policy: "reject",
-          timeout_ms: 5_000,
-          env: env
-        }
-      },
-      routing: %{default_agent: "mimocode"}
-    )
-
-    issue = %Issue{id: "issue-acp-runner", identifier: "MT-911", title: "ACP runner", state: "Done"}
-    assert :ok = AgentRunner.run(issue, nil, agent_id: "mimocode", max_turns: 1)
-  after
-    File.rm_rf(test_root)
-  end
-end
-```
-
-- [ ] **Step 2: 运行相关测试**
-
-Run:
-
-```powershell
-wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/agent_backend_test.exs test/symphony_elixir/core_test.exs'
-```
-
-Expected: 两个测试文件通过。
-
-- [ ] **Step 3: 提交 AgentRunner 集成测试**
-
-Run:
-
-```powershell
-git add elixir/test/symphony_elixir/agent_backend_test.exs elixir/test/symphony_elixir/core_test.exs
-git commit -m "test: 验证 AgentRunner 使用 acp_stdio session backend"
-```
-
-Expected: 只提交测试文件。
-
----
-
-### Task 7: 文档和真实 MiMo smoke
-
-**Files:**
-- Modify: `elixir/docs/multi_agent_backends.md`
-- Modify: `elixir/docs/mimocode_acp_smoke_test.md`
-
-- [ ] **Step 1: 更新 backend 文档**
-
-Modify `elixir/docs/multi_agent_backends.md`，新增 `acp_stdio` 说明：
-
-```markdown
-## `acp_stdio`
-
-`acp_stdio` 用于通过 ACP stdio 协议接入 MiMo-Code。它是 session backend，会在一次 worker attempt 内保持同一个 ACP session，并将 Symphony continuation turn 映射为同一 session 内的后续 `session/prompt`。
-
-示例：
+`SPEC.md` 对 Symphony 的定位是 scheduler/runner，而不是 agent 互相嵌套调用的工具层。按这个模型，Codex、MiMo-Code 和后续其他 agent 应该在配置与调度层平级：
 
 ```yaml
 agents:
+  codex:
+    kind: codex_app_server
+    command: "codex app-server"
+
   mimocode:
     kind: acp_stdio
-    command: "mimo"
+    command: "/home/gqy47/.npm-global/bin/mimo"
     args:
       - "acp"
       - "--cwd"
       - "{{workspace}}"
     permission_policy: reject
+    config_options:
+      model: "mimo/mimo-auto"
     timeout_ms: 3600000
+    read_timeout_ms: 60000
+    close_timeout_ms: 3000
 
 routing:
+  default_agent: codex
   by_label:
     "agent:mimo": mimocode
+    "agent:codex": codex
 ```
 
-第一版权限策略：
+如果 Codex 要把工作交给 MiMo-Code，推荐动作是创建或更新 Linear issue，并打上 `agent:mimo` 标签。Symphony 下一轮轮询后会根据路由规则把该 issue 派给 `mimocode` backend。这样任务边界、状态变更和审计记录仍保留在 Linear 中，符合 SPEC 的编排模型。
 
-- `reject`：默认值，自动拒绝 ACP permission request。
-- `fail`：收到 permission request 后失败当前 turn。
-- `allow`：自动允许 permission request。
+## 已知真实 MiMo-Code 差异
 
-真实 MiMo-Code 验证见 [`mimocode_acp_smoke_test.md`](mimocode_acp_smoke_test.md)。
+当前真实环境中的 MiMo-Code 入口为：
+
+```text
+/home/gqy47/.npm-global/bin/mimo
 ```
 
-- [ ] **Step 2: 执行真实 MiMo 最小 smoke**
-
-Run:
-
-```powershell
-wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && timeout 5s mimo acp --cwd "$PWD" < /dev/null || true'
-```
-
-Expected: 命令能启动并在 stdin 关闭后退出，或输出可诊断错误。记录结果。
-
-- [ ] **Step 3: 更新 smoke 文档结果**
-
-Modify `elixir/docs/mimocode_acp_smoke_test.md`，追加：
-
-```markdown
-## 本机 smoke 结果
-
-- 命令：`timeout 5s mimo acp --cwd "$PWD" < /dev/null || true`
-- 结果：粘贴 Step 2 的命令输出。
-- 判断：说明是否支持进入下一阶段 Linear issue smoke。
-```
-
-- [ ] **Step 4: 运行 docs/spec 检查**
-
-Run:
-
-```powershell
-wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix specs.check'
-```
-
-Expected: specs check 通过。
-
-- [ ] **Step 5: 提交文档**
-
-Run:
-
-```powershell
-git add elixir/docs/multi_agent_backends.md elixir/docs/mimocode_acp_smoke_test.md
-git commit -m "docs: 说明 acp_stdio MiMo-Code 接入"
-```
-
-Expected: 只提交文档。
+已确认：
+- `mimo acp --help` 可用。
+- 包版本为 `@mimo-ai/cli@0.1.0`。
+- `session/new.params.mcpServers` 必须是数组；即使没有 MCP server，也应发送 `mcpServers: []`。
+- `initialize.result.agentCapabilities` 当前未声明 `sessionCapabilities.close`；未声明时不能无条件发送 `session/close`，应直接关闭 stdio port。
+- 真实 prompt smoke 曾进入 `session/prompt` 后持续收到 `session/update` 但未完成。Symphony 需要支持 ACP `session/set_config_option`，通过 `config_options` 设置例如 `model: "mimo/mimo-auto"` 的 coding model。
+- permission 的 `allow_once` 不应硬编码为固定字符串，应优先使用 agent 返回的 option 中 `kind == "allow_once"` 的 `optionId`，再回退到 `"once"`。
+- 真实 prompt smoke 已能进入 `session/prompt` 并收到 `session/update`，但曾在 60 秒内未完成；当前实现已支持通过 ACP `session/set_config_option` 设置 coding model，后续真实 smoke 应继续验证该配置是否能改善 completion。
+- 真实 ACP 写文件探测显示，`mimo acp --pure` 加 `permission_policy: reject` 仍能通过 MiMo-Code 自身 `edit` 工具创建并读回临时文件；当前没有证据表明简单 workspace 文件写入被 `--pure` 或 `reject` 阻断。
 
 ---
 
-### Task 8: 全量验证和方案复核
+## 文件结构
 
-**Files:**
-- Modify only if verification exposes a required correction.
+- Modify: `elixir/lib/symphony_elixir/config.ex`
+  - 校验 `agents.<id>.kind = acp_stdio`、`args`、`permission_policy`、`close_timeout_ms` 等配置。
 
-- [ ] **Step 1: 运行目标测试集**
+- Modify: `elixir/lib/symphony_elixir/agent/backend.ex`
+  - 将 `"acp_stdio"` 映射到 `SymphonyElixir.Agent.Backend.AcpStdio`。
+
+- Create/Modify: `elixir/lib/symphony_elixir/agent/acp_stdio/client.ex`
+  - 管理 ACP stdio 子进程、JSON-RPC request id、ndjson buffering、response 匹配、notification 转发、permission reply、timeout、cancel 和 close。
+
+- Create/Modify: `elixir/lib/symphony_elixir/agent/backend/acp_stdio.ex`
+  - 实现 Symphony session backend contract，并将 ACP 事件映射为 backend-neutral agent event。
+
+- Modify: `elixir/lib/symphony_elixir/agent_runner.ex`
+  - 确保 session backend 可按 `agent:mimo` 路由承接 issue，并在同一 worker attempt 内复用 ACP session。
+
+- Modify: `elixir/lib/symphony_elixir/orchestrator.ex`
+  - 对 `acp_stdio` 按 `turn_started` 计数，避免把 ACP session 数误当成 turn 数。
+
+- Modify: `elixir/lib/symphony_elixir/status_dashboard.ex`
+  - 对 ACP `session/update` 做最小可读化，例如 `agent update: ...`、`agent tool call: ...`。
+
+- Modify: `elixir/test/support/fake_acp_server.exs`
+  - 提供 fake ACP server，用于稳定覆盖协议边界，不依赖真实 MiMo-Code。
+
+- Modify: `elixir/test/symphony_elixir/acp_stdio_client_test.exs`
+  - 覆盖 client 启动、prompt、permission、unsupported request、拆包、timeout、close timeout、usage 等行为。
+
+- Modify: `elixir/test/symphony_elixir/acp_stdio_backend_test.exs`
+  - 覆盖 backend event annotation、turn result、permission policy、错误传播。
+
+- Modify: `elixir/test/symphony_elixir/acp_agent_runner_test.exs`
+  - 覆盖 `AgentRunner` 使用 `acp_stdio` session backend。
+
+- Modify: `elixir/test/symphony_elixir/core_test.exs`
+  - 覆盖配置解析和校验。
+
+- Modify: `elixir/test/symphony_elixir/orchestrator_status_test.exs`
+  - 覆盖 turn count、usage aggregation、dashboard 可读事件。
+
+- Modify: `elixir/docs/mimocode_acp_smoke_test.md`
+  - 记录真实 MiMo-Code smoke test 命令、结果和阻塞项。
+
+- Modify: `elixir/docs/multi_agent_backends.md`
+  - 说明 `acp_stdio` 的配置方式和能力边界。
+
+- Modify: `elixir/docs/agent_runtime_capability_matrix.md`
+  - 对比 Codex app-server、MiMo-Code ACP、`cli_run` 的能力差异。
+
+---
+
+## 阶段 0：前期调研门禁
+
+**目标:** 确认方案不是建立在错误事实上。
+
+**交付物:**
+- `elixir/docs/mimocode_acp_smoke_test.md`
+- MiMo-Code ACP 能力记录。
+- 本机/WSL 可执行路径记录。
+
+- [x] **Step 1: 确认真实命令存在**
 
 Run:
 
 ```powershell
-wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/agent_backend_test.exs test/symphony_elixir/core_test.exs test/symphony_elixir/orchestrator_status_test.exs'
+wsl.exe -e bash -lc 'test -x /home/gqy47/.npm-global/bin/mimo && /home/gqy47/.npm-global/bin/mimo acp --help'
+```
+
+Expected: 输出 `mimo acp` 帮助，不要求 prompt 成功。
+
+- [x] **Step 2: 记录 ACP 基础能力**
+
+在 `elixir/docs/mimocode_acp_smoke_test.md` 记录：
+
+```markdown
+## ACP 能力结论
+
+- 启动命令：`/home/gqy47/.npm-global/bin/mimo acp --cwd <workspace>`
+- 协议层：ACP v1 JSON-RPC over ndjson stdio
+- 基础流程：`initialize` -> `session/new` -> `session/prompt`
+- 运行事件：`session/update`
+- 取消：`session/cancel`
+- 权限请求：`session/request_permission`
+- MiMo-Code 兼容点：`session/new.params.mcpServers` 必须为数组，默认传 `[]`
+- close 能力：仅当 initialize 声明 `sessionCapabilities.close` 时发送 `session/close`
+```
+
+- [x] **Step 3: 判断是否继续**
+
+如果 `mimo acp` 无法启动，可以继续 fake server 开发，但真实验收标记为未通过。
+
+如果 `mimo acp` 不支持 ACP v1 基础方法，暂停后续实现并修订设计文档。
+
+---
+
+## 阶段 1：配置层和 backend 注册
+
+**目标:** 让 Symphony 承认 `acp_stdio` 是合法 backend。
+
+**Files:**
+- Modify: `elixir/lib/symphony_elixir/config.ex`
+- Modify: `elixir/lib/symphony_elixir/agent/backend.ex`
+- Test: `elixir/test/symphony_elixir/core_test.exs`
+- Test: `elixir/test/symphony_elixir/agent_backend_test.exs`
+
+- [x] **Step 1: 写失败测试，允许 acp_stdio 配置**
+
+测试应覆盖：
+
+```elixir
+agents: %{
+  mimocode: %{
+    kind: "acp_stdio",
+    command: "/home/gqy47/.npm-global/bin/mimo",
+    args: ["acp", "--cwd", "{{workspace}}"],
+    permission_policy: "reject",
+    timeout_ms: 3_600_000,
+    read_timeout_ms: 60_000,
+    close_timeout_ms: 3_000
+  }
+},
+routing: %{by_label: %{"agent:mimo" => "mimocode"}}
+```
+
+Expected: 配置解析成功，路由表保留 `agent:mimo -> mimocode`。
+
+- [x] **Step 2: 写失败测试，拒绝错误配置**
+
+覆盖：
+- `args` 不是字符串列表。
+- `permission_policy` 不是 `reject`、`fail`、`allow`。
+- `close_timeout_ms` 不是正整数。
+- 未知 `kind` 报错信息包含允许值。
+
+- [x] **Step 3: 实现配置校验**
+
+实现要求：
+- `@supported_agent_kinds` 包含 `"acp_stdio"`。
+- `args` 可省略；存在时必须是字符串列表。
+- `permission_policy` 默认由 backend 解释为 `reject`。
+- `close_timeout_ms` 可省略；存在时必须为正整数。
+
+- [x] **Step 4: 注册 backend**
+
+实现：
+
+```elixir
+def module_for("acp_stdio"), do: SymphonyElixir.Agent.Backend.AcpStdio
+```
+
+- [x] **Step 5: 验证阶段 1**
+
+Run:
+
+```powershell
+wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/core_test.exs test/symphony_elixir/agent_backend_test.exs'
+```
+
+Expected: 新增配置和 backend 注册测试通过。
+
+---
+
+## 阶段 2：ACP client 和 session backend
+
+**目标:** 用 fake ACP server 锁定 Symphony 侧协议行为。
+
+**Files:**
+- Create/Modify: `elixir/lib/symphony_elixir/agent/acp_stdio/client.ex`
+- Create/Modify: `elixir/lib/symphony_elixir/agent/backend/acp_stdio.ex`
+- Modify: `elixir/test/support/fake_acp_server.exs`
+- Test: `elixir/test/symphony_elixir/acp_stdio_client_test.exs`
+- Test: `elixir/test/symphony_elixir/acp_stdio_backend_test.exs`
+
+- [x] **Step 1: 扩展 fake ACP server**
+
+fake server 必须支持：
+- `initialize`
+- `session/new`
+- `session/prompt`
+- `session/cancel`
+- 可选 `session/close`
+- `session/request_permission`
+- 发送 `session/update`
+- 故意拆分 ndjson 行
+- 在目标 response 后追加 notification 或 client request
+- 返回 usage
+- 模拟 prompt timeout 和 close timeout
+
+- [x] **Step 2: 写 client 基础流程测试**
+
+覆盖：
+- 启动子进程。
+- `initialize` 成功。
+- `session/new` 默认携带 `mcpServers: []`。
+- `config_options` 会在 `session/new` 后通过 `session/set_config_option` 发送，参数使用 `configId` 和 `value`。
+- 返回 `session_started`。
+- `session/prompt` 成功后返回 `turn_completed`。
+- prompt result 中的 usage 被提升到顶层 event `usage`。
+
+- [x] **Step 3: 写权限策略测试**
+
+覆盖：
+- `permission_policy: reject` 自动拒绝并记录 `permission_rejected`。
+- `permission_policy: fail` 记录 `approval_required`，drain 当前 prompt response 后返回 `{:error, {:permission_required, payload}}`。
+- `permission_policy: allow` 优先选择 `kind == "allow_once"` 的 `optionId`，再回退 `"once"`。
+
+- [x] **Step 4: 写 transport 稳定性测试**
+
+覆盖：
+- ndjson 拆包后仍能解析完整 JSON。
+- target response 后的 trailing notification 会被处理。
+- unsupported agent -> client request 返回 JSON-RPC error，并记录 `unsupported_request`。
+- malformed JSON 记录 `malformed`，不直接卡死 session。
+
+- [x] **Step 5: 写 timeout 和清理测试**
+
+覆盖：
+- `session/prompt` timeout 按绝对 deadline 计算，不被持续 `session/update` 续期。
+- prompt timeout 只发送一次 `session/cancel`。
+- startup timeout 和 close timeout 不发送 cancel。
+- handshake 失败后清理已启动子进程。
+- 未声明 close capability 时不发送 `session/close`，直接关闭 port。
+- `close_timeout_ms` 生效，卡住时可兜底回收子进程。
+
+- [x] **Step 6: 实现 `AcpStdio.Client`**
+
+实现要求：
+- 使用 Erlang Port 启动 `command + args`。
+- ACP 子进程 cwd 必须是 issue workspace。
+- 同时在 `session/new` 中传 workspace 绝对路径。
+- request id 单调或唯一。
+- stdout 按 ndjson buffering 处理。
+- stderr 不混入协议流；需要时仅记录摘要。
+- JSON-RPC error 保留原始 error payload。
+
+- [x] **Step 7: 实现 `AcpStdio` backend**
+
+实现要求：
+- `start_session/3` 包装 client session，并写入 `agent_id`、`agent_kind`、timeout 配置。
+- backend 将 agent config 中的 `config_options` 透传给 ACP client。
+- `run_turn/5` 发送当前 prompt，发出 `turn_started` 和 `turn_completed` / `turn_failed` / `turn_cancelled`。
+- `stop_session/1` 按 close capability 和 `close_timeout_ms` 清理。
+- 保留历史兼容字段 `codex_app_server_pid`，同时事件中携带 `agent_id` 和 `agent_kind`。
+
+- [x] **Step 8: 验证阶段 2**
+
+Run:
+
+```powershell
+wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/acp_stdio_client_test.exs test/symphony_elixir/acp_stdio_backend_test.exs'
+```
+
+Expected: ACP client/backend 测试通过。
+
+---
+
+## 阶段 3：AgentRunner、Linear 路由和观测
+
+**目标:** 证明 Linear issue 可以被派给 MiMo-Code backend 执行。
+
+**Files:**
+- Modify: `elixir/lib/symphony_elixir/agent_runner.ex`
+- Modify: `elixir/lib/symphony_elixir/orchestrator.ex`
+- Modify: `elixir/lib/symphony_elixir/status_dashboard.ex`
+- Test: `elixir/test/symphony_elixir/acp_agent_runner_test.exs`
+- Test: `elixir/test/symphony_elixir/orchestrator_status_test.exs`
+- Test: `elixir/test/symphony_elixir/core_test.exs`
+
+- [x] **Step 1: 写 AgentRunner 集成测试**
+
+测试场景：
+- 配置 `routing.by_label.agent:mimo = mimocode`。
+- issue 带 `agent:mimo` 标签。
+- `AgentRunner` 启动 `acp_stdio` session backend。
+- fake server 收到 prompt。
+- worker attempt 正常结束或按 issue 状态继续下一 turn。
+
+- [x] **Step 2: 写 continuation 测试**
+
+覆盖：
+- 同一 worker attempt 内连续两个 `run_turn/5` 复用同一个 ACP session。
+- `turn_count` 按 `turn_started` 增加为 2，而不是按 `session_started` 只计 1。
+- continuation prompt 使用 backend-neutral 文案，例如 `previous agent turn`，不包含 `previous Codex turn`。
+
+- [x] **Step 3: 写 dashboard humanize 测试**
+
+覆盖：
+- ACP 文本更新显示为 `agent update: ...`。
+- ACP tool call 更新显示为 `agent tool call: ...`。
+- running row 中能看到 `agent_id=mimocode`、`agent_kind=acp_stdio`。
+
+- [x] **Step 4: 实现 AgentRunner 和 Orchestrator 适配**
+
+实现要求：
+- `AgentRunner` 不根据 backend kind 写死 Codex 逻辑，只依赖 session backend contract。
+- Orchestrator 对 `acp_stdio` 按 turn event 更新计数。
+- token usage 继续进入现有 aggregate 逻辑。
+
+- [x] **Step 5: 执行真实 MiMo-Code smoke**
+
+建议命令：
+
+```powershell
+wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && /home/gqy47/.npm-global/bin/mimo acp --help'
+```
+
+如果需要最小 prompt smoke，应记录：
+- 使用的 workspace。
+- 使用的 model/config option。
+- 是否收到 `session/update`。
+- 是否收到 prompt completion。
+- 如果超时，记录 timeout 时间、最后一条 update 和疑似原因。
+
+- [x] **Step 6: 验证阶段 3**
+
+Run:
+
+```powershell
+wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/acp_agent_runner_test.exs test/symphony_elixir/core_test.exs test/symphony_elixir/orchestrator_status_test.exs'
+```
+
+Expected: runner、路由和观测测试通过。
+
+---
+
+## 阶段 3B：MiMo-Code 文件落盘与任务理解稳定性收敛
+
+**目标:** 在高层 Linear MCP 工具已经可用的前提下，确认 MiMo-Code 能可靠完成 workspace 变更，再把 Linear issue 移出 active state。
+
+**背景证据:**
+- YQE-32 证明高层 Linear MCP 工具可用，但 MiMo-Code 过早调用 `linear_issue_update_state` 移到 `Done`，导致目标文件未落盘。
+- YQE-33 证明 terminal-last guidance 生效后，MiMo-Code 仍可能把 `$fileName` / `$phrase` 当成未知变量，转而验证已有 `docs/` 文件，最终 `summary_files=0`。
+- 单独真实 ACP 写文件探测证明，`--pure` 加 `permission_policy: reject` 不会阻断简单文件写入；失败主因更偏任务描述和执行顺序。
+- YQE-34 证明明确字段模板和阶段 3B guidance 生效：目标文件内容精确匹配，session summary 显示 `summary_files=1`，三个高层 Linear MCP 工具均调用成功。
+- YQE-35 证明 terminal no-retry 修复在真实 `mimocode/acp_stdio` 路径生效：目标文件和 Linear 收尾仍成功，且 terminal issue 正常完成后没有再安排 1s continuation retry。
+
+- [x] **Step 1: 写 failing guidance 测试**
+
+在 `elixir/test/symphony_elixir/acp_agent_runner_test.exs` 中扩展 Linear MCP guidance 断言：
+
+```elixir
+assert prompt_line =~ "Treat target file names and exact file contents in the issue description as literal task data"
+assert prompt_line =~ "do not treat strings such as `$fileName` or `$phrase` as variables to resolve"
+assert prompt_line =~ "Do not substitute an existing repository file for a requested target file"
+assert prompt_line =~ "Before creating a success comment, read back the exact target file"
+assert prompt_line =~ "If the target file name or exact content is missing or ambiguous, report blocked"
+```
+
+Run:
+
+```powershell
+wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/acp_agent_runner_test.exs test/symphony_elixir/agent_tool_test.exs'
+```
+
+Expected: FAIL，因为旧 guidance 没有阶段 3B 防误读约束。
+
+- [x] **Step 2: 写 failing tool description 测试**
+
+在 `elixir/test/symphony_elixir/agent_tool_test.exs` 中断言：
+
+```elixir
+assert comment_description =~ "verified the requested workspace evidence"
+assert update_description =~ "Do not move to a terminal state when required workspace evidence is missing"
+```
+
+Expected: FAIL，因为旧高层工具描述只强调 terminal-last，没有覆盖 workspace evidence 缺失时不得报告成功或移动终态。
+
+- [x] **Step 3: 实现最小 guidance 和 tool description 补强**
+
+修改：
+- `elixir/lib/symphony_elixir/agent_runner.ex`
+- `elixir/lib/symphony_elixir/agent/tool/linear_comment_create.ex`
+- `elixir/lib/symphony_elixir/agent/tool/linear_issue_update_state.ex`
+
+实现要求：
+- 目标文件名和精确内容按字面任务数据处理。
+- 不把 `$fileName` / `$phrase` 当成待解析变量。
+- 不用已有仓库文件替代请求的目标文件。
+- 成功评论前必须读回目标文件并验证精确内容。
+- 目标缺失或含糊时评论 blocked，不移动 terminal state。
+
+- [x] **Step 4: 验证阶段 3B 单元行为**
+
+Run:
+
+```powershell
+wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/acp_agent_runner_test.exs test/symphony_elixir/agent_tool_test.exs test/symphony_elixir/mcp_server_test.exs test/symphony_elixir/dynamic_tool_test.exs'
+```
+
+Expected: PASS。
+
+- [x] **Step 5: 执行真实 Linear smoke**
+
+前置条件：
+- 本地服务以 `elixir/WORKFLOW.local.md` 启动。
+- `LINEAR_API_KEY` 在启动环境中可用。
+- 新 issue 带 `agent:mimo` 和 `symphony-local-test` label。
+
+先生成明确字段版 issue 模板：
+
+```powershell
+wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix mimo.phase3b_smoke'
+```
+
+issue 描述必须使用模板中的明确字段，不使用 `$fileName` / `$phrase`：
+
+```markdown
+目标文件名：mimo-phase-3b-smoke-<timestamp>.txt
+精确文件内容：MiMo phase 3B smoke passed <timestamp>
+
+要求：
+1. 在 workspace 根目录创建或覆盖“目标文件名”指定的文件。
+2. 写入“精确文件内容”指定的完整内容。
+3. 读回该目标文件，确认内容完全一致。
+4. 使用 `linear_issue_read` 读取当前 issue。
+5. 使用 `linear_comment_create` 评论 `file_verified=true`、`phase_3b_guidance=true` 和 issue identifier。
+6. 最后才使用 `linear_issue_update_state` 移动到 `Done`。
+7. 如果目标文件名或精确文件内容缺失/含糊，评论 blocked，不要移动到 `Done`。
+```
+
+验收：
+- 目标文件存在，内容精确一致。
+- MiMo-Code session summary 显示产生了文件变更，或人工复验能证明目标文件来自本次运行。
+- Linear 评论存在并包含 marker。
+- issue 最终进入 `Done`。
+- `linear_issue_update_state` 是最后的 terminal 收尾动作。
+
+执行结果：
+- issue：`YQE-34`
+- ACP session：`ses_139b11bc9ffe0hdEdSIOiVHIrk`
+- workspace：`/home/gqy47/code/symphony-workspaces-local/YQE-34`
+- 目标文件：`mimo-phase-3b-smoke-20260614-212237.txt`
+- 文件内容：`MiMo phase 3B smoke passed 20260614-212237`
+- 文件 sha256：`ecfe4a0fb1b56da03eb36c2f14bd48d6cbe659c890e9a0a643c9c293c7f56f46`
+- MiMo-Code session summary：`summary_files=1`、`summary_additions=1`、`summary_deletions=0`
+- Linear 状态：`Done`
+- Linear 评论 marker：`file_verified=true`、`phase_3b_guidance=true`、`identifier=YQE-34`
+- 工具调用：`linear_issue_read`、`linear_comment_create`、`linear_issue_update_state` 均 `outcome=ok`；本次 `linear_graphql` 调用为 0，session 未出现 `Invalid Tool`。
+- 备注：worker 正常完成后曾出现短暂 continuation retry warning；由于 issue 已进入 terminal state，不影响阶段 3B smoke 结论。该可观测噪音已按 TDD 修正：AgentRunner 回传刷新后的 issue 快照，Orchestrator 对正常退出且已 terminal 的 issue 直接清理/释放 claim，不再排 continuation retry。
+
+复测结果：
+- issue：`YQE-35`
+- workspace：`/home/gqy47/code/symphony-workspaces-local/YQE-35`
+- 目标文件：`mimo-phase-3b-smoke-20260614-144901.txt`
+- 文件内容：`MiMo phase 3B smoke passed 20260614-144901`
+- 文件 sha256：`c9f156743332df93204e7dee192649ea46b6f20fc5b2ac7174aea468694616c0`
+- MiMo-Code session：`ses_139644e76ffeJKm2d0lOv9z8zN`
+- MiMo-Code session summary：`summary_files=1`、`summary_additions=1`、`summary_deletions=0`
+- Linear 状态：`Done`
+- Linear 评论 marker：`file_verified=true`、`phase_3b_no_retry=true`
+- 日志结论：`mimocode/acp_stdio` 执行了写文件、读回验证、Linear 评论和状态流转；未出现 continuation 或 `Retrying issue_id=ffc6e2de` 日志。
+
+- [x] **Step 6: 固化 issue 模板生成器**
+
+新增：
+- `elixir/lib/mix/tasks/mimo.phase3b_smoke.ex`
+- `elixir/test/mix/tasks/mimo_phase3b_smoke_test.exs`
+
+Run:
+
+```powershell
+wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/mix/tasks/mimo_phase3b_smoke_test.exs'
+```
+
+Expected: PASS，且输出模板不包含 `$fileName` / `$phrase`。
+
+---
+
+## 原阶段 4：OpenCode 复用（本轮跳过）
+
+本轮跳过。
+
+后续再评估时，原则是：
+- 优先复用 `acp_stdio` backend。
+- 如果 OpenCode 只需要不同 `command` / `args`，只新增配置和 smoke 文档。
+- 如果 OpenCode ACP 行为与 MiMo-Code 存在差异，先记录差异，再补 provider-specific quirk。
+- 不因为 OpenCode 差异修改 Orchestrator 调度模型。
+
+本轮验收不要求：
+- `opencode acp` 可启动。
+- `opencode serve` 可启动。
+- OpenCode Linear issue smoke 通过。
+
+---
+
+## 全量验证
+
+阶段 1 到阶段 3B 完成后运行：
+
+```powershell
+wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix test test/symphony_elixir/acp_backend_registration_test.exs test/symphony_elixir/acp_stdio_client_test.exs test/symphony_elixir/acp_stdio_backend_test.exs test/symphony_elixir/acp_agent_runner_test.exs test/symphony_elixir/core_test.exs test/symphony_elixir/orchestrator_status_test.exs'
 ```
 
 Expected: 目标测试集通过。
 
-- [ ] **Step 2: 运行 specs check**
-
-Run:
+再运行：
 
 ```powershell
 wsl.exe -e bash -lc 'cd /mnt/c/Users/GQY47/coding/Symphony/elixir && mise exec -- mix specs.check'
 ```
 
-Expected: specs check 通过。
+Expected: public functions spec 检查通过。
 
-- [ ] **Step 3: 审查是否需要推翻设计**
-
-检查：
-
-- fake ACP server 是否证明了 Symphony 侧协议闭环。
-- 真实 `mimo acp` 是否能启动。
-- ACP method 是否仍是 `initialize`、`session/new`、`session/prompt`、`session/cancel`。
-- permission request 是否能按策略处理，且不会无限卡住。
-
-如果任一项不成立，更新 `docs/superpowers/specs/2026-06-14-acp-stdio-mimocode-backend-design.md`，说明事实、影响和新方案，然后停止实现等待 review。
-
-- [ ] **Step 4: 记录最终验证结果**
-
-Run:
+最后运行：
 
 ```powershell
-git status --short
+git diff --check
 ```
 
-Expected: 只有预期修改。未跟本任务相关的历史脏改动不纳入提交。
+Expected: 无 whitespace error；如果只有 CRLF warning，需要在最终说明中明确。
 
-- [ ] **Step 5: 最终提交或说明未提交原因**
+## 验收标准
 
-如果 Step 1 和 Step 2 通过：
-
-```powershell
-git status --short
-```
-
-Expected: 当前任务修改已全部提交，或只剩用户已有的无关脏改动。
+- `WORKFLOW.md` 可以声明 `mimocode.kind = acp_stdio`。
+- Linear issue 添加 `agent:mimo` 后由 `mimocode` backend 执行。
+- dashboard 或日志明确显示 `agent_id=mimocode`、`agent_kind=acp_stdio`。
+- 同一 worker attempt 内的 continuation turn 复用同一 ACP session。
+- `turn_count` 按实际 turn 数增长。
+- fake ACP server 覆盖启动、prompt、completion、permission、unsupported request、timeout、close timeout、usage。
+- 真实 `mimo acp` smoke 已能完成握手和 prompt。
+- 真实 `agent:mimo` Linear issue smoke 已证明 MiMo-Code 能通过 `mimocode/acp_stdio` 创建并读回指定 workspace 文件，再用 `linear_issue_read`、`linear_comment_create`、`linear_issue_update_state` 完成 Linear 收尾。
+- terminal issue 正常完成后不再出现 1s continuation retry 噪音；active issue 正常退出后的 continuation retry 行为保持不变。
+- OpenCode 不作为本轮验收项。

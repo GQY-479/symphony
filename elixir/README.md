@@ -112,9 +112,9 @@ You are working on a Linear issue {{ issue.identifier }}.
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
 
-Symphony can also route issues to peer agent backends (Codex, MiMo-Code, OpenCode) instead of
-running Codex only. See [`docs/multi_agent_backends.md`](docs/multi_agent_backends.md) for the
-`agents` and `routing` configuration.
+Symphony 也可以把 issue 路由给平级 agent backend（Codex、MiMo-Code、OpenCode），而不是只运行
+Codex。`agents` 和 `routing` 配置见 [`docs/multi_agent_backends.md`](docs/multi_agent_backends.md)；
+MiMo-Code ACP 接入经验和 smoke 证据沉淀见 [`docs/agent_backend_lessons.md`](docs/agent_backend_lessons.md)。
 
 Notes:
 
