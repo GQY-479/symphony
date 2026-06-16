@@ -1,10 +1,12 @@
-Code.require_file("../support/fake_omnigent_server.exs", __DIR__)
-
 defmodule SymphonyElixir.OmnigentSseTest do
-
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Agent.Omnigent.Sse
+
+  test "公共测试入口可见 fake Omnigent server 支持模块" do
+    assert Code.ensure_loaded?(SymphonyElixir.FakeOmnigentServer)
+    assert function_exported?(SymphonyElixir.FakeOmnigentServer, :start!, 1)
+  end
 
   test "解析命名 SSE 事件并保留未完成帧" do
     state = Sse.new()
