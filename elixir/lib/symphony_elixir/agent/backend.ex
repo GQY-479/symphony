@@ -21,6 +21,7 @@ defmodule SymphonyElixir.Agent.Backend do
   def module_for("codex_app_server"), do: SymphonyElixir.Agent.Backend.CodexAppServer
   def module_for("cli_run"), do: SymphonyElixir.Agent.Backend.CliRun
   def module_for("acp_stdio"), do: SymphonyElixir.Agent.Backend.AcpStdio
+  def module_for("omnigent_http"), do: SymphonyElixir.Agent.Backend.OmnigentHttp
 
   def module_for(kind) do
     raise ArgumentError, "unknown agent backend kind: #{inspect(kind)}"

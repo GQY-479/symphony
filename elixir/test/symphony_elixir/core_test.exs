@@ -142,6 +142,113 @@ defmodule SymphonyElixir.CoreTest do
     assert settings.routing.by_assignee == %{"mimo-user-id" => "mimocode"}
   end
 
+  test "workflow config accepts omnigent_http agents" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        omnigent: %{
+          kind: "omnigent_http",
+          command: "omnigent",
+          base_url: "http://127.0.0.1:6767",
+          host: %{
+            mode: "external",
+            host_id: "host_local",
+            workspace: "{{workspace}}"
+          },
+          agent: %{
+            type: "agent_id",
+            id: "ag_polly"
+          }
+        }
+      },
+      routing: %{
+        default_agent: "codex",
+        by_label: %{"agent:omnigent" => "omnigent"}
+      }
+    )
+
+    settings = Config.settings!()
+
+    assert :ok = Config.validate!()
+    assert settings.agents["omnigent"]["kind"] == "omnigent_http"
+    assert settings.agents["omnigent"]["base_url"] == "http://127.0.0.1:6767"
+
+    assert settings.agents["omnigent"]["host"] == %{
+             "mode" => "external",
+             "host_id" => "host_local",
+             "workspace" => "{{workspace}}"
+           }
+
+    assert settings.agents["omnigent"]["agent"] == %{"type" => "agent_id", "id" => "ag_polly"}
+    assert settings.routing.by_label == %{"agent:omnigent" => "omnigent"}
+  end
+
+  test "workflow config rejects invalid omnigent_http config" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        omnigent: %{
+          kind: "omnigent_http",
+          command: "omnigent",
+          host: %{
+            mode: "external",
+            host_id: "host_local",
+            workspace: "{{workspace}}"
+          },
+          agent: %{
+            type: "agent_id",
+            id: "ag_polly"
+          }
+        }
+      },
+      routing: %{default_agent: "omnigent"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.omnigent.base_url must be a non-empty string"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        omnigent: %{
+          kind: "omnigent_http",
+          command: "omnigent",
+          base_url: "http://127.0.0.1:6767",
+          host: %{mode: "managed"},
+          agent: %{
+            type: "agent_id",
+            id: "ag_polly"
+          }
+        }
+      },
+      routing: %{default_agent: "omnigent"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.omnigent.host.mode must be external"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        omnigent: %{
+          kind: "omnigent_http",
+          command: "omnigent",
+          base_url: "http://127.0.0.1:6767",
+          host: %{
+            mode: "external",
+            host_id: "host_local",
+            workspace: "{{workspace}}"
+          },
+          agent: %{
+            type: "bundle_path",
+            path: ""
+          }
+        }
+      },
+      routing: %{default_agent: "omnigent"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.omnigent.agent.path must be a non-empty string"
+  end
+
   test "workflow config accepts acp_stdio agents" do
     write_workflow_file!(Workflow.workflow_file_path(),
       agents: %{

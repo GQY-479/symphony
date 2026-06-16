@@ -26,6 +26,7 @@ defmodule SymphonyElixir.AgentBackendTest do
   test "module_for resolves supported backend kinds and rejects unknown kinds" do
     assert Backend.module_for("codex_app_server") == SymphonyElixir.Agent.Backend.CodexAppServer
     assert Backend.module_for("cli_run") == SymphonyElixir.Agent.Backend.CliRun
+    assert Backend.module_for("omnigent_http") == SymphonyElixir.Agent.Backend.OmnigentHttp
 
     assert_raise ArgumentError, ~r/unknown agent backend kind/, fn ->
       Backend.module_for("not-real")

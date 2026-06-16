@@ -6,7 +6,7 @@ defmodule SymphonyElixir.Config do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Workflow
 
-  @supported_agent_kinds ["codex_app_server", "cli_run", "acp_stdio"]
+  @supported_agent_kinds ["codex_app_server", "cli_run", "acp_stdio", "omnigent_http"]
   @acp_permission_policies ["reject", "fail", "allow"]
 
   @default_prompt_template """
@@ -241,7 +241,99 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  defp validate_kind_specific_agent_config(agent_id, %{"kind" => "omnigent_http"} = agent) do
+    with :ok <- validate_required_non_empty_string(agent_id, agent, "base_url"),
+         :ok <- validate_optional_map(agent_id, agent, "host"),
+         :ok <- validate_optional_map(agent_id, agent, "agent"),
+         :ok <- validate_agent_integer(agent_id, agent, "stream_timeout_ms", greater_than: 0),
+         :ok <- validate_omnigent_host(agent_id, Map.get(agent, "host") || %{}),
+         :ok <- validate_omnigent_agent(agent_id, Map.get(agent, "agent")) do
+      :ok
+    end
+  end
+
   defp validate_kind_specific_agent_config(_agent_id, _agent), do: :ok
+
+  defp validate_required_non_empty_string(agent_id, agent, field) do
+    case Map.fetch(agent, field) do
+      {:ok, value} when is_binary(value) ->
+        if String.trim(value) == "" do
+          invalid_config("agents.#{agent_id}.#{field} must be a non-empty string")
+        else
+          :ok
+        end
+
+      {:ok, value} ->
+        invalid_config("agents.#{agent_id}.#{field} must be a non-empty string, got #{inspect(value)}")
+
+      :error ->
+        invalid_config("agents.#{agent_id}.#{field} must be a non-empty string")
+    end
+  end
+
+  defp validate_omnigent_host(agent_id, host) when is_map(host) do
+    mode = Map.get(host, "mode", "external")
+
+    cond do
+      mode != "external" ->
+        invalid_config("agents.#{agent_id}.host.mode must be external")
+
+      Map.has_key?(host, "host_id") and not is_binary(Map.get(host, "host_id")) ->
+        invalid_config("agents.#{agent_id}.host.host_id must be a string")
+
+      Map.has_key?(host, "workspace") and not is_binary(Map.get(host, "workspace")) ->
+        invalid_config("agents.#{agent_id}.host.workspace must be a string")
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_omnigent_host(agent_id, host) do
+    invalid_config("agents.#{agent_id}.host must be a map, got #{inspect(host)}")
+  end
+
+  defp validate_omnigent_agent(_agent_id, nil), do: :ok
+
+  defp validate_omnigent_agent(agent_id, %{"type" => "agent_id"} = agent) do
+    case Map.get(agent, "id") do
+      id when is_binary(id) ->
+        if String.trim(id) == "" do
+          invalid_config("agents.#{agent_id}.agent.id must be a non-empty string")
+        else
+          :ok
+        end
+
+      _ ->
+        invalid_config("agents.#{agent_id}.agent.id must be a non-empty string")
+    end
+  end
+
+  defp validate_omnigent_agent(agent_id, %{"type" => "bundle_path"} = agent) do
+    case Map.get(agent, "path") do
+      path when is_binary(path) ->
+        if String.trim(path) == "" do
+          invalid_config("agents.#{agent_id}.agent.path must be a non-empty string")
+        else
+          :ok
+        end
+
+      _ ->
+        invalid_config("agents.#{agent_id}.agent.path must be a non-empty string")
+    end
+  end
+
+  defp validate_omnigent_agent(agent_id, %{"type" => type}) do
+    invalid_config("agents.#{agent_id}.agent.type must be one of agent_id, bundle_path, got #{inspect(type)}")
+  end
+
+  defp validate_omnigent_agent(agent_id, agent) when is_map(agent) do
+    invalid_config("agents.#{agent_id}.agent.type must be one of agent_id, bundle_path")
+  end
+
+  defp validate_omnigent_agent(agent_id, agent) do
+    invalid_config("agents.#{agent_id}.agent must be a map, got #{inspect(agent)}")
+  end
 
   defp validate_optional_string_or_map(agent_id, agent, field) do
     case Map.fetch(agent, field) do
