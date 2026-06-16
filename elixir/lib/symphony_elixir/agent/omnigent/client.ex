@@ -80,13 +80,13 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
   end
 
   defp post_create_session(url, %{"type" => "bundle_path", "path" => path} = agent, host, params, timeout_ms) do
-    with {:ok, tar_path} <- pack_bundle(path) do
+    with {:ok, bundle_archive} <- pack_bundle(path) do
       try do
         metadata = create_session_metadata(agent, host, params)
-        fields = bundle_multipart_fields(metadata, tar_path)
+        fields = bundle_multipart_fields(metadata, bundle_archive.tar_path)
         post_multipart(url, fields, timeout_ms)
       after
-        File.rm(tar_path)
+        File.rm_rf(bundle_archive.temp_dir)
       end
     end
   end
@@ -136,20 +136,48 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
   end
 
   defp pack_bundle(path) when is_binary(path) do
-    tar_path = Path.join(System.tmp_dir!(), "omnigent_bundle_#{System.unique_integer([:positive])}.tar.gz")
+    with {:ok, temp_dir} <- make_bundle_temp_dir() do
+      write_bundle_archive(temp_dir, path)
+    end
+  end
+
+  defp write_bundle_archive(temp_dir, path) do
+    tar_path = Path.join(temp_dir, "bundle.tar.gz")
     expanded_path = Path.expand(path)
 
     case System.cmd("tar", ["-czf", tar_path, "-C", expanded_path, "."], stderr_to_stdout: true) do
       {_output, 0} ->
-        {:ok, tar_path}
+        {:ok, %{tar_path: tar_path, temp_dir: temp_dir}}
 
       {output, status} ->
-        File.rm(tar_path)
+        File.rm_rf(temp_dir)
         {:error, {:bundle_pack_failed, status, output}}
     end
   rescue
     error ->
+      File.rm_rf(temp_dir)
       {:error, {:bundle_pack_failed, :exception, Exception.message(error)}}
+  end
+
+  defp make_bundle_temp_dir(attempts \\ 5)
+
+  defp make_bundle_temp_dir(0) do
+    {:error, {:bundle_pack_failed, :temp_dir_unavailable, "could not create temporary bundle directory"}}
+  end
+
+  defp make_bundle_temp_dir(attempts) do
+    suffix =
+      16
+      |> :crypto.strong_rand_bytes()
+      |> Base.url_encode64(padding: false)
+
+    temp_dir = Path.join(System.tmp_dir!(), "symphony_omnigent_bundle_#{suffix}")
+
+    case File.mkdir(temp_dir) do
+      :ok -> {:ok, temp_dir}
+      {:error, :eexist} -> make_bundle_temp_dir(attempts - 1)
+      {:error, reason} -> {:error, {:bundle_pack_failed, :temp_dir_unavailable, inspect(reason)}}
+    end
   end
 
   defp message_event_body(input_text) do

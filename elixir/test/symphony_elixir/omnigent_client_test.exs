@@ -3,6 +3,62 @@ defmodule SymphonyElixir.OmnigentClientTest do
 
   alias SymphonyElixir.Agent.Omnigent.Client
 
+  test "create_session/1 并发 bundle_path 上传不会复用或残留临时打包目录" do
+    existing_temp_dirs = omnigent_bundle_temp_dirs()
+
+    server =
+      SymphonyElixir.FakeOmnigentServer.start!(%{
+        create_body: fn session_id -> %{"id" => session_id, "session_id" => session_id} end
+      })
+
+    bundle_root =
+      Path.join(System.tmp_dir!(), "omnigent_bundle_source_#{System.unique_integer([:positive])}")
+
+    try do
+      File.mkdir_p!(bundle_root)
+
+      bundle_dirs =
+        Enum.map(1..8, fn index ->
+          bundle_dir = Path.join(bundle_root, "bundle_#{index}")
+          File.mkdir_p!(bundle_dir)
+          File.write!(Path.join(bundle_dir, "agent.yaml"), "name: bundle-agent-#{index}\n")
+          bundle_dir
+        end)
+
+      base_url = SymphonyElixir.FakeOmnigentServer.base_url(server)
+
+      results =
+        bundle_dirs
+        |> Enum.map(fn bundle_dir ->
+          Task.async(fn ->
+            Client.create_session(%{
+              base_url: base_url,
+              agent: %{"type" => "bundle_path", "path" => bundle_dir},
+              host: %{"host_id" => "host_local", "workspace" => "/tmp/work"},
+              timeout_ms: 5_000
+            })
+          end)
+        end)
+        |> Task.await_many(10_000)
+
+      assert Enum.all?(results, &match?({:ok, %{session_id: "fake-omnigent-session-" <> _}}, &1))
+
+      create_requests =
+        server
+        |> SymphonyElixir.FakeOmnigentServer.requests()
+        |> Enum.filter(&(&1.name == "create_session"))
+
+      assert length(create_requests) == length(bundle_dirs)
+      assert Enum.all?(create_requests, &(&1.body["bundle"]["filename"] == "bundle.tar.gz"))
+      assert Enum.all?(create_requests, &(&1.body["bundle"]["size"] > 0))
+      assert new_omnigent_bundle_temp_dirs(existing_temp_dirs) == []
+    after
+      File.rm_rf!(bundle_root)
+      cleanup_omnigent_bundle_temp_dirs(existing_temp_dirs)
+      SymphonyElixir.FakeOmnigentServer.stop!(server)
+    end
+  end
+
   test "create_session/1 支持 bundle_path 并上传 multipart bundle" do
     server =
       SymphonyElixir.FakeOmnigentServer.start!(%{
@@ -434,5 +490,20 @@ defmodule SymphonyElixir.OmnigentClientTest do
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)
     end
+  end
+
+  defp omnigent_bundle_temp_dirs do
+    Path.wildcard(Path.join(System.tmp_dir!(), "symphony_omnigent_bundle_*"))
+  end
+
+  defp new_omnigent_bundle_temp_dirs(existing_temp_dirs) do
+    MapSet.difference(MapSet.new(omnigent_bundle_temp_dirs()), MapSet.new(existing_temp_dirs))
+    |> MapSet.to_list()
+  end
+
+  defp cleanup_omnigent_bundle_temp_dirs(existing_temp_dirs) do
+    existing_temp_dirs
+    |> new_omnigent_bundle_temp_dirs()
+    |> Enum.each(&File.rm_rf!/1)
   end
 end
