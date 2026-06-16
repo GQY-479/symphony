@@ -155,6 +155,7 @@ defmodule SymphonyElixir.CoreTest do
             host_id: "host_local",
             workspace: "{{workspace}}"
           },
+          stream_timeout_ms: 600_000,
           agent: %{
             type: "agent_id",
             id: "ag_polly"
@@ -172,6 +173,7 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
     assert settings.agents["omnigent"]["kind"] == "omnigent_http"
     assert settings.agents["omnigent"]["base_url"] == "http://127.0.0.1:6767"
+    assert settings.agents["omnigent"]["stream_timeout_ms"] == 600_000
 
     assert settings.agents["omnigent"]["host"] == %{
              "mode" => "external",
@@ -213,6 +215,7 @@ defmodule SymphonyElixir.CoreTest do
           command: "omnigent",
           base_url: "http://127.0.0.1:6767",
           host: %{mode: "managed"},
+          stream_timeout_ms: 600_000,
           agent: %{
             type: "agent_id",
             id: "ag_polly"
@@ -236,6 +239,51 @@ defmodule SymphonyElixir.CoreTest do
             host_id: "host_local",
             workspace: "{{workspace}}"
           },
+          stream_timeout_ms: 0,
+          agent: %{
+            type: "bundle_path",
+            path: ""
+          }
+        }
+      },
+      routing: %{default_agent: "omnigent"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.omnigent.stream_timeout_ms must be an integer greater than 0"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        omnigent: %{
+          kind: "omnigent_http",
+          command: "omnigent",
+          base_url: "http://127.0.0.1:6767",
+          host: %{
+            mode: "external",
+            host_id: "host_local",
+            workspace: "{{workspace}}"
+          },
+          stream_timeout_ms: 600_000
+        }
+      },
+      routing: %{default_agent: "omnigent"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agents.omnigent.agent must be a map"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        omnigent: %{
+          kind: "omnigent_http",
+          command: "omnigent",
+          base_url: "http://127.0.0.1:6767",
+          host: %{
+            mode: "external",
+            host_id: "host_local",
+            workspace: "{{workspace}}"
+          },
+          stream_timeout_ms: 600_000,
           agent: %{
             type: "bundle_path",
             path: ""

@@ -244,10 +244,10 @@ defmodule SymphonyElixir.Config do
   defp validate_kind_specific_agent_config(agent_id, %{"kind" => "omnigent_http"} = agent) do
     with :ok <- validate_required_non_empty_string(agent_id, agent, "base_url"),
          :ok <- validate_optional_map(agent_id, agent, "host"),
-         :ok <- validate_optional_map(agent_id, agent, "agent"),
+         {:ok, omnigent_agent} <- validate_required_map(agent_id, agent, "agent"),
          :ok <- validate_agent_integer(agent_id, agent, "stream_timeout_ms", greater_than: 0),
          :ok <- validate_omnigent_host(agent_id, Map.get(agent, "host") || %{}),
-         :ok <- validate_omnigent_agent(agent_id, Map.get(agent, "agent")) do
+         :ok <- validate_omnigent_agent(agent_id, omnigent_agent) do
       :ok
     end
   end
@@ -293,7 +293,18 @@ defmodule SymphonyElixir.Config do
     invalid_config("agents.#{agent_id}.host must be a map, got #{inspect(host)}")
   end
 
-  defp validate_omnigent_agent(_agent_id, nil), do: :ok
+  defp validate_required_map(agent_id, agent, field) do
+    case Map.fetch(agent, field) do
+      {:ok, value} when is_map(value) ->
+        {:ok, value}
+
+      {:ok, value} ->
+        invalid_config("agents.#{agent_id}.#{field} must be a map, got #{inspect(value)}")
+
+      :error ->
+        invalid_config("agents.#{agent_id}.#{field} must be a map")
+    end
+  end
 
   defp validate_omnigent_agent(agent_id, %{"type" => "agent_id"} = agent) do
     case Map.get(agent, "id") do
