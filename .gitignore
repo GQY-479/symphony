@@ -1,0 +1,8 @@
+SPEC.pdf
+
+.codex/
+.claude/
+.golutra/
+.github/
+graphify-out/
+*-local-command-*.txt
