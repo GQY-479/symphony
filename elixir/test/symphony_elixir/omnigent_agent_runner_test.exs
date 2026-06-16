@@ -52,7 +52,7 @@ defmodule SymphonyElixir.OmnigentAgentRunnerTest do
         title: "Omnigent runner route",
         description: "Route to omnigent by label",
         state: "Done",
-        labels: ["agent:omnigent"]
+        labels: [" Agent:Omnigent "]
       }
 
       assert :ok =
@@ -72,16 +72,32 @@ defmodule SymphonyElixir.OmnigentAgentRunnerTest do
                         session_id: "conv_fake_1"
                       }}
 
+      assert_receive {:codex_worker_update, "issue-omnigent-runner-route",
+                      %{
+                        agent_id: "omnigent",
+                        agent_kind: "omnigent_http",
+                        event: :turn_completed,
+                        session_id: "conv_fake_1"
+                      }}
+
       requests = SymphonyElixir.FakeOmnigentServer.requests(server)
       create_requests = Enum.filter(requests, &(&1.name == "create_session"))
 
+      post_events = Enum.filter(requests, &(&1.name == "post_event"))
+
       message_events =
-        requests
-        |> Enum.filter(&(&1.name == "post_event"))
-        |> Enum.filter(&(&1.body["type"] == "message"))
+        Enum.filter(post_events, &(&1.body["type"] == "message"))
+
+      stop_events =
+        Enum.filter(post_events, &(&1.body == %{"type" => "stop_session", "data" => %{}}))
+
+      interrupt_events = Enum.filter(post_events, &(&1.body["type"] == "interrupt"))
 
       assert length(create_requests) == 1
+      assert length(post_events) == 2
       assert length(message_events) == 1
+      assert length(stop_events) == 1
+      assert length(interrupt_events) == 0
       assert Enum.at(message_events, 0).body["type"] == "message"
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)
@@ -164,17 +180,34 @@ defmodule SymphonyElixir.OmnigentAgentRunnerTest do
       requests = SymphonyElixir.FakeOmnigentServer.requests(server)
       create_requests = Enum.filter(requests, &(&1.name == "create_session"))
 
+      post_events = Enum.filter(requests, &(&1.name == "post_event"))
+
       message_events =
-        requests
-        |> Enum.filter(&(&1.name == "post_event"))
-        |> Enum.filter(&(&1.body["type"] == "message"))
+        Enum.filter(post_events, &(&1.body["type"] == "message"))
+
+      stop_events =
+        Enum.filter(post_events, &(&1.body == %{"type" => "stop_session", "data" => %{}}))
+
+      first_message_text = request_message_text(Enum.at(message_events, 0))
+      second_message_text = request_message_text(Enum.at(message_events, 1))
 
       assert length(create_requests) == 1
+      assert length(post_events) == 3
       assert length(message_events) == 2
+      assert length(stop_events) == 1
       assert Enum.map(message_events, & &1.session_id) == ["conv_fake_1", "conv_fake_1"]
+      assert first_message_text =~ "You are an agent for this repository."
+      assert second_message_text =~ "Continuation guidance:"
+      assert second_message_text =~ "continuation turn #2 of 2"
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)
       File.rm_rf(test_root)
     end
+  end
+
+  defp request_message_text(request) do
+    get_in(request.body, ["data", "content"])
+    |> List.first()
+    |> Map.get("text")
   end
 end
