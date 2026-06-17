@@ -402,4 +402,170 @@ defmodule SymphonyElixir.WorkflowControllerTest do
 
     assert Enum.count(Application.get_env(:symphony_elixir, :memory_tracker_issues, [])) == 2
   end
+
+  test "execution completion 读取 completion packet、回写评论并排队 review" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-completion-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue = %Issue{
+      id: "derived-completion",
+      identifier: "YQE-800",
+      title: "实现任务",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.completion_packet_path(workspace),
+      Jason.encode!(%{
+        "outcome" => "completed",
+        "summary" => "完成 workflow readiness gating",
+        "evidence" => ["mix test test/symphony_elixir/workflow_controller_test.exs"],
+        "decisions" => ["沿用 registry 作为 readiness 真相源"],
+        "open_questions" => [],
+        "next_handoff" => "请审查 registry 状态推进是否完整"
+      })
+    )
+
+    assert {:ok, {:queue_review, metadata}} =
+             Controller.handle_execution_completion(issue, workspace)
+
+    assert metadata.workflow_phase == :review
+    assert metadata.agent_id == "codex"
+    assert metadata.workflow_root_issue_id == "YQE-800"
+    assert metadata.workflow_context["issue_identifier"] == "YQE-800"
+
+    assert_receive {:memory_tracker_comment, "derived-completion", body}
+    assert body =~ "Completion Packet"
+    assert body =~ "完成 workflow readiness gating"
+    assert body =~ "mix test test/symphony_elixir/workflow_controller_test.exs"
+  end
+
+  test "review completion 读取 review decision、回写评论并返回 pass 决策" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-review-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue = %Issue{
+      id: "derived-review",
+      identifier: "YQE-801",
+      title: "审查任务",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.review_decision_path(workspace),
+      Jason.encode!(%{
+        "decision" => "pass",
+        "summary" => "实现满足当前 Task 7 的最小验收要求",
+        "confidence" => "medium"
+      })
+    )
+
+    assert {:ok, {:pass, "derived-review"}} =
+             Controller.handle_review_completion(issue, workspace)
+
+    assert_receive {:memory_tracker_comment, "derived-review", body}
+    assert body =~ "Review Decision"
+    assert body =~ "pass"
+    assert body =~ "实现满足当前 Task 7"
+  end
+
+  test "review pass 会推进 registry 节点并解锁下游 waiting issue" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-review-unlock-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{
+      id: "root-unlock",
+      identifier: "YQE-802",
+      title: "root",
+      state: "In Progress"
+    }
+
+    reviewed_issue = %Issue{
+      id: "derived-reviewed",
+      identifier: "YQE-803",
+      title: "调研任务",
+      state: "In Progress"
+    }
+
+    waiting_issue = %Issue{
+      id: "derived-unlocked",
+      identifier: "YQE-804",
+      title: "实现任务",
+      state: "Todo"
+    }
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("research", %{
+      "node_key" => "research",
+      "issue_id" => reviewed_issue.id,
+      "issue_identifier" => reviewed_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "research",
+      "status" => "ready",
+      "dependencies" => []
+    })
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => waiting_issue.id,
+      "issue_identifier" => waiting_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "status" => "waiting",
+      "dependencies" => ["research"]
+    })
+    |> Registry.add_edge(%{"from" => "research", "to" => "implementation"})
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, reviewed_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.review_decision_path(workspace),
+      Jason.encode!(%{
+        "decision" => "pass",
+        "summary" => "调研结果可进入实现",
+        "confidence" => "high"
+      })
+    )
+
+    assert {:ok, {:pass, "derived-reviewed"}} =
+             Controller.handle_review_completion(reviewed_issue, workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier("YQE-802")
+    assert Registry.node(registry, "research")["status"] == "completed"
+    assert Registry.node(registry, "implementation")["status"] == "ready"
+    assert Controller.issue_ready?(waiting_issue.id)
+  end
 end

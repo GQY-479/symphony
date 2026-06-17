@@ -201,8 +201,30 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
-    terminal_states = terminal_state_set()
+    case Map.get(running_entry, :workflow_phase) do
+      :planning ->
+        handle_workflow_phase_down(state, issue_id, running_entry, :planning)
 
+      :execution ->
+        handle_workflow_phase_down(state, issue_id, running_entry, :execution)
+
+      :review ->
+        handle_workflow_phase_down(state, issue_id, running_entry, :review)
+
+      _ ->
+        handle_legacy_normal_agent_down(state, issue_id, running_entry, session_id, terminal_state_set())
+    end
+  end
+
+  defp handle_agent_down(reason, state, issue_id, running_entry, session_id) do
+    if input_required_blocker?(running_entry) do
+      block_input_required_agent_down(state, issue_id, running_entry, session_id, reason)
+    else
+      retry_agent_down(state, issue_id, running_entry, session_id, reason)
+    end
+  end
+
+  defp handle_legacy_normal_agent_down(state, issue_id, running_entry, session_id, terminal_states) do
     cond do
       input_required_blocker?(running_entry) ->
         block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
@@ -237,12 +259,85 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp handle_agent_down(reason, state, issue_id, running_entry, session_id) do
-    if input_required_blocker?(running_entry) do
-      block_input_required_agent_down(state, issue_id, running_entry, session_id, reason)
+  defp handle_workflow_phase_down(state, issue_id, running_entry, :planning) do
+    with {:ok, workspace} <- running_workspace(running_entry),
+         {:ok, _registry} <- Controller.handle_planning_completion(running_entry.issue, workspace) do
+      state
+      |> complete_issue(issue_id)
+      |> release_issue_claim(issue_id)
     else
-      retry_agent_down(state, issue_id, running_entry, session_id, reason)
+      {:error, reason} ->
+        block_issue_from_entry(state, issue_id, running_entry, "planning artifact invalid: #{inspect(reason)}")
     end
+  end
+
+  defp handle_workflow_phase_down(state, issue_id, running_entry, :execution) do
+    with {:ok, workspace} <- running_workspace(running_entry),
+         {:ok, {:queue_review, metadata}} <- Controller.handle_execution_completion(running_entry.issue, workspace) do
+      dispatch_issue(
+        complete_issue(state, issue_id),
+        running_entry.issue,
+        nil,
+        Map.get(running_entry, :worker_host),
+        metadata
+      )
+    else
+      {:error, reason} ->
+        block_issue_from_entry(state, issue_id, running_entry, "completion packet invalid: #{inspect(reason)}")
+    end
+  end
+
+  defp handle_workflow_phase_down(state, issue_id, running_entry, :review) do
+    with {:ok, workspace} <- running_workspace(running_entry),
+         {:ok, decision} <- Controller.handle_review_completion(running_entry.issue, workspace) do
+      apply_workflow_review_decision(state, issue_id, running_entry, decision)
+    else
+      {:error, reason} ->
+        block_issue_from_entry(state, issue_id, running_entry, "review decision invalid: #{inspect(reason)}")
+    end
+  end
+
+  defp running_workspace(%{workspace_path: workspace}) when is_binary(workspace) and workspace != "" do
+    {:ok, workspace}
+  end
+
+  defp running_workspace(_running_entry), do: {:error, :missing_workspace_path}
+
+  defp apply_workflow_review_decision(state, issue_id, _running_entry, {:pass, _reviewed_issue_id}) do
+    state
+    |> complete_issue(issue_id)
+    |> release_issue_claim(issue_id)
+  end
+
+  defp apply_workflow_review_decision(state, issue_id, running_entry, {:needs_human, _reviewed_issue_id, reason}) do
+    block_issue_from_entry(state, issue_id, running_entry, "review needs human: #{reason}")
+  end
+
+  defp apply_workflow_review_decision(state, issue_id, running_entry, {:needs_rework, _reviewed_issue_id, reason}) do
+    block_issue_from_entry(state, issue_id, running_entry, "review needs rework: #{reason}")
+  end
+
+  defp apply_workflow_review_decision(state, issue_id, running_entry, {:fail, _reviewed_issue_id, reason}) do
+    block_issue_from_entry(state, issue_id, running_entry, "review failed: #{reason}")
+  end
+
+  defp apply_workflow_review_decision(state, issue_id, running_entry, {:needs_replan, _reviewed_issue_id, reason}) do
+    schedule_issue_retry(
+      complete_issue(state, issue_id),
+      issue_id,
+      1,
+      Map.merge(workflow_retry_metadata(running_entry), %{
+        identifier: running_entry.identifier,
+        issue_url: running_entry.issue.url,
+        error: "workflow replan requested: #{reason}",
+        delay_type: :continuation,
+        agent_id: Config.settings!().orchestration.planner_agent,
+        agent_kind: Map.get(running_entry, :agent_kind),
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path),
+        workflow_phase: :planning
+      })
+    )
   end
 
   defp block_input_required_agent_down(state, issue_id, running_entry, session_id, reason) do
@@ -400,6 +495,13 @@ defmodule SymphonyElixir.Orchestrator do
       when is_binary(issue_id) and is_integer(attempt) and attempt >= 0 and is_map(metadata) do
     {:noreply, updated_state} = handle_retry_issue_lookup(issue, state, issue_id, attempt, metadata)
     updated_state
+  end
+
+  @doc false
+  @spec handle_agent_down_for_test(term(), State.t(), String.t(), map()) :: State.t()
+  def handle_agent_down_for_test(reason, %State{} = state, issue_id, running_entry)
+      when is_binary(issue_id) and is_map(running_entry) do
+    handle_agent_down(reason, state, issue_id, running_entry, running_entry_session_id(running_entry))
   end
 
   @doc false

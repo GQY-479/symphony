@@ -28,6 +28,44 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   def handle_planning_completion(_issue, _workspace), do: {:error, :invalid_arguments}
 
+  @spec handle_execution_completion(Issue.t(), Path.t()) :: {:ok, {:queue_review, map()}} | {:error, term()}
+  def handle_execution_completion(%Issue{} = issue, workspace) when is_binary(workspace) do
+    with {:ok, packet} <- Artifacts.load_completion_packet(workspace),
+         :ok <- Tracker.create_comment(issue.id, render_completion_comment(issue, packet)) do
+      {:ok,
+       {:queue_review,
+        %{
+          workflow_phase: :review,
+          workflow_root_issue_id: workflow_root_identifier_for_issue(issue),
+          agent_id: Config.settings!().orchestration.reviewer_agent,
+          max_turns: Config.settings!().orchestration.review_max_turns,
+          workflow_context: %{
+            "issue_id" => issue.id,
+            "issue_identifier" => issue.identifier,
+            "root_issue_identifier" => workflow_root_identifier_for_issue(issue),
+            "completion_summary" => packet["summary"],
+            "completion_outcome" => packet["outcome"],
+            "evidence" => packet["evidence"] || []
+          }
+        }}}
+    end
+  end
+
+  def handle_execution_completion(_issue, _workspace), do: {:error, :invalid_arguments}
+
+  @spec handle_review_completion(Issue.t(), Path.t()) ::
+          {:ok, {:pass, String.t()} | {:needs_human, String.t(), String.t()} | {:needs_replan, String.t(), String.t()} | {:needs_rework, String.t(), String.t()} | {:fail, String.t(), String.t()}}
+          | {:error, term()}
+  def handle_review_completion(%Issue{} = issue, workspace) when is_binary(workspace) do
+    with {:ok, decision} <- Artifacts.load_review_decision(workspace),
+         :ok <- Tracker.create_comment(issue.id, render_review_comment(issue, decision)),
+         :ok <- maybe_apply_review_registry_update(issue, decision) do
+      apply_review_decision(issue, decision)
+    end
+  end
+
+  def handle_review_completion(_issue, _workspace), do: {:error, :invalid_arguments}
+
   @spec issue_ready?(String.t()) :: boolean()
   def issue_ready?(issue_id) when is_binary(issue_id) do
     case Registry.load_by_issue_id(issue_id) do
@@ -249,6 +287,103 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp maybe_comment_root(_root_issue, _plan, _registry), do: :ok
+
+  defp render_completion_comment(issue, packet) do
+    """
+    ## Completion Packet
+
+    Issue: #{issue.identifier}
+    Outcome: #{packet["outcome"]}
+    Summary: #{packet["summary"]}
+
+    Evidence:
+    #{format_list(packet["evidence"] || [])}
+
+    Decisions:
+    #{format_list(packet["decisions"] || [])}
+
+    Open questions:
+    #{format_list(packet["open_questions"] || [])}
+
+    Next handoff:
+    #{packet["next_handoff"] || "-"}
+    """
+    |> String.trim()
+  end
+
+  defp render_review_comment(issue, decision) do
+    """
+    ## Review Decision
+
+    Issue: #{issue.identifier}
+    Decision: #{decision["decision"]}
+    Confidence: #{decision["confidence"]}
+    Summary: #{decision["summary"]}
+    """
+    |> String.trim()
+  end
+
+  defp apply_review_decision(%Issue{} = issue, %{"decision" => "pass"}) do
+    {:ok, {:pass, issue.id}}
+  end
+
+  defp apply_review_decision(%Issue{} = issue, %{"decision" => "needs_human", "summary" => summary}) do
+    {:ok, {:needs_human, issue.id, summary}}
+  end
+
+  defp apply_review_decision(%Issue{} = issue, %{"decision" => "needs_replan", "summary" => summary}) do
+    {:ok, {:needs_replan, issue.id, summary}}
+  end
+
+  defp apply_review_decision(%Issue{} = issue, %{"decision" => "needs_rework", "summary" => summary}) do
+    {:ok, {:needs_rework, issue.id, summary}}
+  end
+
+  defp apply_review_decision(%Issue{} = issue, %{"decision" => "fail", "summary" => summary}) do
+    {:ok, {:fail, issue.id, summary}}
+  end
+
+  defp maybe_apply_review_registry_update(%Issue{} = issue, %{"decision" => "pass"}) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, _node} ->
+        registry
+        |> put_node_status(node_key, "completed")
+        |> unlock_ready_nodes()
+        |> Registry.save!()
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_apply_review_registry_update(_issue, _decision), do: :ok
+
+  defp put_node_status(registry, node_key, status) do
+    update_in(registry, ["nodes", node_key], fn
+      %{} = node -> Map.put(node, "status", status)
+      node -> node
+    end)
+  end
+
+  defp unlock_ready_nodes(registry) do
+    Enum.reduce(registry["nodes"] || %{}, registry, fn {node_key, node}, acc ->
+      if node["status"] == "waiting" and dependencies_completed?(acc, node["dependencies"] || []) do
+        put_node_status(acc, node_key, "ready")
+      else
+        acc
+      end
+    end)
+  end
+
+  defp workflow_root_identifier_for_issue(%Issue{id: issue_id, identifier: identifier}) when is_binary(issue_id) do
+    case Registry.load_by_issue_id(issue_id) do
+      {:ok, registry, _node_key, _node} -> registry["root_issue_identifier"] || identifier
+      {:error, _reason} -> identifier
+    end
+  end
 
   defp node_description(root_issue, node, dependencies, handoffs, plan) do
     """
