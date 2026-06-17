@@ -119,7 +119,8 @@ defmodule SymphonyElixir.Config do
 
   defp validate_semantics(settings) do
     with :ok <- validate_agents(settings),
-         :ok <- validate_routing(settings) do
+         :ok <- validate_routing(settings),
+         :ok <- validate_orchestration(settings) do
       cond do
         is_nil(settings.tracker.kind) ->
           {:error, :missing_tracker_kind}
@@ -135,6 +136,31 @@ defmodule SymphonyElixir.Config do
 
         true ->
           :ok
+      end
+    end
+  end
+
+  defp validate_orchestration(settings) do
+    orchestration = settings.orchestration
+
+    if orchestration.enabled != true do
+      :ok
+    else
+      agent_ids = MapSet.new(Map.keys(settings.agents || %{}))
+
+      with :ok <-
+             validate_orchestration_agent(
+               agent_ids,
+               "orchestration.planner_agent",
+               orchestration.planner_agent
+             ),
+           :ok <-
+             validate_orchestration_agent(
+               agent_ids,
+               "orchestration.reviewer_agent",
+               orchestration.reviewer_agent
+             ) do
+        validate_non_blank_string("orchestration.artifact_dir", orchestration.artifact_dir)
       end
     end
   end
@@ -554,6 +580,31 @@ defmodule SymphonyElixir.Config do
       true ->
         invalid_config("#{field} references unknown agent #{inspect(target)}")
     end
+  end
+
+  defp validate_orchestration_agent(agent_ids, field, agent_id) do
+    cond do
+      not is_binary(agent_id) or String.trim(agent_id) == "" ->
+        invalid_config("#{field} references blank agent")
+
+      MapSet.member?(agent_ids, agent_id) ->
+        :ok
+
+      true ->
+        invalid_config("#{field} references unknown agent #{inspect(agent_id)}")
+    end
+  end
+
+  defp validate_non_blank_string(field, value) when is_binary(value) do
+    if String.trim(value) == "" do
+      invalid_config("#{field} must be a non-empty string")
+    else
+      :ok
+    end
+  end
+
+  defp validate_non_blank_string(field, value) do
+    invalid_config("#{field} must be a non-empty string, got #{inspect(value)}")
   end
 
   defp invalid_config(message), do: {:error, {:invalid_workflow_config, message}}

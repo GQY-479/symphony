@@ -225,6 +225,34 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Orchestration do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:planner_agent, :string, default: "codex")
+      field(:reviewer_agent, :string, default: "codex")
+      field(:artifact_dir, :string, default: ".symphony")
+      field(:planning_max_turns, :integer, default: 1)
+      field(:review_max_turns, :integer, default: 1)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [:enabled, :planner_agent, :reviewer_agent, :artifact_dir, :planning_max_turns, :review_max_turns],
+        empty_values: []
+      )
+      |> validate_number(:planning_max_turns, greater_than: 0)
+      |> validate_number(:review_max_turns, greater_than: 0)
+    end
+  end
+
   defmodule Hooks do
     @moduledoc false
     use Ecto.Schema
@@ -294,6 +322,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:orchestration, Orchestration, on_replace: :update, defaults_to_struct: true)
     field(:agents, :map)
     field(:agents_configured, :boolean, virtual: true, default: false)
     embeds_one(:routing, Routing, on_replace: :update, defaults_to_struct: true)
@@ -389,6 +418,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
+    |> cast_embed(:orchestration, with: &Orchestration.changeset/2)
     |> cast(attrs, [:agents], empty_values: [])
     |> put_change(:agents_configured, Map.has_key?(attrs, "agents"))
     |> cast_embed(:routing, with: &Routing.changeset/2)

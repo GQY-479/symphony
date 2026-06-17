@@ -128,6 +128,7 @@ defmodule SymphonyElixir.TestSupport do
           server_host: nil,
           agents: nil,
           routing: nil,
+          orchestration: nil,
           prompt: @workflow_prompt
         ],
         overrides
@@ -169,6 +170,7 @@ defmodule SymphonyElixir.TestSupport do
     server_host = Keyword.get(config, :server_host)
     agents = Keyword.get(config, :agents)
     routing = Keyword.get(config, :routing)
+    orchestration = Keyword.get(config, :orchestration)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -207,6 +209,7 @@ defmodule SymphonyElixir.TestSupport do
         server_yaml(server_port, server_host),
         agents_yaml(agents),
         routing_yaml(routing),
+        orchestration_yaml(orchestration),
         "---",
         prompt
       ]
@@ -294,6 +297,36 @@ defmodule SymphonyElixir.TestSupport do
 
   defp routing_yaml(nil), do: nil
   defp routing_yaml(routing), do: "routing: #{yaml_value(routing)}"
+
+  defp orchestration_yaml(nil) do
+    orchestration_yaml(%{})
+  end
+
+  defp orchestration_yaml(orchestration) when is_map(orchestration) do
+    config =
+      Map.merge(
+        %{
+          "enabled" => false,
+          "planner_agent" => "codex",
+          "reviewer_agent" => "codex",
+          "artifact_dir" => ".symphony",
+          "planning_max_turns" => 1,
+          "review_max_turns" => 1
+        },
+        Enum.into(orchestration, %{}, fn {key, value} -> {to_string(key), value} end)
+      )
+
+    [
+      "orchestration:",
+      "  enabled: #{yaml_value(Map.get(config, "enabled"))}",
+      "  planner_agent: #{yaml_value(Map.get(config, "planner_agent"))}",
+      "  reviewer_agent: #{yaml_value(Map.get(config, "reviewer_agent"))}",
+      "  artifact_dir: #{yaml_value(Map.get(config, "artifact_dir"))}",
+      "  planning_max_turns: #{yaml_value(Map.get(config, "planning_max_turns"))}",
+      "  review_max_turns: #{yaml_value(Map.get(config, "review_max_turns"))}"
+    ]
+    |> Enum.join("\n")
+  end
 
   defp hook_entry(_name, nil), do: nil
 

@@ -21,6 +21,12 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.assignee == nil
     assert config.workspace.preserve_terminal == false
     assert config.agent.max_turns == 20
+    assert config.orchestration.enabled == false
+    assert config.orchestration.planner_agent == "codex"
+    assert config.orchestration.reviewer_agent == "codex"
+    assert config.orchestration.artifact_dir == ".symphony"
+    assert config.orchestration.planning_max_turns == 1
+    assert config.orchestration.review_max_turns == 1
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: "invalid")
 
@@ -93,6 +99,91 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+  end
+
+  test "orchestration config defaults to disabled and codex planner/reviewer" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: nil
+    )
+
+    settings = Config.settings!()
+
+    assert settings.orchestration.enabled == false
+    assert settings.orchestration.planner_agent == "codex"
+    assert settings.orchestration.reviewer_agent == "codex"
+    assert settings.orchestration.artifact_dir == ".symphony"
+    assert settings.orchestration.planning_max_turns == 1
+    assert settings.orchestration.review_max_turns == 1
+  end
+
+  test "orchestration config accepts explicit planner and reviewer" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{kind: "cli_run", command: "mimo"}
+      },
+      routing: %{
+        default_agent: "codex",
+        by_label: %{"agent:mimo" => "mimocode"}
+      },
+      orchestration: %{
+        enabled: true,
+        planner_agent: "codex",
+        reviewer_agent: "mimocode",
+        artifact_dir: ".symphony",
+        planning_max_turns: 1,
+        review_max_turns: 1
+      }
+    )
+
+    settings = Config.settings!()
+
+    assert settings.orchestration.enabled == true
+    assert settings.orchestration.planner_agent == "codex"
+    assert settings.orchestration.reviewer_agent == "mimocode"
+    assert settings.orchestration.artifact_dir == ".symphony"
+    assert settings.orchestration.planning_max_turns == 1
+    assert settings.orchestration.review_max_turns == 1
+  end
+
+  test "orchestration config rejects unknown planner or reviewer agent" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{kind: "cli_run", command: "mimo"}
+      },
+      routing: %{default_agent: "codex"},
+      orchestration: %{
+        enabled: true,
+        planner_agent: "unknown",
+        reviewer_agent: "codex",
+        artifact_dir: ".symphony",
+        planning_max_turns: 1,
+        review_max_turns: 1
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "orchestration.planner_agent"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{kind: "cli_run", command: "mimo"}
+      },
+      routing: %{default_agent: "codex"},
+      orchestration: %{
+        enabled: true,
+        planner_agent: "codex",
+        reviewer_agent: "unknown",
+        artifact_dir: ".symphony",
+        planning_max_turns: 1,
+        review_max_turns: 1
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "orchestration.reviewer_agent"
   end
 
   test "legacy codex config synthesizes the default codex agent" do
