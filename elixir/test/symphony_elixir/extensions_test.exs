@@ -196,6 +196,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
+    assert {:ok, %Issue{title: "派生任务"}} = SymphonyElixir.Tracker.create_issue(%{title: "派生任务"})
+    assert_receive {:memory_tracker_issue_created, %Issue{title: "派生任务"}}
 
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
     assert :ok = Memory.create_comment("issue-1", "quiet")
@@ -203,6 +205,35 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+  end
+
+  test "memory tracker 创建 issue 会写回环境并同步状态更新" do
+    issue = %Issue{id: "issue-1", identifier: "MT-1", state: "Todo"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    assert {:ok, created_issue} =
+             SymphonyElixir.Tracker.create_issue(%{
+               title: "派生任务",
+               description: "来自工作流的任务",
+               assignee_id: "user-1"
+             })
+
+    assert %Issue{title: "派生任务", description: "来自工作流的任务", state: "Todo", assignee_id: "user-1"} =
+             created_issue
+
+    assert_receive {:memory_tracker_issue_created, ^created_issue}
+
+    assert Application.get_env(:symphony_elixir, :memory_tracker_issues) |> Enum.member?(created_issue)
+
+    assert :ok = SymphonyElixir.Tracker.update_issue_state(created_issue.id, "In Progress")
+    created_issue_id = created_issue.id
+    assert_receive {:memory_tracker_state_update, ^created_issue_id, "In Progress"}
+
+    assert %Issue{state: "In Progress"} =
+             Application.get_env(:symphony_elixir, :memory_tracker_issues)
+             |> Enum.find(&(&1.id == created_issue.id))
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
@@ -317,6 +348,103 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+  end
+
+  test "linear adapter 创建 issue 会先查项目和状态再发起创建" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_project_slug: "project-slug"
+    )
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "projects" => %{
+               "nodes" => [%{"id" => "project-1", "team" => %{"id" => "team-1"}}]
+             }
+           }
+         }},
+        {:ok,
+         %{
+           "data" => %{
+             "team" => %{
+               "states" => %{
+                 "nodes" => [%{"id" => "state-1"}]
+               }
+             }
+           }
+         }},
+        {:ok,
+         %{
+           "data" => %{
+             "issueCreate" => %{
+               "success" => true,
+               "issue" => %{
+                 "id" => "issue-1",
+                 "identifier" => "MT-1",
+                 "title" => "派生任务",
+                 "description" => "来自工作流的任务",
+                 "url" => "https://linear.app/issue/MT-1",
+                 "state" => %{"name" => "Todo"}
+               }
+             }
+           }
+         }}
+      ]
+    )
+
+    assert {:ok, %Issue{id: "issue-1", identifier: "MT-1", title: "派生任务", description: "来自工作流的任务", state: "Todo", url: "https://linear.app/issue/MT-1"}} =
+             Adapter.create_issue(%{
+               title: "派生任务",
+               description: "来自工作流的任务",
+               assignee_id: "user-1"
+             })
+
+    assert_receive {:graphql_called, project_lookup_query, %{projectSlug: "project-slug"}}
+    assert project_lookup_query =~ "projects"
+
+    assert_receive {:graphql_called, state_lookup_query, %{stateName: "Todo", teamId: "team-1"}}
+    assert state_lookup_query =~ "states"
+
+    assert_receive {:graphql_called,
+                    create_issue_query,
+                    %{
+                      assigneeId: "user-1",
+                      description: "来自工作流的任务",
+                      projectId: "project-1",
+                      teamId: "team-1",
+                      title: "派生任务"
+                    }}
+
+    assert create_issue_query =~ "issueCreate"
+  end
+
+  test "linear adapter 创建 issue 失败时会返回项目不存在错误" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", tracker_project_slug: "project-slug")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "projects" => %{"nodes" => []}
+           }
+         }}
+      ]
+    )
+
+    assert {:error, :project_not_found} = Adapter.create_issue(%{title: "派生任务"})
+    assert_receive {:graphql_called, project_lookup_query, %{projectSlug: "project-slug"}}
+    assert project_lookup_query =~ "projects"
+    refute_receive {:graphql_called, _, _}
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do

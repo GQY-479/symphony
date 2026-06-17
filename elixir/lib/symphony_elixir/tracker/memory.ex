@@ -43,8 +43,31 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
+    updated_issues =
+      configured_issues()
+      |> Enum.map(fn
+        %Issue{id: ^issue_id} = issue -> %Issue{issue | state: state_name}
+        issue -> issue
+      end)
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, updated_issues)
     send_event({:memory_tracker_state_update, issue_id, state_name})
     :ok
+  end
+
+  @spec create_issue(map()) :: {:ok, Issue.t()} | {:error, term()}
+  def create_issue(attrs) when is_map(attrs) do
+    case Map.get(attrs, :title) || Map.get(attrs, "title") do
+      title when is_binary(title) and title != "" ->
+        issue = build_issue(attrs, title)
+        updated_issues = configured_issues() ++ [issue]
+        Application.put_env(:symphony_elixir, :memory_tracker_issues, updated_issues)
+        send_event({:memory_tracker_issue_created, issue})
+        {:ok, issue}
+
+      _ ->
+        {:error, :missing_title}
+    end
   end
 
   defp configured_issues do
@@ -53,6 +76,26 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   defp issue_entries do
     Enum.filter(configured_issues(), &match?(%Issue{}, &1))
+  end
+
+  defp build_issue(attrs, title) do
+    %Issue{
+      id: build_issue_id(),
+      identifier: build_issue_identifier(),
+      title: title,
+      description: Map.get(attrs, :description) || Map.get(attrs, "description"),
+      state: Map.get(attrs, :state) || Map.get(attrs, "state") || "Todo",
+      assignee_id: Map.get(attrs, :assignee_id) || Map.get(attrs, "assignee_id"),
+      labels: Map.get(attrs, :labels) || Map.get(attrs, "labels") || []
+    }
+  end
+
+  defp build_issue_id do
+    "memory-" <> Integer.to_string(System.unique_integer([:positive]))
+  end
+
+  defp build_issue_identifier do
+    "MT-" <> Integer.to_string(System.unique_integer([:positive]))
   end
 
   defp send_event(message) do
