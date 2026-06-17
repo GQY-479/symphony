@@ -189,8 +189,7 @@ defmodule SymphonyElixir.Linear.Adapter do
   defp resolve_state_id(issue_id, state_name) do
     with {:ok, response} <-
            client_module().graphql(@state_lookup_query, %{issueId: issue_id, stateName: state_name}),
-         state_id when is_binary(state_id) <-
-           get_in(response, ["data", "issue", "team", "states", "nodes", Access.at(0), "id"]) do
+         {:ok, state_id} <- extract_state_id(response, ["data", "issue", "team", "states", "nodes"]) do
       {:ok, state_id}
     else
       {:error, reason} -> {:error, reason}
@@ -201,8 +200,7 @@ defmodule SymphonyElixir.Linear.Adapter do
   defp resolve_project_state_id(team_id, state_name) do
     with {:ok, response} <-
            client_module().graphql(@project_state_lookup_query, %{teamId: team_id, stateName: state_name}),
-         state_id when is_binary(state_id) <-
-           get_in(response, ["data", "team", "states", "nodes", Access.at(0), "id"]) do
+         {:ok, state_id} <- extract_state_id(response, ["data", "team", "states", "nodes"]) do
       {:ok, state_id}
     else
       {:error, reason} -> {:error, reason}
@@ -236,5 +234,12 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   defp first_project_node(response) do
     get_in(response, ["data", "projects", "nodes", Access.at(0)])
+  end
+
+  defp extract_state_id(response, path) do
+    case get_in(response, path ++ [Access.at(0), "id"]) do
+      state_id when is_binary(state_id) -> {:ok, state_id}
+      _ -> {:error, :state_not_found}
+    end
   end
 end

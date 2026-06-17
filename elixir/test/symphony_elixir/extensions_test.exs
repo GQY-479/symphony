@@ -236,6 +236,14 @@ defmodule SymphonyElixir.ExtensionsTest do
              |> Enum.find(&(&1.id == created_issue.id))
   end
 
+  test "memory tracker create_issue/1 缺少 title 时返回错误" do
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+
+    assert {:error, :missing_title} = Memory.create_issue(%{})
+    assert Application.get_env(:symphony_elixir, :memory_tracker_issues) == []
+    refute_receive {:memory_tracker_issue_created, _}
+  end
+
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 
@@ -445,6 +453,72 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive {:graphql_called, project_lookup_query, %{projectSlug: "project-slug"}}
     assert project_lookup_query =~ "projects"
     refute_receive {:graphql_called, _, _}
+  end
+
+  test "linear adapter create_issue/1 在状态查找失败时返回 state_not_found" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", tracker_project_slug: "project-slug")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "projects" => %{
+               "nodes" => [%{"id" => "project-1", "team" => %{"id" => "team-1"}}]
+             }
+           }
+         }},
+        {:ok, %{"data" => %{"team" => %{"states" => %{"nodes" => []}}}}}
+      ]
+    )
+
+    assert {:error, :state_not_found} = Adapter.create_issue(%{title: "娲剧敓浠诲姟"})
+    assert_receive {:graphql_called, _, %{projectSlug: "project-slug"}}
+    assert_receive {:graphql_called, _, %{stateName: "Todo", teamId: "team-1"}}
+    refute_receive {:graphql_called, _, %{projectId: "project-1"}}
+  end
+
+  test "linear adapter create_issue/1 在 issueCreate.success 为 false 时返回 issue_create_failed" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", tracker_project_slug: "project-slug")
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "projects" => %{
+               "nodes" => [%{"id" => "project-1", "team" => %{"id" => "team-1"}}]
+             }
+           }
+         }},
+        {:ok,
+         %{
+           "data" => %{
+             "team" => %{
+               "states" => %{
+                 "nodes" => [%{"id" => "state-1"}]
+               }
+             }
+           }
+         }},
+        {:ok, %{"data" => %{"issueCreate" => %{"success" => false}}}}
+      ]
+    )
+
+    assert {:error, :issue_create_failed} = Adapter.create_issue(%{title: "娲剧敓浠诲姟"})
+  end
+
+  test "linear adapter create_issue/1 在 GraphQL 返回错误时透传错误" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", tracker_project_slug: "project-slug")
+
+    Process.put({FakeLinearClient, :graphql_results}, [{:error, :boom}])
+
+    assert {:error, :boom} = Adapter.create_issue(%{title: "娲剧敓浠诲姟"})
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do
