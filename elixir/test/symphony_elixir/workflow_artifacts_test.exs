@@ -48,6 +48,25 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
              })
   end
 
+  test "validate_plan rejects invalid issue graph edges" do
+    assert {:error, :invalid_workflow_plan} ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "需要拆出调研与实现任务",
+               "confidence" => "medium",
+               "nodes" => [
+                 %{
+                   "node_key" => "research-1",
+                   "task_type" => "research",
+                   "title" => "调研 ACP 支持",
+                   "goal" => "收集适配器设计证据",
+                   "agent_id" => "codex"
+                 }
+               ],
+               "edges" => [123]
+             })
+  end
+
   test "validate_completion_packet requires outcome summary and evidence" do
     assert :ok ==
              Artifacts.validate_completion_packet(%{
@@ -124,5 +143,19 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
     assert {:ok, loaded} = Registry.load_by_root_identifier("YQE-100")
     assert Registry.node_by_issue_id(loaded, "issue-1")["task_type"] == "research"
     assert Registry.node(loaded, "research-1")["status"] == "ready"
+  end
+
+  test "registry load_by_root_identifier rejects invalid registry structure" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: Path.join(System.tmp_dir!(), "workflow-registry-root"),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    path = Registry.registry_path("YQE-999")
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, Jason.encode!(%{"nodes" => [], "status" => "planned", "edges" => []}))
+
+    assert {:error, {:invalid_registry_structure, ^path}} = Registry.load_by_root_identifier("YQE-999")
+    assert nil == Registry.node_by_issue_id(%{"nodes" => []}, "issue-1")
   end
 end

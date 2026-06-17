@@ -46,17 +46,28 @@ defmodule SymphonyElixir.Workflow.Registry do
     path = registry_path(root_identifier)
 
     with {:ok, body} <- File.read(path),
-         {:ok, decoded} <- Jason.decode(body) do
+         {:ok, decoded} <- Jason.decode(body),
+         true <- valid_registry?(decoded) do
       {:ok, decoded}
+    else
+      false -> {:error, {:invalid_registry_structure, path}}
     end
   end
 
   @spec node_by_issue_id(map(), String.t()) :: map() | nil
   def node_by_issue_id(registry, issue_id) when is_map(registry) and is_binary(issue_id) do
-    registry["nodes"]
-    |> Map.values()
-    |> Enum.find(fn node -> node["issue_id"] == issue_id end)
+    case registry_nodes(registry) do
+      nodes when is_map(nodes) ->
+        nodes
+        |> Map.values()
+        |> Enum.find(fn node -> node_issue_id(node) == issue_id end)
+
+      _ ->
+        nil
+    end
   end
+
+  def node_by_issue_id(_registry, _issue_id), do: nil
 
   @spec registry_path(String.t()) :: Path.t()
   def registry_path(root_identifier) when is_binary(root_identifier) do
@@ -80,4 +91,24 @@ defmodule SymphonyElixir.Workflow.Registry do
       pair -> pair
     end)
   end
+
+  defp registry_nodes(registry) do
+    Map.get(registry, "nodes") || Map.get(registry, :nodes)
+  end
+
+  defp node_issue_id(node) when is_map(node) do
+    Map.get(node, "issue_id") || Map.get(node, :issue_id)
+  end
+
+  defp node_issue_id(_node), do: nil
+
+  defp valid_registry?(%{"nodes" => nodes, "edges" => edges, "status" => status})
+       when is_map(nodes) and is_list(edges) and is_binary(status),
+       do: true
+
+  defp valid_registry?(%{nodes: nodes, edges: edges, status: status})
+       when is_map(nodes) and is_list(edges) and is_binary(status),
+       do: true
+
+  defp valid_registry?(_registry), do: false
 end

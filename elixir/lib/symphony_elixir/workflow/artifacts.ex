@@ -47,7 +47,10 @@ defmodule SymphonyElixir.Workflow.Artifacts do
         "edges" => edges
       })
       when is_binary(summary) and is_binary(confidence) and is_list(nodes) and is_list(edges) do
-    validate_plan_nodes(nodes)
+    with :ok <- validate_plan_nodes(nodes),
+         :ok <- validate_plan_edges(edges) do
+      :ok
+    end
   end
 
   def validate_plan(%{
@@ -108,6 +111,14 @@ defmodule SymphonyElixir.Workflow.Artifacts do
     end
   end
 
+  defp validate_plan_edges(edges) do
+    if Enum.all?(edges, &valid_edge?/1) do
+      :ok
+    else
+      {:error, :invalid_workflow_plan}
+    end
+  end
+
   defp valid_node?(%{
          "node_key" => node_key,
          "task_type" => task_type,
@@ -120,4 +131,14 @@ defmodule SymphonyElixir.Workflow.Artifacts do
        do: true
 
   defp valid_node?(_node), do: false
+
+  defp valid_edge?(%{"from" => from_node, "to" => to_node})
+       when is_binary(from_node) and is_binary(to_node),
+       do: true
+
+  defp valid_edge?(%{from: from_node, to: to_node})
+       when is_binary(from_node) and is_binary(to_node),
+       do: true
+
+  defp valid_edge?(_edge), do: false
 end
