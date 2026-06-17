@@ -61,7 +61,10 @@ defmodule SymphonyElixir.Workflow do
   end
 
   defp parse(content) do
-    {front_matter_lines, prompt_lines} = split_front_matter(content)
+    {front_matter_lines, prompt_lines} =
+      content
+      |> strip_utf8_bom()
+      |> split_front_matter()
 
     case front_matter_yaml_to_map(front_matter_lines) do
       {:ok, front_matter} ->
@@ -81,6 +84,9 @@ defmodule SymphonyElixir.Workflow do
         {:error, {:workflow_parse_error, reason}}
     end
   end
+
+  defp strip_utf8_bom(<<0xEF, 0xBB, 0xBF, rest::binary>>), do: rest
+  defp strip_utf8_bom(content), do: content
 
   defp split_front_matter(content) do
     lines = String.split(content, ~r/\R/, trim: false)

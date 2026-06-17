@@ -374,7 +374,7 @@ defmodule SymphonyElixir.ExtensionsTest do
          %{
            "data" => %{
              "projects" => %{
-               "nodes" => [%{"id" => "project-1", "team" => %{"id" => "team-1"}}]
+               "nodes" => [%{"id" => "project-1", "teams" => %{"nodes" => [%{"id" => "team-1"}]}}]
              }
            }
          }},
@@ -416,6 +416,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert_receive {:graphql_called, project_lookup_query, %{projectSlug: "project-slug"}}
     assert project_lookup_query =~ "projects"
+    assert project_lookup_query =~ "teams"
 
     assert_receive {:graphql_called, state_lookup_query, %{stateName: "Todo", teamId: "team-1"}}
     assert state_lookup_query =~ "states"
@@ -429,6 +430,89 @@ defmodule SymphonyElixir.ExtensionsTest do
                       title: "派生任务"
                     }}
 
+    assert create_issue_query =~ "issueCreate"
+  end
+
+  test "linear adapter 创建 issue 时会把标签名称解析成 labelIds" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_project_slug: "project-slug"
+    )
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "projects" => %{
+               "nodes" => [%{"id" => "project-1", "teams" => %{"nodes" => [%{"id" => "team-1"}]}}]
+             }
+           }
+         }},
+        {:ok,
+         %{
+           "data" => %{
+             "team" => %{
+               "states" => %{
+                 "nodes" => [%{"id" => "state-1"}]
+               }
+             }
+           }
+         }},
+        {:ok,
+         %{
+           "data" => %{
+             "issueLabels" => %{
+               "nodes" => [
+                 %{"id" => "label-1", "name" => "symphony-local-test"},
+                 %{"id" => "label-2", "name" => "agent:mimo"}
+               ]
+             }
+           }
+         }},
+        {:ok,
+         %{
+           "data" => %{
+             "issueCreate" => %{
+               "success" => true,
+               "issue" => %{
+                 "id" => "issue-1",
+                 "identifier" => "MT-1",
+                 "title" => "派生任务",
+                 "description" => "来自工作流的任务",
+                 "url" => "https://linear.app/issue/MT-1",
+                 "state" => %{"name" => "Todo"},
+                 "labels" => %{
+                   "nodes" => [
+                     %{"name" => "symphony-local-test"},
+                     %{"name" => "agent:mimo"}
+                   ]
+                 }
+               }
+             }
+           }
+         }}
+      ]
+    )
+
+    assert {:ok, %Issue{labels: ["symphony-local-test", "agent:mimo"]}} =
+             Adapter.create_issue(%{
+               title: "派生任务",
+               description: "来自工作流的任务",
+               labels: ["symphony-local-test", "agent:mimo"]
+             })
+
+    assert_receive {:graphql_called, _project_lookup_query, %{projectSlug: "project-slug"}}
+    assert_receive {:graphql_called, _state_lookup_query, %{stateName: "Todo", teamId: "team-1"}}
+    assert_receive {:graphql_called, label_lookup_query, %{labelNames: ["symphony-local-test", "agent:mimo"]}}
+    assert label_lookup_query =~ "issueLabels"
+
+    assert_receive {:graphql_called, create_issue_query, %{labelIds: ["label-1", "label-2"]}}
+    assert create_issue_query =~ "labelIds"
     assert create_issue_query =~ "issueCreate"
   end
 
@@ -465,7 +549,7 @@ defmodule SymphonyElixir.ExtensionsTest do
          %{
            "data" => %{
              "projects" => %{
-               "nodes" => [%{"id" => "project-1", "team" => %{"id" => "team-1"}}]
+               "nodes" => [%{"id" => "project-1", "teams" => %{"nodes" => [%{"id" => "team-1"}]}}]
              }
            }
          }},
@@ -490,7 +574,7 @@ defmodule SymphonyElixir.ExtensionsTest do
          %{
            "data" => %{
              "projects" => %{
-               "nodes" => [%{"id" => "project-1", "team" => %{"id" => "team-1"}}]
+               "nodes" => [%{"id" => "project-1", "teams" => %{"nodes" => [%{"id" => "team-1"}]}}]
              }
            }
          }},

@@ -187,6 +187,58 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert implementation_issue.description =~ "调研结论供实现任务消费"
   end
 
+  test "issue_graph 派生 issue 会继承 root labels 以满足 required_labels 调度" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-labels-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_required_labels: ["symphony-local-test"],
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{
+      id: "root-labels",
+      identifier: "YQE-LABELS",
+      title: "带标签的 root issue",
+      state: "In Progress",
+      labels: ["symphony-local-test", "agent:mimo"]
+    }
+
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.workflow_plan_path(workspace),
+      Jason.encode!(%{
+        "kind" => "issue_graph",
+        "summary" => "验证派生 issue 可继续被 required_labels 选中",
+        "confidence" => "high",
+        "nodes" => [
+          %{
+            "node_key" => "implementation",
+            "task_type" => "implementation",
+            "title" => "继承标签的派生任务",
+            "goal" => "证明派生任务可调度",
+            "agent_id" => "codex"
+          }
+        ],
+        "edges" => []
+      })
+    )
+
+    assert {:ok, _registry} = Controller.handle_planning_completion(root_issue, workspace)
+    assert_receive {:memory_tracker_issue_created, %Issue{} = derived_issue}
+
+    assert "symphony-local-test" in derived_issue.labels
+    assert "agent:mimo" in derived_issue.labels
+    assert Issue.routable?(derived_issue, Config.settings!().tracker.required_labels)
+  end
+
   test "issue_graph 规划注释失败会向上返回错误" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-comment-fail-#{System.unique_integer([:positive])}")
@@ -658,6 +710,69 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     refute Controller.issue_ready?(waiting_issue.id)
     assert rework_issue.description =~ "缺少失败场景处理"
     assert rework_issue.description =~ reviewed_issue.identifier
+  end
+
+  test "review needs_rework 创建的返工 issue 会继承被审查 issue labels" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-rework-labels-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_required_labels: ["symphony-local-test"],
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-rework-labels", identifier: "YQE-REWORK-LABELS", title: "root", state: "In Progress"}
+
+    reviewed_issue = %Issue{
+      id: "derived-rework-labels-reviewed",
+      identifier: "YQE-REWORK-LABELS-1",
+      title: "实现任务",
+      state: "In Progress",
+      labels: ["symphony-local-test", "agent:mimo"]
+    }
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => reviewed_issue.id,
+      "issue_identifier" => reviewed_issue.identifier,
+      "agent_id" => "mimocode",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => [],
+      "completion_packet" => %{"summary" => "缺陷实现", "evidence" => ["mix test"]}
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, reviewed_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.review_decision_path(workspace),
+      Jason.encode!(%{
+        "decision" => "needs_rework",
+        "summary" => "需要返工",
+        "confidence" => "high"
+      })
+    )
+
+    reviewed_issue_id = reviewed_issue.id
+
+    assert {:ok, {:needs_rework, ^reviewed_issue_id, "需要返工"}} =
+             Controller.handle_review_completion(reviewed_issue, workspace)
+
+    assert_receive {:memory_tracker_issue_created, %Issue{} = rework_issue}
+    assert "symphony-local-test" in rework_issue.labels
+    assert "agent:mimo" in rework_issue.labels
+    assert Issue.routable?(rework_issue, Config.settings!().tracker.required_labels)
   end
 
   test "review needs_replan 会标记 root 进入重规划并废弃未完成节点" do

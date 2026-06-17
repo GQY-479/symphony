@@ -43,8 +43,10 @@ defmodule SymphonyElixir.Linear.Adapter do
     projects(filter: {slugId: {eq: $projectSlug}}, first: 1) {
       nodes {
         id
-        team {
-          id
+        teams(first: 1) {
+          nodes {
+            id
+          }
         }
       }
     }
@@ -63,6 +65,23 @@ defmodule SymphonyElixir.Linear.Adapter do
   }
   """
 
+  @label_lookup_query """
+  query SymphonyResolveIssueLabelIds($teamId: ID!, $labelNames: [String!]!) {
+    issueLabels(
+      filter: {
+        team: {id: {eq: $teamId}}
+        name: {in: $labelNames}
+      }
+      first: 50
+    ) {
+      nodes {
+        id
+        name
+      }
+    }
+  }
+  """
+
   @create_issue_mutation """
   mutation SymphonyCreateIssue(
     $teamId: String!
@@ -71,6 +90,7 @@ defmodule SymphonyElixir.Linear.Adapter do
     $description: String!
     $stateId: String
     $assigneeId: String
+    $labelIds: [String!]
   ) {
     issueCreate(
       input: {
@@ -80,6 +100,7 @@ defmodule SymphonyElixir.Linear.Adapter do
         description: $description
         stateId: $stateId
         assigneeId: $assigneeId
+        labelIds: $labelIds
       }
     ) {
       success
@@ -163,8 +184,9 @@ defmodule SymphonyElixir.Linear.Adapter do
 
     with {:ok, project_id, team_id} <- resolve_project(),
          {:ok, state_id} <- resolve_project_state_id(team_id, state_name),
+         {:ok, label_ids} <- resolve_label_ids(team_id, issue_label_names(attrs)),
          {:ok, response} <-
-           client_module().graphql(@create_issue_mutation, issue_create_variables(attrs, team_id, project_id, state_id)),
+           client_module().graphql(@create_issue_mutation, issue_create_variables(attrs, team_id, project_id, state_id, label_ids)),
          {:ok, issue} <- normalize_created_issue(response) do
       {:ok, issue}
     end
@@ -178,7 +200,8 @@ defmodule SymphonyElixir.Linear.Adapter do
     project_slug = Config.settings!().tracker.project_slug
 
     with {:ok, response} <- client_module().graphql(@project_lookup_query, %{projectSlug: project_slug}),
-         %{"id" => project_id, "team" => %{"id" => team_id}} <- first_project_node(response) do
+         %{"id" => project_id} = project <- first_project_node(response),
+         team_id when is_binary(team_id) <- project_team_id(project) do
       {:ok, project_id, team_id}
     else
       {:error, reason} -> {:error, reason}
@@ -208,14 +231,28 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
-  defp issue_create_variables(attrs, team_id, project_id, state_id) do
+  defp resolve_label_ids(_team_id, []), do: {:ok, []}
+
+  defp resolve_label_ids(team_id, label_names) do
+    with {:ok, response} <-
+           client_module().graphql(@label_lookup_query, %{teamId: team_id, labelNames: label_names}),
+         {:ok, label_ids} <- extract_label_ids(response, label_names) do
+      {:ok, label_ids}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, {:labels_not_found, label_names}}
+    end
+  end
+
+  defp issue_create_variables(attrs, team_id, project_id, state_id, label_ids) do
     %{
       teamId: team_id,
       projectId: project_id,
       title: Map.get(attrs, :title) || Map.get(attrs, "title"),
       description: Map.get(attrs, :description) || Map.get(attrs, "description") || "",
       stateId: state_id,
-      assigneeId: Map.get(attrs, :assignee_id) || Map.get(attrs, "assignee_id")
+      assigneeId: Map.get(attrs, :assignee_id) || Map.get(attrs, "assignee_id"),
+      labelIds: label_ids
     }
   end
 
@@ -236,10 +273,53 @@ defmodule SymphonyElixir.Linear.Adapter do
     get_in(response, ["data", "projects", "nodes", Access.at(0)])
   end
 
+  defp project_team_id(%{"team" => %{"id" => team_id}}) when is_binary(team_id), do: team_id
+
+  defp project_team_id(%{"teams" => %{"nodes" => [%{"id" => team_id} | _]}}) when is_binary(team_id),
+    do: team_id
+
+  defp project_team_id(_project), do: nil
+
   defp extract_state_id(response, path) do
     case get_in(response, path ++ [Access.at(0), "id"]) do
       state_id when is_binary(state_id) -> {:ok, state_id}
       _ -> {:error, :state_not_found}
     end
   end
+
+  defp issue_label_names(attrs) do
+    (Map.get(attrs, :labels) || Map.get(attrs, "labels") || [])
+    |> Enum.map(&to_string/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq_by(&String.downcase/1)
+  end
+
+  defp extract_label_ids(response, label_names) do
+    labels = get_in(response, ["data", "issueLabels", "nodes"]) || []
+
+    labels_by_name =
+      Map.new(labels, fn label ->
+        {normalize_label_name(label["name"]), label["id"]}
+      end)
+
+    label_ids =
+      Enum.map(label_names, fn label_name ->
+        Map.get(labels_by_name, normalize_label_name(label_name))
+      end)
+
+    if Enum.all?(label_ids, &is_binary/1) do
+      {:ok, label_ids}
+    else
+      {:error, {:labels_not_found, label_names}}
+    end
+  end
+
+  defp normalize_label_name(label_name) when is_binary(label_name) do
+    label_name
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_label_name(_label_name), do: ""
 end

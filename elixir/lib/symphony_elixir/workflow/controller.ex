@@ -243,7 +243,8 @@ defmodule SymphonyElixir.Workflow.Controller do
                  title: node["title"],
                  description: node_description(root_issue, node, dependencies, handoffs, plan),
                  state: "Todo",
-                 assignee_id: root_issue.assignee_id
+                 assignee_id: root_issue.assignee_id,
+                 labels: inherited_labels(root_issue)
                }) do
             {:ok, %Issue{} = issue} ->
               updated_registry =
@@ -486,7 +487,8 @@ defmodule SymphonyElixir.Workflow.Controller do
              title: title,
              description: description,
              state: "Todo",
-             assignee_id: issue.assignee_id
+             assignee_id: issue.assignee_id,
+             labels: inherited_labels(issue)
            }) do
       dependencies = node["dependencies"] || []
 
@@ -517,6 +519,15 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp maybe_close_superseded_issue(_registry, _issue), do: :ok
+
+  defp inherited_labels(%Issue{} = issue) do
+    issue
+    |> Issue.label_names()
+    |> Kernel.++(Config.settings!().tracker.required_labels)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.uniq_by(&String.downcase/1)
+  end
 
   defp next_rework_node_key(registry, node_key) do
     existing_keys =

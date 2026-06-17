@@ -988,6 +988,14 @@ defmodule SymphonyElixir.CoreTest do
              Workflow.load(workflow_path)
   end
 
+  test "workflow load accepts UTF-8 BOM before front matter" do
+    workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "BOM_WORKFLOW.md")
+    File.write!(workflow_path, <<0xEF, 0xBB, 0xBF>> <> "---\ntracker:\n  kind: memory\n---\nPrompt\n")
+
+    assert {:ok, %{config: %{"tracker" => %{"kind" => "memory"}}, prompt: "Prompt", prompt_template: "Prompt"}} =
+             Workflow.load(workflow_path)
+  end
+
   test "workflow load accepts unterminated front matter with an empty prompt" do
     workflow_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "UNTERMINATED_WORKFLOW.md")
     File.write!(workflow_path, "---\ntracker:\n  kind: linear\n")
