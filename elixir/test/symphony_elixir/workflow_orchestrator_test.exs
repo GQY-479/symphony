@@ -286,6 +286,191 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert body =~ "Review Decision"
   end
 
+  test "review phase needs_rework 后创建返工 issue 并释放当前 claim" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-review-rework-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_terminal_states: ["Done"],
+      workspace_root: workspace_root,
+      agents: %{
+        codex: %{kind: "cli_run", command: "missing-codex-test-binary"},
+        mimocode: %{kind: "cli_run", command: "missing-mimo-test-binary"}
+      },
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{id: "root-review-rework", identifier: "YQE-716", title: "root", state: "In Progress"}
+
+    reviewed_issue = %Issue{
+      id: "derived-review-rework",
+      identifier: "YQE-717",
+      title: "实现",
+      state: "In Progress",
+      assignee_id: "worker-1",
+      url: "https://linear.app/yqeeqy/issue/YQE-717"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [root_issue, reviewed_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => reviewed_issue.id,
+      "issue_identifier" => reviewed_issue.identifier,
+      "agent_id" => "mimocode",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => [],
+      "completion_packet" => %{
+        "outcome" => "completed",
+        "summary" => "实现了主体逻辑但缺少回归测试",
+        "evidence" => ["mix test"]
+      }
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, reviewed_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.review_decision_path(workspace),
+      Jason.encode!(%{
+        "decision" => "needs_rework",
+        "summary" => "补齐失败路径测试后再验收",
+        "confidence" => "high"
+      })
+    )
+
+    state = %{workflow_state() | claimed: MapSet.new([reviewed_issue.id])}
+    running_entry = running_entry(reviewed_issue, workspace, :review)
+
+    updated_state =
+      Orchestrator.handle_agent_down_for_test(:normal, state, reviewed_issue.id, running_entry)
+
+    assert_receive {:memory_tracker_issue_created, %Issue{} = rework_issue}
+
+    assert MapSet.member?(updated_state.completed, reviewed_issue.id)
+    refute MapSet.member?(updated_state.claimed, reviewed_issue.id)
+    refute Map.has_key?(updated_state.blocked, reviewed_issue.id)
+
+    assert {:dispatch, metadata} = Orchestrator.workflow_dispatch_decision_for_test(rework_issue, updated_state)
+    assert metadata.workflow_phase == :execution
+    assert metadata.agent_id == "mimocode"
+    assert metadata.workflow_context["rework_of"] == "implementation"
+    assert metadata.workflow_context["review_summary"] == "补齐失败路径测试后再验收"
+
+    issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+    assert Enum.find(issues, &(&1.id == reviewed_issue.id)).state == "Done"
+  end
+
+  test "review phase needs_replan 后调度 root issue 重新 planning" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-review-replan-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{codex: %{kind: "cli_run", command: "missing-codex-test-binary"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{
+      id: "root-review-replan",
+      identifier: "YQE-720",
+      title: "root",
+      state: "In Progress",
+      url: "https://linear.app/yqeeqy/issue/YQE-720"
+    }
+
+    reviewed_issue = %Issue{
+      id: "derived-review-replan",
+      identifier: "YQE-721",
+      title: "实现",
+      state: "In Progress",
+      url: "https://linear.app/yqeeqy/issue/YQE-721"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [root_issue, reviewed_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => reviewed_issue.id,
+      "issue_identifier" => reviewed_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => [],
+      "completion_packet" => %{
+        "outcome" => "completed",
+        "summary" => "实现路径被审查判定需要改计划",
+        "evidence" => ["mix test"]
+      }
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, reviewed_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.review_decision_path(workspace),
+      Jason.encode!(%{
+        "decision" => "needs_replan",
+        "summary" => "需要重新拆分 root issue 的后续任务",
+        "confidence" => "high"
+      })
+    )
+
+    state =
+      %{
+        workflow_state()
+        | claimed: MapSet.new([reviewed_issue.id, root_issue.id]),
+          blocked: %{
+            root_issue.id => %{
+              issue_id: root_issue.id,
+              identifier: root_issue.identifier,
+              issue: root_issue,
+              error: "workflow root issue is waiting on derived issues"
+            }
+          }
+      }
+
+    running_entry = running_entry(reviewed_issue, workspace, :review)
+
+    updated_state =
+      Orchestrator.handle_agent_down_for_test(:normal, state, reviewed_issue.id, running_entry)
+
+    assert MapSet.member?(updated_state.completed, reviewed_issue.id)
+    refute MapSet.member?(updated_state.claimed, reviewed_issue.id)
+    refute MapSet.member?(updated_state.claimed, root_issue.id)
+    refute Map.has_key?(updated_state.blocked, root_issue.id)
+
+    refute Map.has_key?(updated_state.retry_attempts, reviewed_issue.id)
+    assert retry = Map.fetch!(updated_state.retry_attempts, root_issue.id)
+    assert retry.workflow_phase == :planning
+    assert retry.workflow_root_issue_id == root_issue.identifier
+    assert retry.agent_id == "codex"
+    assert retry.error =~ "需要重新拆分 root issue 的后续任务"
+    assert retry.workflow_context["replan_reason"] == "需要重新拆分 root issue 的后续任务"
+    assert retry.workflow_context["reviewed_issue_id"] == reviewed_issue.id
+
+    assert {:dispatch, metadata} = Orchestrator.workflow_dispatch_decision_for_test(root_issue, updated_state)
+    assert metadata.workflow_phase == :planning
+    assert metadata.workflow_context["replan_reason"] == "需要重新拆分 root issue 的后续任务"
+  end
+
   test "planning phase 产出 needs_human_input 后阻塞 root issue 并保留明确原因" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-human-input-#{System.unique_integer([:positive])}")

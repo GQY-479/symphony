@@ -2110,6 +2110,32 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "issue_graph"
   end
 
+  test "提示词构建器在重规划时附加 replan 上下文" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
+
+    issue = %Issue{
+      identifier: "MT-904",
+      title: "重规划阶段提示",
+      description: "确认 replan context 合约",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-904",
+      labels: []
+    }
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        workflow_phase: :planning,
+        workflow_context: %{
+          replan_reason: "原实现路径被审查否决",
+          reviewed_issue_identifier: "MT-903"
+        },
+        workspace: "/tmp/workspace"
+      )
+
+    assert prompt =~ "原实现路径被审查否决"
+    assert prompt =~ "MT-903"
+  end
+
   test "提示词构建器附加执行阶段完成包合约" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
 

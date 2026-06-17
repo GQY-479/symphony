@@ -570,6 +570,174 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert Controller.issue_ready?(waiting_issue.id)
   end
 
+  test "review needs_rework 会创建返工 issue 并让下游等待返工节点" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-review-rework-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-rework", identifier: "YQE-813", title: "root", state: "In Progress"}
+    reviewed_issue = %Issue{id: "derived-rework-reviewed", identifier: "YQE-814", title: "实现任务", state: "In Progress"}
+    waiting_issue = %Issue{id: "derived-rework-waiting", identifier: "YQE-815", title: "审查后续任务", state: "Todo"}
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => reviewed_issue.id,
+      "issue_identifier" => reviewed_issue.identifier,
+      "agent_id" => "mimocode",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => [],
+      "completion_packet" => %{
+        "outcome" => "completed",
+        "summary" => "实现了接口，但缺少错误处理",
+        "evidence" => ["mix test"]
+      }
+    })
+    |> Registry.put_node("verification", %{
+      "node_key" => "verification",
+      "issue_id" => waiting_issue.id,
+      "issue_identifier" => waiting_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "verification",
+      "workflow_semantics" => "executable",
+      "status" => "waiting",
+      "dependencies" => ["implementation"]
+    })
+    |> Registry.add_edge(%{"from" => "implementation", "to" => "verification", "kind" => "handoff"})
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, reviewed_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.review_decision_path(workspace),
+      Jason.encode!(%{
+        "decision" => "needs_rework",
+        "summary" => "缺少失败场景处理，需要补齐测试和实现",
+        "confidence" => "high"
+      })
+    )
+
+    assert {:ok, {:needs_rework, "derived-rework-reviewed", "缺少失败场景处理，需要补齐测试和实现"}} =
+             Controller.handle_review_completion(reviewed_issue, workspace)
+
+    assert_receive {:memory_tracker_issue_created, %Issue{} = rework_issue}
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    original_node = Registry.node(registry, "implementation")
+    rework_node = Registry.node(registry, "implementation-rework-1")
+    downstream_node = Registry.node(registry, "verification")
+
+    assert original_node["status"] == "superseded"
+    assert original_node["workflow_semantics"] == "superseded"
+    assert original_node["superseded_by"] == "implementation-rework-1"
+
+    assert rework_node["issue_id"] == rework_issue.id
+    assert rework_node["issue_identifier"] == rework_issue.identifier
+    assert rework_node["agent_id"] == "mimocode"
+    assert rework_node["task_type"] == "implementation"
+    assert rework_node["status"] == "ready"
+    assert rework_node["rework_of"] == "implementation"
+    assert rework_node["review_summary"] == "缺少失败场景处理，需要补齐测试和实现"
+    assert rework_node["previous_completion_packet"]["summary"] == "实现了接口，但缺少错误处理"
+
+    assert downstream_node["dependencies"] == ["implementation-rework-1"]
+    assert Controller.issue_ready?(rework_issue.id)
+    refute Controller.issue_ready?(waiting_issue.id)
+    assert rework_issue.description =~ "缺少失败场景处理"
+    assert rework_issue.description =~ reviewed_issue.identifier
+  end
+
+  test "review needs_replan 会标记 root 进入重规划并废弃未完成节点" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-review-replan-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-replan", identifier: "YQE-816", title: "root", state: "In Progress"}
+    research_issue = %Issue{id: "derived-replan-research", identifier: "YQE-817", title: "调研任务", state: "Done"}
+    reviewed_issue = %Issue{id: "derived-replan-reviewed", identifier: "YQE-818", title: "实现任务", state: "In Progress"}
+    waiting_issue = %Issue{id: "derived-replan-waiting", identifier: "YQE-819", title: "后续任务", state: "Todo"}
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("research", %{
+      "node_key" => "research",
+      "issue_id" => research_issue.id,
+      "issue_identifier" => research_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "research",
+      "workflow_semantics" => "executable",
+      "status" => "completed",
+      "dependencies" => [],
+      "completion_packet" => %{"summary" => "已有调研结论", "evidence" => ["research.md"]}
+    })
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => reviewed_issue.id,
+      "issue_identifier" => reviewed_issue.identifier,
+      "agent_id" => "mimocode",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => ["research"],
+      "completion_packet" => %{"summary" => "实现方向被证明不适用", "evidence" => ["mix test"]}
+    })
+    |> Registry.put_node("verification", %{
+      "node_key" => "verification",
+      "issue_id" => waiting_issue.id,
+      "issue_identifier" => waiting_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "verification",
+      "workflow_semantics" => "executable",
+      "status" => "waiting",
+      "dependencies" => ["implementation"]
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, reviewed_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.review_decision_path(workspace),
+      Jason.encode!(%{
+        "decision" => "needs_replan",
+        "summary" => "当前方案不适用，需要回到 root 重新规划",
+        "confidence" => "high"
+      })
+    )
+
+    assert {:ok, {:needs_replan, "derived-replan-reviewed", "当前方案不适用，需要回到 root 重新规划"}} =
+             Controller.handle_review_completion(reviewed_issue, workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert registry["status"] == "replanning"
+    assert registry["replan_request"] == "当前方案不适用，需要回到 root 重新规划"
+    assert registry["replan_source_issue_id"] == reviewed_issue.id
+    assert Registry.node(registry, "research")["status"] == "completed"
+    assert Registry.node(registry, "implementation")["status"] == "superseded"
+    assert Registry.node(registry, "verification")["status"] == "superseded"
+  end
+
   test "needs_human_input plan 会保存明确的人工输入请求并写回 root 评论" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-human-input-#{System.unique_integer([:positive])}")

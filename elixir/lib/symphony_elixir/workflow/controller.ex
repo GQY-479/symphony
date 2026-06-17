@@ -391,7 +391,242 @@ defmodule SymphonyElixir.Workflow.Controller do
     end
   end
 
+  defp maybe_apply_review_registry_update(%Issue{} = issue, %{"decision" => "needs_rework"} = decision) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, node} ->
+        materialize_rework_issue(registry, node_key, node, issue, decision)
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_apply_review_registry_update(%Issue{} = issue, %{"decision" => "needs_replan"} = decision) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, _node} ->
+        registry
+        |> mark_registry_for_replanning(node_key, issue, decision)
+        |> Registry.save!()
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp maybe_apply_review_registry_update(_issue, _decision), do: :ok
+
+  defp mark_registry_for_replanning(registry, node_key, %Issue{} = issue, decision) do
+    registry
+    |> Map.put("status", "replanning")
+    |> Map.put("replan_request", decision["summary"])
+    |> Map.put("replan_source_node_key", node_key)
+    |> Map.put("replan_source_issue_id", issue.id)
+    |> Map.put("replan_source_issue_identifier", issue.identifier)
+    |> supersede_unfinished_executable_nodes_for_replan(decision)
+  end
+
+  defp supersede_unfinished_executable_nodes_for_replan(registry, decision) do
+    update_in(registry, ["nodes"], fn
+      nodes when is_map(nodes) ->
+        Enum.into(nodes, %{}, fn {node_key, node} ->
+          if executable_node?(node) and not completed_status?(node["status"]) do
+            {node_key,
+             node
+             |> Map.put("status", "superseded")
+             |> Map.put("workflow_semantics", "superseded")
+             |> Map.put("replan_summary", decision["summary"])}
+          else
+            {node_key, node}
+          end
+        end)
+
+      nodes ->
+        nodes
+    end)
+  end
+
+  defp materialize_rework_issue(registry, node_key, node, issue, decision) do
+    rework_key = next_rework_node_key(registry, node_key)
+    title = rework_issue_title(node, issue)
+    description = rework_issue_description(registry, node_key, node, issue, decision)
+
+    with {:ok, %Issue{} = rework_issue} <-
+           Tracker.create_issue(%{
+             title: title,
+             description: description,
+             state: "Todo",
+             assignee_id: issue.assignee_id
+           }) do
+      dependencies = node["dependencies"] || []
+
+      updated_registry =
+        registry
+        |> supersede_node(node_key, rework_key, decision)
+        |> put_rework_node(rework_key, node_key, node, rework_issue, decision, dependencies)
+        |> rewire_downstream_dependencies(node_key, rework_key)
+        |> rewire_downstream_edges(node_key, rework_key)
+        |> Registry.add_edge(%{
+          "from" => node_key,
+          "to" => rework_key,
+          "kind" => "rework",
+          "handoff_summary" => decision["summary"]
+        })
+        |> Map.put("status", "planning_complete")
+
+      with :ok <- Registry.save!(updated_registry),
+           :ok <- maybe_close_superseded_issue(registry, issue) do
+        :ok
+      end
+    end
+  end
+
+  defp maybe_close_superseded_issue(%{"root_issue_id" => root_issue_id}, %Issue{id: issue_id})
+       when is_binary(root_issue_id) and is_binary(issue_id) and root_issue_id != issue_id do
+    Tracker.update_issue_state(issue_id, workflow_terminal_state())
+  end
+
+  defp maybe_close_superseded_issue(_registry, _issue), do: :ok
+
+  defp next_rework_node_key(registry, node_key) do
+    existing_keys =
+      registry
+      |> Map.get("nodes", %{})
+      |> Map.keys()
+      |> MapSet.new()
+
+    Stream.iterate(1, &(&1 + 1))
+    |> Stream.map(&"#{node_key}-rework-#{&1}")
+    |> Enum.find(&(not MapSet.member?(existing_keys, &1)))
+  end
+
+  defp rework_issue_title(%{"title" => title}, _issue) when is_binary(title) and title != "",
+    do: "返工：#{title}"
+
+  defp rework_issue_title(_node, %Issue{title: title}) when is_binary(title) and title != "",
+    do: "返工：#{title}"
+
+  defp rework_issue_title(_node, _issue), do: "返工任务"
+
+  defp rework_issue_description(registry, node_key, node, issue, decision) do
+    packet = node["completion_packet"] || %{}
+
+    """
+    Root issue: #{registry["root_issue_identifier"]}
+    Reviewed issue: #{issue.identifier}
+    Reviewed issue id: #{issue.id}
+    Rework of node: #{node_key}
+    Task type: #{node["task_type"] || "rework"}
+
+    Review summary:
+    #{decision["summary"]}
+
+    Original task:
+    #{node["instructions"] || node["title"] || issue.title || "-"}
+
+    Previous completion summary:
+    #{packet["summary"] || "-"}
+
+    Previous evidence:
+    #{format_list(packet["evidence"] || [])}
+    """
+    |> String.trim()
+  end
+
+  defp supersede_node(registry, node_key, rework_key, decision) do
+    update_in(registry, ["nodes", node_key], fn
+      %{} = node ->
+        node
+        |> Map.put("status", "superseded")
+        |> Map.put("workflow_semantics", "superseded")
+        |> Map.put("superseded_by", rework_key)
+        |> Map.put("review_summary", decision["summary"])
+
+      node ->
+        node
+    end)
+  end
+
+  defp put_rework_node(registry, rework_key, original_node_key, original_node, rework_issue, decision, dependencies) do
+    Registry.put_node(registry, rework_key, %{
+      "node_key" => rework_key,
+      "issue_id" => rework_issue.id,
+      "issue_identifier" => rework_issue.identifier,
+      "agent_id" => original_node["agent_id"],
+      "task_type" => original_node["task_type"] || "rework",
+      "instructions" => rework_instructions(original_node, decision),
+      "dependencies" => dependencies,
+      "handoff" => original_node["handoff"] || [],
+      "handoff_summary" => original_node["handoff_summary"] || original_node["handoff"] || [],
+      "evidence_expectations" => original_node["evidence_expectations"] || [],
+      "workflow_semantics" => "executable",
+      "status" => readiness_for_existing_dependencies(registry, dependencies),
+      "title" => rework_issue.title,
+      "rework_of" => original_node_key,
+      "review_summary" => decision["summary"],
+      "previous_completion_packet" => original_node["completion_packet"]
+    })
+  end
+
+  defp rework_instructions(original_node, decision) do
+    """
+    根据审查意见完成返工。
+
+    审查意见：
+    #{decision["summary"]}
+
+    原任务说明：
+    #{original_node["instructions"] || original_node["title"] || "-"}
+    """
+    |> String.trim()
+  end
+
+  defp readiness_for_existing_dependencies(registry, dependencies) do
+    if dependencies_completed?(registry, dependencies || []), do: "ready", else: "waiting"
+  end
+
+  defp rewire_downstream_dependencies(registry, old_node_key, new_node_key) do
+    update_in(registry, ["nodes"], fn
+      nodes when is_map(nodes) ->
+        Enum.into(nodes, %{}, fn {node_key, node} ->
+          if node_key == old_node_key or node_key == new_node_key do
+            {node_key, node}
+          else
+            dependencies =
+              node
+              |> Map.get("dependencies", [])
+              |> Enum.map(fn dependency ->
+                if dependency == old_node_key, do: new_node_key, else: dependency
+              end)
+              |> Enum.uniq()
+
+            {node_key, Map.put(node, "dependencies", dependencies)}
+          end
+        end)
+
+      nodes ->
+        nodes
+    end)
+  end
+
+  defp rewire_downstream_edges(registry, old_node_key, new_node_key) do
+    update_in(registry, ["edges"], fn
+      edges when is_list(edges) ->
+        Enum.map(edges, fn
+          %{"from" => ^old_node_key} = edge -> Map.put(edge, "from", new_node_key)
+          %{from: ^old_node_key} = edge -> Map.put(edge, :from, new_node_key)
+          edge -> edge
+        end)
+
+      edges ->
+        edges
+    end)
+  end
 
   defp maybe_store_completion_packet(%Issue{} = issue, packet) when is_map(packet) do
     case Registry.load_by_issue_id(issue.id) do
@@ -580,7 +815,10 @@ defmodule SymphonyElixir.Workflow.Controller do
       "handoff" => node["handoff"] || [],
       "upstream_packets" => upstream_packets(registry, node),
       "evidence_expectations" => node["evidence_expectations"] || [],
-      "issue_identifier" => node["issue_identifier"]
+      "issue_identifier" => node["issue_identifier"],
+      "rework_of" => node["rework_of"],
+      "review_summary" => node["review_summary"],
+      "previous_completion_packet" => node["previous_completion_packet"]
     }
   end
 

@@ -325,30 +325,72 @@ defmodule SymphonyElixir.Orchestrator do
     block_issue_from_entry(state, issue_id, running_entry, "review needs human: #{reason}")
   end
 
-  defp apply_workflow_review_decision(state, issue_id, running_entry, {:needs_rework, _reviewed_issue_id, reason}) do
-    block_issue_from_entry(state, issue_id, running_entry, "review needs rework: #{reason}")
+  defp apply_workflow_review_decision(state, issue_id, _running_entry, {:needs_rework, _reviewed_issue_id, _reason}) do
+    state
+    |> complete_issue(issue_id)
+    |> release_issue_claim(issue_id)
   end
 
   defp apply_workflow_review_decision(state, issue_id, running_entry, {:fail, _reviewed_issue_id, reason}) do
     block_issue_from_entry(state, issue_id, running_entry, "review failed: #{reason}")
   end
 
-  defp apply_workflow_review_decision(state, issue_id, running_entry, {:needs_replan, _reviewed_issue_id, reason}) do
-    schedule_issue_retry(
-      complete_issue(state, issue_id),
-      issue_id,
+  defp apply_workflow_review_decision(state, issue_id, running_entry, {:needs_replan, reviewed_issue_id, reason}) do
+    case Registry.load_by_issue_id(reviewed_issue_id) do
+      {:ok, registry, _node_key, _node} ->
+        schedule_root_replan(state, issue_id, running_entry, registry, reviewed_issue_id, reason)
+
+      {:error, _reason} ->
+        schedule_issue_retry(
+          complete_issue(state, issue_id),
+          issue_id,
+          1,
+          Map.merge(workflow_retry_metadata(running_entry), %{
+            identifier: running_entry.identifier,
+            issue_url: running_entry.issue.url,
+            error: "workflow replan requested: #{reason}",
+            delay_type: :continuation,
+            agent_id: Config.settings!().orchestration.planner_agent,
+            agent_kind: Map.get(running_entry, :agent_kind),
+            worker_host: Map.get(running_entry, :worker_host),
+            workspace_path: Map.get(running_entry, :workspace_path),
+            workflow_phase: :planning
+          })
+        )
+    end
+  end
+
+  defp schedule_root_replan(state, issue_id, running_entry, registry, reviewed_issue_id, reason) do
+    root_issue_id = registry["root_issue_id"] || issue_id
+    root_identifier = registry["root_issue_identifier"] || Map.get(running_entry, :identifier, root_issue_id)
+
+    state
+    |> complete_issue(issue_id)
+    |> release_issue_claim(issue_id)
+    |> release_issue_claim(root_issue_id)
+    |> schedule_issue_retry(
+      root_issue_id,
       1,
-      Map.merge(workflow_retry_metadata(running_entry), %{
-        identifier: running_entry.identifier,
-        issue_url: running_entry.issue.url,
+      %{
+        identifier: root_identifier,
+        issue_url: nil,
         error: "workflow replan requested: #{reason}",
         delay_type: :continuation,
         agent_id: Config.settings!().orchestration.planner_agent,
         agent_kind: Map.get(running_entry, :agent_kind),
         worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path),
-        workflow_phase: :planning
-      })
+        workspace_path: nil,
+        workflow_phase: :planning,
+        workflow_root_issue_id: root_identifier,
+        workflow_context: %{
+          "root_issue_id" => root_issue_id,
+          "root_issue_identifier" => root_identifier,
+          "replan_reason" => reason,
+          "reviewed_issue_id" => reviewed_issue_id,
+          "reviewed_issue_identifier" => Map.get(running_entry, :identifier)
+        },
+        max_turns: Config.settings!().orchestration.planning_max_turns
+      }
     )
   end
 
@@ -1053,6 +1095,9 @@ defmodule SymphonyElixir.Orchestrator do
       {:ok, %{"status" => "planning"}} ->
         {:dispatch, planning_dispatch_metadata(issue, orchestration)}
 
+      {:ok, %{"status" => "replanning"} = registry} ->
+        {:dispatch, planning_dispatch_metadata(issue, orchestration, registry)}
+
       {:ok, %{"status" => "needs_human_input"} = registry} ->
         {:block,
          workflow_block_metadata(issue, %{
@@ -1081,17 +1126,32 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp planning_dispatch_metadata(%Issue{} = issue, orchestration) do
+  defp planning_dispatch_metadata(%Issue{} = issue, orchestration, registry \\ nil) do
     %{
       workflow_phase: :planning,
       workflow_root_issue_id: issue.identifier || issue.id,
       agent_id: orchestration.planner_agent,
       max_turns: orchestration.planning_max_turns,
-      workflow_context: %{
-        "root_issue_id" => issue.id,
-        "root_issue_identifier" => issue.identifier,
-        "root_title" => issue.title
-      }
+      workflow_context: planning_workflow_context(issue, registry)
+    }
+  end
+
+  defp planning_workflow_context(%Issue{} = issue, %{"status" => "replanning"} = registry) do
+    issue
+    |> planning_workflow_context(nil)
+    |> Map.merge(%{
+      "replan_reason" => registry["replan_request"],
+      "reviewed_issue_id" => registry["replan_source_issue_id"],
+      "reviewed_issue_identifier" => registry["replan_source_issue_identifier"],
+      "replan_source_node_key" => registry["replan_source_node_key"]
+    })
+  end
+
+  defp planning_workflow_context(%Issue{} = issue, _registry) do
+    %{
+      "root_issue_id" => issue.id,
+      "root_issue_identifier" => issue.identifier,
+      "root_title" => issue.title
     }
   end
 

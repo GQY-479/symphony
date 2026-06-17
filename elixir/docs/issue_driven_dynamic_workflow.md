@@ -37,7 +37,9 @@ orchestration:
 5. execution agent 写出 `completion_packet.json` 后，Symphony 写回 Completion Packet 评论，并排队 review。
 6. reviewer 写出 `review_decision.json`。
 7. review `pass` 会把当前节点标记为 `completed`，并把依赖满足的下游节点推进到 `ready`。
-8. `needs_human`、`needs_rework`、`fail` 等决策会把 issue 留在 blocked 状态，避免静默成功。
+8. review `needs_rework` 会创建普通返工 issue，原节点在 registry 中标记为 `superseded`，下游改为等待返工节点通过。
+9. review `needs_replan` 会把 root workflow 标记为 `replanning`，废弃未完成节点，并调度 root issue 重新进入 planning；planner 会收到重规划原因和被审查 issue。
+10. `needs_human` 和 `fail` 会把 issue 留在可诊断的 blocked 状态，避免静默成功。
 
 ## 需要人工输入
 
