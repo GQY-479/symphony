@@ -568,4 +568,75 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert Registry.node(registry, "implementation")["status"] == "ready"
     assert Controller.issue_ready?(waiting_issue.id)
   end
+
+  test "review pass 会关闭当前 issue，并在所有可执行节点完成后关闭 root issue" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-review-close-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_terminal_states: ["Closed"],
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{
+      id: "root-close",
+      identifier: "YQE-805",
+      title: "root",
+      state: "In Progress"
+    }
+
+    reviewed_issue = %Issue{
+      id: "derived-close",
+      identifier: "YQE-806",
+      title: "实现任务",
+      state: "In Progress"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [root_issue, reviewed_issue])
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => reviewed_issue.id,
+      "issue_identifier" => reviewed_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => []
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, reviewed_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.review_decision_path(workspace),
+      Jason.encode!(%{
+        "decision" => "pass",
+        "summary" => "实现结果满足验收要求",
+        "confidence" => "high"
+      })
+    )
+
+    assert {:ok, {:pass, "derived-close"}} =
+             Controller.handle_review_completion(reviewed_issue, workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert registry["status"] == "completed"
+    assert Registry.node(registry, "implementation")["status"] == "completed"
+
+    issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+    assert Enum.find(issues, &(&1.id == root_issue.id)).state == "Closed"
+    assert Enum.find(issues, &(&1.id == reviewed_issue.id)).state == "Closed"
+
+    assert_receive {:memory_tracker_state_update, "derived-close", "Closed"}
+    assert_receive {:memory_tracker_state_update, "root-close", "Closed"}
+  end
 end

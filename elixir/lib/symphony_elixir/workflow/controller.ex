@@ -346,10 +346,16 @@ defmodule SymphonyElixir.Workflow.Controller do
   defp maybe_apply_review_registry_update(%Issue{} = issue, %{"decision" => "pass"}) do
     case Registry.load_by_issue_id(issue.id) do
       {:ok, registry, node_key, _node} ->
-        registry
-        |> put_node_status(node_key, "completed")
-        |> unlock_ready_nodes()
-        |> Registry.save!()
+        updated_registry =
+          registry
+          |> put_node_status(node_key, "completed")
+          |> unlock_ready_nodes()
+          |> maybe_complete_registry()
+
+        with :ok <- Tracker.update_issue_state(issue.id, workflow_terminal_state()),
+             :ok <- maybe_close_root_issue(updated_registry, issue.id) do
+          Registry.save!(updated_registry)
+        end
 
       {:error, :not_found} ->
         :ok
@@ -366,6 +372,44 @@ defmodule SymphonyElixir.Workflow.Controller do
       %{} = node -> Map.put(node, "status", status)
       node -> node
     end)
+  end
+
+  defp maybe_complete_registry(registry) do
+    if workflow_completed?(registry) do
+      Map.put(registry, "status", "completed")
+    else
+      registry
+    end
+  end
+
+  defp workflow_completed?(registry) when is_map(registry) do
+    executable_nodes =
+      registry
+      |> Map.get("nodes", %{})
+      |> Map.values()
+      |> Enum.filter(&executable_node?/1)
+
+    executable_nodes != [] and Enum.all?(executable_nodes, &completed_status?(&1["status"]))
+  end
+
+  defp workflow_completed?(_registry), do: false
+
+  defp executable_node?(%{} = node), do: Map.get(node, "workflow_semantics", "executable") == "executable"
+  defp executable_node?(_node), do: false
+
+  defp maybe_close_root_issue(%{"status" => "completed", "root_issue_id" => root_issue_id}, reviewed_issue_id)
+       when is_binary(root_issue_id) and root_issue_id != reviewed_issue_id do
+    Tracker.update_issue_state(root_issue_id, workflow_terminal_state())
+  end
+
+  defp maybe_close_root_issue(_registry, _reviewed_issue_id), do: :ok
+
+  defp workflow_terminal_state do
+    terminal_states = Config.settings!().tracker.terminal_states
+
+    Enum.find(terminal_states, &(String.downcase(String.trim(&1)) == "done")) ||
+      List.first(terminal_states) ||
+      "Done"
   end
 
   defp unlock_ready_nodes(registry) do
