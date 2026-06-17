@@ -67,6 +67,25 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
              })
   end
 
+  test "validate_plan 对 mode issue_graph 同样校验 edges" do
+    assert {:error, :invalid_workflow_plan} ==
+             Artifacts.validate_plan(%{
+               "mode" => "issue_graph",
+               "summary" => "需要拆出调研与实现任务",
+               "confidence" => "medium",
+               "nodes" => [
+                 %{
+                   "node_key" => "research-1",
+                   "task_type" => "research",
+                   "title" => "调研 ACP 支持",
+                   "goal" => "收集适配器设计证据",
+                   "agent_id" => "codex"
+                 }
+               ],
+               "edges" => [123]
+             })
+  end
+
   test "validate_completion_packet requires outcome summary and evidence" do
     assert :ok ==
              Artifacts.validate_completion_packet(%{

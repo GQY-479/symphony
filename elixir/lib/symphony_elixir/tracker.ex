@@ -44,9 +44,15 @@ defmodule SymphonyElixir.Tracker do
 
   @spec adapter() :: module()
   def adapter do
-    case Config.settings!().tracker.kind do
-      "memory" -> SymphonyElixir.Tracker.Memory
-      _ -> SymphonyElixir.Linear.Adapter
+    case Application.get_env(:symphony_elixir, :tracker_adapter_override) do
+      override when is_atom(override) and not is_nil(override) ->
+        override
+
+      _ ->
+        case Config.settings!().tracker.kind do
+          "memory" -> SymphonyElixir.Tracker.Memory
+          _ -> SymphonyElixir.Linear.Adapter
+        end
     end
   end
 end

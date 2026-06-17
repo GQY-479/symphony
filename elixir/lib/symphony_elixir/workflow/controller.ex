@@ -3,88 +3,159 @@ defmodule SymphonyElixir.Workflow.Controller do
   Workflow 规划结果物化与派生 issue 编排。
   """
 
-  alias SymphonyElixir.{Tracker}
+  alias SymphonyElixir.Tracker
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Workflow.{Artifacts, Registry}
 
   @spec handle_planning_completion(Issue.t(), Path.t()) :: {:ok, map()} | {:error, term()}
   def handle_planning_completion(%Issue{} = root_issue, workspace) when is_binary(workspace) do
-    with {:ok, plan} <- Artifacts.load_workflow_plan(workspace) do
-      root_registry = Registry.new_root(root_issue)
-
-      case materialize_plan(root_registry, root_issue, plan) do
-        {:ok, registry} ->
-          :ok = Registry.save!(registry)
-          maybe_comment_root(root_issue, plan, registry)
-          {:ok, registry}
-
-        {:error, reason} ->
-          {:error, reason}
+    with {:ok, plan} <- Artifacts.load_workflow_plan(workspace),
+         :ok <- validate_materialization_plan(plan),
+         {:ok, registry} <- materialize_plan(Registry.new_root(root_issue), root_issue, plan) do
+      case Registry.save!(registry) do
+        :ok ->
+          case maybe_comment_root(root_issue, plan, registry) do
+            :ok -> {:ok, registry}
+            {:error, reason} -> {:error, reason}
+          end
       end
     end
   end
 
   def handle_planning_completion(_issue, _workspace), do: {:error, :invalid_arguments}
 
-  defp materialize_plan(registry, root_issue, %{"kind" => "direct_execution"} = plan) do
-    registry =
-      registry
-      |> Registry.put_node("root", %{
-        "issue_id" => root_issue.id,
-        "issue_identifier" => root_issue.identifier,
-        "node_key" => "root",
-        "task_type" => "direct_execution",
-        "workflow_semantics" => "executable",
-        "status" => "ready",
-        "summary" => plan["summary"]
-      })
-      |> Map.put("status", "planning_complete")
+  defp validate_materialization_plan(%{"kind" => kind} = plan) when kind in ["direct_execution", "issue_graph"] do
+    validate_plan_nodes(plan)
+  end
 
-    {:ok, registry}
+  defp validate_materialization_plan(%{"mode" => mode} = plan) when mode in ["direct_execution", "issue_graph"] do
+    validate_plan_nodes(plan)
+  end
+
+  defp validate_materialization_plan(_plan), do: {:error, :invalid_workflow_plan}
+
+  defp validate_plan_nodes(%{"kind" => "direct_execution"}), do: :ok
+  defp validate_plan_nodes(%{"mode" => "direct_execution"}), do: :ok
+
+  defp validate_plan_nodes(%{"kind" => "issue_graph", "nodes" => nodes, "edges" => edges}) do
+    validate_graph_nodes(nodes, edges)
+  end
+
+  defp validate_plan_nodes(%{"mode" => "issue_graph", "nodes" => nodes, "edges" => edges}) do
+    validate_graph_nodes(nodes, edges)
+  end
+
+  defp validate_plan_nodes(_plan), do: {:error, :invalid_workflow_plan}
+
+  defp validate_graph_nodes(nodes, edges) do
+    with :ok <- validate_nodes(nodes),
+         :ok <- validate_edges(edges),
+         :ok <- validate_edge_references(nodes, edges) do
+      :ok
+    end
+  end
+
+  defp validate_nodes(nodes) when is_list(nodes) do
+    if Enum.all?(nodes, &is_valid_node?/1), do: :ok, else: {:error, :invalid_workflow_plan}
+  end
+
+  defp validate_nodes(_nodes), do: {:error, :invalid_workflow_plan}
+
+  defp validate_edges(edges) when is_list(edges) do
+    if Enum.all?(edges, &is_valid_edge?/1), do: :ok, else: {:error, :invalid_workflow_plan}
+  end
+
+  defp validate_edges(_edges), do: {:error, :invalid_workflow_plan}
+
+  defp validate_edge_references(nodes, edges) do
+    node_keys = MapSet.new(Enum.map(nodes, & &1["node_key"]))
+
+    if Enum.all?(edges, fn edge ->
+         from = edge["from"] || edge[:from]
+         to = edge["to"] || edge[:to]
+         is_binary(from) and is_binary(to) and MapSet.member?(node_keys, from) and MapSet.member?(node_keys, to)
+       end) do
+      :ok
+    else
+      {:error, {:invalid_workflow_plan_edge_reference, %{node_keys: Enum.map(nodes, & &1["node_key"])}}}
+    end
+  end
+
+  defp is_valid_node?(%{"node_key" => node_key, "task_type" => task_type, "title" => title, "goal" => goal, "agent_id" => agent_id})
+       when is_binary(node_key) and is_binary(task_type) and is_binary(title) and is_binary(goal) and is_binary(agent_id),
+       do: true
+
+  defp is_valid_node?(_node), do: false
+
+  defp is_valid_edge?(%{"from" => from, "to" => to}) when is_binary(from) and is_binary(to), do: true
+  defp is_valid_edge?(%{from: from, to: to}) when is_binary(from) and is_binary(to), do: true
+  defp is_valid_edge?(_edge), do: false
+
+  defp materialize_plan(registry, root_issue, %{"kind" => "direct_execution"} = plan) do
+    {:ok,
+     registry
+     |> Registry.put_node("root", %{
+       "issue_id" => root_issue.id,
+       "issue_identifier" => root_issue.identifier,
+       "agent_id" => "root",
+       "node_key" => "root",
+       "task_type" => "direct_execution",
+       "workflow_semantics" => "executable",
+       "status" => "ready",
+       "summary" => plan["summary"]
+     })
+     |> Map.put("status", "planning_complete")}
   end
 
   defp materialize_plan(registry, root_issue, %{"kind" => "issue_graph", "nodes" => nodes, "edges" => edges} = plan) do
-    dependency_map = dependency_map(edges)
-    handoff_map = handoff_map(edges)
-
-    with {:ok, registry} <- create_derived_nodes(registry, root_issue, nodes, dependency_map, handoff_map, plan),
-         {:ok, registry} <- attach_edges(registry, edges),
-         registry <- Map.put(registry, "status", "planning_complete") do
-      {:ok, registry}
+    with {:ok, registry} <- create_derived_nodes(registry, root_issue, nodes, edges, plan),
+         {:ok, registry} <- attach_edges(registry, edges) do
+      {:ok, Map.put(registry, "status", "planning_complete")}
     end
+  end
+
+  defp materialize_plan(registry, root_issue, %{"mode" => "direct_execution"} = plan) do
+    materialize_plan(registry, root_issue, Map.put(plan, "kind", "direct_execution"))
+  end
+
+  defp materialize_plan(registry, root_issue, %{"mode" => "issue_graph"} = plan) do
+    materialize_plan(registry, root_issue, Map.put(plan, "kind", "issue_graph"))
   end
 
   defp materialize_plan(registry, _root_issue, _plan) do
     {:ok, Map.put(registry, "status", "planning_complete")}
   end
 
-  defp create_derived_nodes(registry, root_issue, nodes, dependency_map, handoff_map, plan) do
+  defp create_derived_nodes(registry, root_issue, nodes, edges, plan) do
+    dependency_map = dependency_map(edges)
+    handoff_map = handoff_map(edges)
+
     Enum.reduce_while(nodes, {:ok, registry}, fn node, {:ok, acc} ->
-      dependencies = Map.get(dependency_map, node["node_key"], node["dependencies"] || [])
-      handoff = Map.get(handoff_map, node["node_key"], node["handoff"] || node["handoff_summary"])
+      node_key = node["node_key"]
+      dependencies = Map.get(dependency_map, node_key, [])
+      handoffs = Map.get(handoff_map, node_key, [])
 
       case Tracker.create_issue(%{
              title: node["title"],
-             description: node_description(root_issue, node, dependencies, handoff, plan),
+             description: node_description(root_issue, node, dependencies, handoffs, plan),
              state: "Todo",
              assignee_id: root_issue.assignee_id
            }) do
         {:ok, %Issue{} = issue} ->
-          readiness = node_readiness(dependencies)
-
           updated_registry =
-            Registry.put_node(acc, node["node_key"], %{
-              "node_key" => node["node_key"],
+            Registry.put_node(acc, node_key, %{
+              "node_key" => node_key,
               "issue_id" => issue.id,
               "issue_identifier" => issue.identifier,
+              "agent_id" => node["agent_id"],
               "task_type" => node["task_type"],
               "instructions" => node["instructions"],
               "dependencies" => dependencies,
-              "handoff" => handoff,
-              "handoff_summary" => handoff,
+              "handoff" => handoffs,
+              "handoff_summary" => handoffs,
               "evidence_expectations" => node["evidence_expectations"] || [],
               "workflow_semantics" => "executable",
-              "status" => readiness,
+              "status" => readiness_for(dependencies),
               "title" => node["title"]
             })
 
@@ -97,22 +168,20 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp attach_edges(registry, edges) do
-    registry =
-      Enum.reduce(edges, registry, fn edge, acc ->
-        Registry.add_edge(acc, edge)
-      end)
-
-    {:ok, registry}
+    {:ok, Enum.reduce(edges, registry, &Registry.add_edge(&2, &1))}
   end
 
   defp maybe_comment_root(root_issue, %{"kind" => "issue_graph"} = plan, registry) do
     Tracker.create_comment(root_issue.id, render_plan_comment(root_issue, plan, registry))
-    :ok
+  end
+
+  defp maybe_comment_root(root_issue, %{"mode" => "issue_graph"} = plan, registry) do
+    Tracker.create_comment(root_issue.id, render_plan_comment(root_issue, Map.put(plan, "kind", "issue_graph"), registry))
   end
 
   defp maybe_comment_root(_root_issue, _plan, _registry), do: :ok
 
-  defp node_description(root_issue, node, dependencies, handoff, plan) do
+  defp node_description(root_issue, node, dependencies, handoffs, plan) do
     """
     Root issue: #{root_issue.identifier}
     Root issue id: #{root_issue.id}
@@ -127,7 +196,7 @@ defmodule SymphonyElixir.Workflow.Controller do
     #{format_list(dependencies)}
 
     Handoff:
-    #{handoff || ""}
+    #{format_list(handoffs)}
 
     Evidence expectations:
     #{format_list(node["evidence_expectations"] || [])}
@@ -158,36 +227,16 @@ defmodule SymphonyElixir.Workflow.Controller do
     |> String.trim()
   end
 
-  defp node_readiness(dependencies) do
-    if dependency_list(dependencies) == [] do
-      "ready"
-    else
-      "waiting"
-    end
-  end
-
-  defp dependency_list(dependencies) do
-    dependencies
-    |> List.wrap()
-    |> Enum.reject(&is_nil/1)
-  end
+  defp readiness_for([]), do: "ready"
+  defp readiness_for(_dependencies), do: "waiting"
 
   defp dependency_map(edges) do
     Enum.reduce(edges, %{}, fn edge, acc ->
-      dependency =
-        edge["from"] ||
-          edge[:from] ||
-          edge["from_node"] ||
-          edge[:from_node]
+      from = edge["from"] || edge[:from]
+      to = edge["to"] || edge[:to]
 
-      dependent =
-        edge["to"] ||
-          edge[:to] ||
-          edge["to_node"] ||
-          edge[:to_node]
-
-      if is_binary(dependency) and is_binary(dependent) do
-        Map.update(acc, dependent, [dependency], fn existing -> Enum.uniq(existing ++ [dependency]) end)
+      if is_binary(from) and is_binary(to) do
+        Map.update(acc, to, [from], fn existing -> Enum.uniq(existing ++ [from]) end)
       else
         acc
       end
@@ -196,20 +245,12 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp handoff_map(edges) do
     Enum.reduce(edges, %{}, fn edge, acc ->
-      dependent =
-        edge["to"] ||
-          edge[:to] ||
-          edge["to_node"] ||
-          edge[:to_node]
+      from = edge["from"] || edge[:from]
+      to = edge["to"] || edge[:to]
+      summary = edge["handoff_summary"] || edge[:handoff_summary] || edge["handoff"] || edge[:handoff]
 
-      handoff =
-        edge["handoff_summary"] ||
-          edge[:handoff_summary] ||
-          edge["handoff"] ||
-          edge[:handoff]
-
-      if is_binary(dependent) and is_binary(handoff) and handoff != "" do
-        Map.put(acc, dependent, handoff)
+      if is_binary(from) and is_binary(to) and is_binary(summary) and summary != "" do
+        Map.update(acc, to, [summary], fn existing -> Enum.uniq(existing ++ [summary]) end)
       else
         acc
       end

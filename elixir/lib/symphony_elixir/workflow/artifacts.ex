@@ -64,7 +64,10 @@ defmodule SymphonyElixir.Workflow.Artifacts do
         "edges" => edges
       })
       when is_binary(summary) and is_binary(confidence) and is_list(nodes) and is_list(edges) do
-    validate_plan_nodes(nodes)
+    with :ok <- validate_plan_nodes(nodes),
+         :ok <- validate_plan_edges(edges) do
+      :ok
+    end
   end
 
   def validate_plan(_plan), do: {:error, :invalid_workflow_plan}
