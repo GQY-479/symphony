@@ -407,9 +407,12 @@ defmodule SymphonyElixir.Workflow.Controller do
   defp maybe_apply_review_registry_update(%Issue{} = issue, %{"decision" => "needs_replan"} = decision) do
     case Registry.load_by_issue_id(issue.id) do
       {:ok, registry, node_key, _node} ->
-        registry
-        |> mark_registry_for_replanning(node_key, issue, decision)
-        |> Registry.save!()
+        updated_registry = mark_registry_for_replanning(registry, node_key, issue, decision)
+
+        with :ok <- Registry.save!(updated_registry),
+             :ok <- close_replan_superseded_issues(updated_registry) do
+          :ok
+        end
 
       {:error, :not_found} ->
         :ok
@@ -450,6 +453,28 @@ defmodule SymphonyElixir.Workflow.Controller do
         nodes
     end)
   end
+
+  defp close_replan_superseded_issues(registry) do
+    registry
+    |> Map.get("nodes", %{})
+    |> Map.values()
+    |> Enum.filter(&replan_superseded_issue?(&1, registry))
+    |> Enum.reduce_while(:ok, fn node, :ok ->
+      case Tracker.update_issue_state(node["issue_id"], workflow_terminal_state()) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp replan_superseded_issue?(%{"issue_id" => issue_id} = node, %{"root_issue_id" => root_issue_id})
+       when is_binary(issue_id) do
+    issue_id != root_issue_id and
+      node["status"] == "superseded" and
+      node["workflow_semantics"] == "superseded"
+  end
+
+  defp replan_superseded_issue?(_node, _registry), do: false
 
   defp materialize_rework_issue(registry, node_key, node, issue, decision) do
     rework_key = next_rework_node_key(registry, node_key)
