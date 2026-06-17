@@ -106,6 +106,92 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            }
   end
 
+  test "orchestrator snapshot exposes workflow metadata for running retrying and blocked issues" do
+    issue_id = "issue-workflow-snapshot"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-WF",
+      title: "Workflow snapshot test",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-WF"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :WorkflowSnapshotOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      agent_id: "codex",
+      agent_kind: "cli_run",
+      session_id: "workflow-running-session",
+      turn_count: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      codex_app_server_pid: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      workflow_phase: :review,
+      workflow_root_issue_id: "MT-ROOT",
+      started_at: DateTime.utc_now()
+    }
+
+    retry_entry = %{
+      attempt: 2,
+      due_at_ms: System.monotonic_time(:millisecond) + 1_000,
+      identifier: "MT-WF-RETRY",
+      error: "workflow replan requested",
+      agent_id: "codex",
+      agent_kind: "cli_run",
+      workflow_phase: :planning,
+      workflow_root_issue_id: "MT-ROOT"
+    }
+
+    blocked_entry = %{
+      identifier: "MT-WF-BLOCKED",
+      issue: %{issue | id: "issue-workflow-blocked", identifier: "MT-WF-BLOCKED"},
+      error: "workflow waiting on dependencies",
+      agent_id: "codex",
+      agent_kind: "cli_run",
+      workflow_phase: :execution,
+      workflow_root_issue_id: "MT-ROOT",
+      blocked_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:retry_attempts, %{"issue-workflow-retry" => retry_entry})
+      |> Map.put(:blocked, %{"issue-workflow-blocked" => blocked_entry})
+    end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+
+    assert %{running: [running], retrying: [retrying], blocked: [blocked]} = snapshot
+    assert running.workflow_phase == :review
+    assert running.workflow_root_issue_id == "MT-ROOT"
+    assert running.workflow_blocked_reason == nil
+    assert retrying.workflow_phase == :planning
+    assert retrying.workflow_root_issue_id == "MT-ROOT"
+    assert retrying.workflow_blocked_reason == "workflow replan requested"
+    assert blocked.workflow_phase == :execution
+    assert blocked.workflow_root_issue_id == "MT-ROOT"
+    assert blocked.workflow_blocked_reason == "workflow waiting on dependencies"
+  end
+
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do
     issue_id = "issue-usage-snapshot"
 
@@ -1621,6 +1707,46 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
 
     assert plain =~ ~r/MT-777.*\r?\n│\s*\r?\n├─ Backoff queue/s
+  end
+
+  test "status dashboard renders workflow phase and blocked reason" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [
+           %{
+             identifier: "MT-WF",
+             state: "In Progress",
+             workflow_phase: :review,
+             session_id: "thread-1234567890",
+             codex_app_server_pid: nil,
+             codex_total_tokens: 0,
+             runtime_seconds: 12,
+             turn_count: 1,
+             last_codex_event: "turn_completed",
+             last_codex_message: nil
+           }
+         ],
+         retrying: [],
+         blocked: [
+           %{
+             identifier: "MT-WAIT",
+             workflow_phase: :execution,
+             workflow_blocked_reason: "workflow waiting on dependencies",
+             error: "workflow waiting on dependencies"
+           }
+         ],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 12},
+         rate_limits: nil
+       }}
+
+    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+    plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
+
+    assert plain =~ "review"
+    assert plain =~ "Blocked"
+    assert plain =~ "MT-WAIT"
+    assert plain =~ "workflow waiting on dependencies"
   end
 
   test "status dashboard renders an unstyled closing corner when the retry queue is empty" do

@@ -10,7 +10,7 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       AGENT    STAGE       PID    AGE / ... TOKENS   SES... EVENT                                           
+│   ID       AGENT    STAGE       PHASE     PID    AGE / ... TOKENS   SES... EVENT                                 
 │   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │  No active agents
 │

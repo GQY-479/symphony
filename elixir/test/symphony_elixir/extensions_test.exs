@@ -556,6 +556,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "workspace_path" => nil,
                  "session_id" => "thread-http",
                  "turn_count" => 7,
+                 "workflow_phase" => "review",
+                 "workflow_root_issue_id" => "MT-ROOT",
+                 "workflow_blocked_reason" => nil,
                  "last_event" => "notification",
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
@@ -574,7 +577,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "agent_id" => "mimocode",
                  "agent_kind" => "cli_run",
                  "worker_host" => nil,
-                 "workspace_path" => nil
+                 "workspace_path" => nil,
+                 "workflow_phase" => "planning",
+                 "workflow_root_issue_id" => "MT-ROOT",
+                 "workflow_blocked_reason" => "boom"
                }
              ],
              "blocked" => [
@@ -590,6 +596,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "session_id" => "thread-blocked",
                  "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
+                 "workflow_phase" => "execution",
+                 "workflow_root_issue_id" => "MT-ROOT",
+                 "workflow_blocked_reason" => "codex turn requires operator input",
                  "last_event" => "turn_input_required",
                  "last_message" => "turn blocked: waiting for user input",
                  "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
@@ -624,6 +633,9 @@ defmodule SymphonyElixir.ExtensionsTest do
                "state" => "In Progress",
                "agent_id" => "mimocode",
                "agent_kind" => "cli_run",
+               "workflow_phase" => "review",
+               "workflow_root_issue_id" => "MT-ROOT",
+               "workflow_blocked_reason" => nil,
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",
                "last_message" => "rendered",
@@ -1058,6 +1070,8 @@ defmodule SymphonyElixir.ExtensionsTest do
           codex_input_tokens: 4,
           codex_output_tokens: 8,
           codex_total_tokens: 12,
+          workflow_phase: :review,
+          workflow_root_issue_id: "MT-ROOT",
           started_at: DateTime.utc_now()
         }
       ],
@@ -1070,7 +1084,9 @@ defmodule SymphonyElixir.ExtensionsTest do
           due_in_ms: 2_000,
           error: "boom",
           agent_id: "mimocode",
-          agent_kind: "cli_run"
+          agent_kind: "cli_run",
+          workflow_phase: :planning,
+          workflow_root_issue_id: "MT-ROOT"
         }
       ],
       blocked: [
@@ -1085,6 +1101,8 @@ defmodule SymphonyElixir.ExtensionsTest do
           worker_host: "dm-dev2",
           workspace_path: "/workspaces/MT-BLOCKED",
           session_id: "thread-blocked",
+          workflow_phase: :execution,
+          workflow_root_issue_id: "MT-ROOT",
           blocked_at: DateTime.utc_now(),
           last_codex_event: :turn_input_required,
           last_codex_message: %{

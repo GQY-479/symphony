@@ -9,9 +9,9 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       AGENT    STAGE       PID    AGE / ... TOKENS   SES... EVENT                                           
+│   ID       AGENT    STAGE       PHASE     PID    AGE / ... TOKENS   SES... EVENT                                 
 │   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│ ● MT-638   mimocode retrying    4242   20m 25...   14,200 thr... agent message streaming: waiting on rate-limi...
+│ ● MT-638   mimocode retrying    -         4242   20m 25...   14,200 thr... agent message streaming: waiting on...
 │
 ├─ Backoff queue
 │

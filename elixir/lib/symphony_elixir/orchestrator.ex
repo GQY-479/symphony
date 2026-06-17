@@ -1832,6 +1832,9 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
+          workflow_phase: Map.get(metadata, :workflow_phase),
+          workflow_root_issue_id: Map.get(metadata, :workflow_root_issue_id),
+          workflow_blocked_reason: Map.get(metadata, :error),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -1849,7 +1852,10 @@ defmodule SymphonyElixir.Orchestrator do
           agent_id: Map.get(retry, :agent_id),
           agent_kind: Map.get(retry, :agent_kind),
           worker_host: Map.get(retry, :worker_host),
-          workspace_path: Map.get(retry, :workspace_path)
+          workspace_path: Map.get(retry, :workspace_path),
+          workflow_phase: Map.get(retry, :workflow_phase),
+          workflow_root_issue_id: Map.get(retry, :workflow_root_issue_id),
+          workflow_blocked_reason: Map.get(retry, :error)
         }
       end)
 
@@ -1870,7 +1876,10 @@ defmodule SymphonyElixir.Orchestrator do
           blocked_at: Map.get(metadata, :blocked_at),
           last_codex_timestamp: Map.get(metadata, :last_codex_timestamp),
           last_codex_message: Map.get(metadata, :last_codex_message),
-          last_codex_event: Map.get(metadata, :last_codex_event)
+          last_codex_event: Map.get(metadata, :last_codex_event),
+          workflow_phase: Map.get(metadata, :workflow_phase),
+          workflow_root_issue_id: Map.get(metadata, :workflow_root_issue_id),
+          workflow_blocked_reason: Map.get(metadata, :error)
         }
       end)
 

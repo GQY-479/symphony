@@ -18,13 +18,14 @@ defmodule SymphonyElixir.StatusDashboard do
   @running_id_width 8
   @running_agent_width 8
   @running_stage_width 11
+  @running_phase_width 9
   @running_pid_width 6
   @running_age_width 9
   @running_tokens_width 8
   @running_session_width 6
   @running_event_default_width 44
-  @running_event_min_width 12
-  @running_row_chrome_width 11
+  @running_event_min_width 3
+  @running_row_chrome_width 12
   @default_terminal_columns 115
 
   @ansi_reset IO.ANSI.reset()
@@ -345,6 +346,8 @@ defmodule SymphonyElixir.StatusDashboard do
         max_agents = Config.settings!().agent.max_concurrent_agents
         running_event_width = running_event_width(terminal_columns_override)
         running_rows = format_running_rows(running, running_event_width)
+        blocked = Map.get(snapshot, :blocked, [])
+        blocked_section = format_blocked_section(blocked)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
 
@@ -372,7 +375,8 @@ defmodule SymphonyElixir.StatusDashboard do
            running_table_separator_row(running_event_width)
          ] ++
            running_rows ++
-           running_to_backoff_spacer ++
+           blocked_section ++
+           if(blocked == [], do: running_to_backoff_spacer, else: ["│"]) ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
            [closing_border()])
@@ -593,6 +597,7 @@ defmodule SymphonyElixir.StatusDashboard do
     agent = format_cell(Map.get(running_entry, :agent_id) || "n/a", @running_agent_width)
     state = running_entry.state || "unknown"
     state_display = format_cell(to_string(state), @running_stage_width)
+    phase = format_cell(workflow_phase_label(Map.get(running_entry, :workflow_phase)), @running_phase_width)
     session = running_entry.session_id |> compact_session_id() |> format_cell(@running_session_width)
     pid = format_cell(running_entry.codex_app_server_pid || "n/a", @running_pid_width)
     total_tokens = running_entry.codex_total_tokens || 0
@@ -623,6 +628,8 @@ defmodule SymphonyElixir.StatusDashboard do
       " ",
       colorize(state_display, status_color),
       " ",
+      colorize(phase, @ansi_magenta),
+      " ",
       colorize(pid, @ansi_yellow),
       " ",
       colorize(age, @ansi_magenta),
@@ -640,6 +647,36 @@ defmodule SymphonyElixir.StatusDashboard do
   @spec format_running_summary_for_test(map(), integer() | nil) :: String.t()
   def format_running_summary_for_test(running_entry, terminal_columns \\ nil),
     do: format_running_summary(running_entry, running_event_width(terminal_columns))
+
+  defp format_blocked_section([]), do: []
+
+  defp format_blocked_section(blocked) when is_list(blocked) do
+    [
+      "│",
+      colorize("├─ Blocked", @ansi_bold),
+      "│"
+    ] ++
+      (blocked
+       |> Enum.sort_by(&(Map.get(&1, :identifier) || ""))
+       |> Enum.map(&format_blocked_summary/1))
+  end
+
+  defp format_blocked_summary(blocked_entry) do
+    identifier = Map.get(blocked_entry, :identifier) || Map.get(blocked_entry, :issue_id) || "unknown"
+    phase = workflow_phase_label(Map.get(blocked_entry, :workflow_phase))
+    reason = Map.get(blocked_entry, :workflow_blocked_reason) || Map.get(blocked_entry, :error) || "blocked"
+
+    "│ " <>
+      colorize("!", @ansi_red) <>
+      " " <>
+      colorize(identifier, @ansi_red) <>
+      colorize(" phase=#{phase}", @ansi_magenta) <>
+      colorize(" reason=#{truncate(reason, 96)}", @ansi_dim)
+  end
+
+  defp workflow_phase_label(nil), do: "-"
+  defp workflow_phase_label(phase) when is_atom(phase), do: Atom.to_string(phase)
+  defp workflow_phase_label(phase), do: to_string(phase)
 
   @doc false
   @spec format_tps_for_test(number()) :: String.t()
@@ -746,6 +783,7 @@ defmodule SymphonyElixir.StatusDashboard do
         format_cell("ID", @running_id_width),
         format_cell("AGENT", @running_agent_width),
         format_cell("STAGE", @running_stage_width),
+        format_cell("PHASE", @running_phase_width),
         format_cell("PID", @running_pid_width),
         format_cell("AGE / TURN", @running_age_width),
         format_cell("TOKENS", @running_tokens_width),
@@ -762,11 +800,12 @@ defmodule SymphonyElixir.StatusDashboard do
       @running_id_width +
         @running_agent_width +
         @running_stage_width +
+        @running_phase_width +
         @running_pid_width +
         @running_age_width +
         @running_tokens_width +
         @running_session_width +
-        running_event_width + 7
+        running_event_width + 8
 
     "│   " <> colorize(String.duplicate("─", separator_width), @ansi_gray)
   end
@@ -784,6 +823,7 @@ defmodule SymphonyElixir.StatusDashboard do
     @running_id_width +
       @running_agent_width +
       @running_stage_width +
+      @running_phase_width +
       @running_pid_width +
       @running_age_width +
       @running_tokens_width +

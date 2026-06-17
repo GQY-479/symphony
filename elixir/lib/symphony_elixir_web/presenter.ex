@@ -111,6 +111,9 @@ defmodule SymphonyElixirWeb.Presenter do
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
+      workflow_phase: Map.get(entry, :workflow_phase),
+      workflow_root_issue_id: Map.get(entry, :workflow_root_issue_id),
+      workflow_blocked_reason: workflow_blocked_reason(entry),
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
       started_at: iso8601(entry.started_at),
@@ -134,7 +137,10 @@ defmodule SymphonyElixirWeb.Presenter do
       agent_id: Map.get(entry, :agent_id),
       agent_kind: Map.get(entry, :agent_kind),
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: Map.get(entry, :workspace_path)
+      workspace_path: Map.get(entry, :workspace_path),
+      workflow_phase: Map.get(entry, :workflow_phase),
+      workflow_root_issue_id: Map.get(entry, :workflow_root_issue_id),
+      workflow_blocked_reason: workflow_blocked_reason(entry)
     }
   end
 
@@ -151,6 +157,9 @@ defmodule SymphonyElixirWeb.Presenter do
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
       blocked_at: iso8601(entry.blocked_at),
+      workflow_phase: Map.get(entry, :workflow_phase),
+      workflow_root_issue_id: Map.get(entry, :workflow_root_issue_id),
+      workflow_blocked_reason: workflow_blocked_reason(entry),
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
       last_event_at: iso8601(entry.last_codex_timestamp)
@@ -166,6 +175,9 @@ defmodule SymphonyElixirWeb.Presenter do
       state: running.state,
       agent_id: Map.get(running, :agent_id),
       agent_kind: Map.get(running, :agent_kind),
+      workflow_phase: Map.get(running, :workflow_phase),
+      workflow_root_issue_id: Map.get(running, :workflow_root_issue_id),
+      workflow_blocked_reason: workflow_blocked_reason(running),
       started_at: iso8601(running.started_at),
       last_event: running.last_codex_event,
       last_message: summarize_message(running.last_codex_message),
@@ -186,7 +198,10 @@ defmodule SymphonyElixirWeb.Presenter do
       agent_id: Map.get(retry, :agent_id),
       agent_kind: Map.get(retry, :agent_kind),
       worker_host: Map.get(retry, :worker_host),
-      workspace_path: Map.get(retry, :workspace_path)
+      workspace_path: Map.get(retry, :workspace_path),
+      workflow_phase: Map.get(retry, :workflow_phase),
+      workflow_root_issue_id: Map.get(retry, :workflow_root_issue_id),
+      workflow_blocked_reason: workflow_blocked_reason(retry)
     }
   end
 
@@ -199,6 +214,9 @@ defmodule SymphonyElixirWeb.Presenter do
       error: blocked.error,
       agent_id: Map.get(blocked, :agent_id),
       agent_kind: Map.get(blocked, :agent_kind),
+      workflow_phase: Map.get(blocked, :workflow_phase),
+      workflow_root_issue_id: Map.get(blocked, :workflow_root_issue_id),
+      workflow_blocked_reason: workflow_blocked_reason(blocked),
       blocked_at: iso8601(blocked.blocked_at),
       last_event: blocked.last_codex_event,
       last_message: summarize_message(blocked.last_codex_message),
@@ -234,6 +252,12 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp workflow_blocked_reason(entry) when is_map(entry) do
+    Map.get(entry, :workflow_blocked_reason) || Map.get(entry, :error)
+  end
+
+  defp workflow_blocked_reason(_entry), do: nil
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()

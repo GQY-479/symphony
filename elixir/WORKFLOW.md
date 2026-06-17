@@ -36,6 +36,13 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
+orchestration:
+  enabled: false
+  planner_agent: codex
+  reviewer_agent: codex
+  artifact_dir: ".symphony"
+  planning_max_turns: 1
+  review_max_turns: 1
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

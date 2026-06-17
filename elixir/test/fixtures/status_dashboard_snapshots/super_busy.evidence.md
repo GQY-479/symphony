@@ -9,10 +9,10 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       AGENT    STAGE       PID    AGE / ... TOKENS   SES... EVENT                                           
+│   ID       AGENT    STAGE       PHASE     PID    AGE / ... TOKENS   SES... EVENT                                 
 │   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│ ● MT-101   mimocode running     4242   13m 5s...  120,450 thr... turn completed (completed)                      
-│ ● MT-102   mimocode running     5252   6m 52s...   89,200 thr... mix test --cover                                
+│ ● MT-101   mimocode running     -         4242   13m 5s...  120,450 thr... turn completed (completed)            
+│ ● MT-102   mimocode running     -         5252   6m 52s...   89,200 thr... mix test --cover                      
 │
 ├─ Backoff queue
 │
