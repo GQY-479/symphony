@@ -186,6 +186,62 @@ defmodule SymphonyElixir.CoreTest do
     assert message =~ "orchestration.reviewer_agent"
   end
 
+  test "orchestration config rejects blank artifact dir and invalid turn counts" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"}
+      },
+      routing: %{default_agent: "codex"},
+      orchestration: %{
+        enabled: true,
+        planner_agent: "codex",
+        reviewer_agent: "codex",
+        artifact_dir: "   ",
+        planning_max_turns: 1,
+        review_max_turns: 1
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "orchestration.artifact_dir"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"}
+      },
+      routing: %{default_agent: "codex"},
+      orchestration: %{
+        enabled: true,
+        planner_agent: "codex",
+        reviewer_agent: "codex",
+        artifact_dir: ".symphony",
+        planning_max_turns: 0,
+        review_max_turns: 1
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "orchestration.planning_max_turns"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"}
+      },
+      routing: %{default_agent: "codex"},
+      orchestration: %{
+        enabled: true,
+        planner_agent: "codex",
+        reviewer_agent: "codex",
+        artifact_dir: ".symphony",
+        planning_max_turns: 1,
+        review_max_turns: 0
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "orchestration.review_max_turns"
+  end
+
   test "legacy codex config synthesizes the default codex agent" do
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_command: "custom-codex app-server",

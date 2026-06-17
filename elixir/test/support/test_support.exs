@@ -1,5 +1,13 @@
 defmodule SymphonyElixir.TestSupport do
   @workflow_prompt "You are an agent for this repository."
+  @orchestration_defaults %{
+    "enabled" => false,
+    "planner_agent" => "codex",
+    "reviewer_agent" => "codex",
+    "artifact_dir" => ".symphony",
+    "planning_max_turns" => 1,
+    "review_max_turns" => 1
+  }
 
   defmacro __using__(_opts) do
     quote do
@@ -303,18 +311,7 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp orchestration_yaml(orchestration) when is_map(orchestration) do
-    config =
-      Map.merge(
-        %{
-          "enabled" => false,
-          "planner_agent" => "codex",
-          "reviewer_agent" => "codex",
-          "artifact_dir" => ".symphony",
-          "planning_max_turns" => 1,
-          "review_max_turns" => 1
-        },
-        Enum.into(orchestration, %{}, fn {key, value} -> {to_string(key), value} end)
-      )
+    config = Map.merge(@orchestration_defaults, normalize_orchestration(orchestration))
 
     [
       "orchestration:",
@@ -326,6 +323,10 @@ defmodule SymphonyElixir.TestSupport do
       "  review_max_turns: #{yaml_value(Map.get(config, "review_max_turns"))}"
     ]
     |> Enum.join("\n")
+  end
+
+  defp normalize_orchestration(orchestration) do
+    Enum.into(orchestration, %{}, fn {key, value} -> {to_string(key), value} end)
   end
 
   defp hook_entry(_name, nil), do: nil
