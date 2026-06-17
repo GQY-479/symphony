@@ -38,7 +38,7 @@ defmodule SymphonyElixir.Workflow.Prompts do
     upstream_summaries =
       context
       |> context_map()
-      |> Map.get(:upstream_packets, [])
+      |> upstream_packets()
       |> Enum.map_join("\n", fn packet ->
         summary = Map.get(packet, "summary") || Map.get(packet, :summary) || ""
         "- #{summary}"
@@ -68,6 +68,10 @@ defmodule SymphonyElixir.Workflow.Prompts do
 
   defp context_map(context) when is_map(context), do: context
   defp context_map(_context), do: %{}
+
+  defp upstream_packets(context) when is_map(context) do
+    Map.get(context, :upstream_packets) || Map.get(context, "upstream_packets") || []
+  end
 
   defp workspace_text(nil), do: "未提供"
   defp workspace_text(workspace) when is_binary(workspace), do: workspace

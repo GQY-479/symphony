@@ -31,7 +31,8 @@ defmodule SymphonyElixir.Workflow.Controller do
   @spec handle_execution_completion(Issue.t(), Path.t()) :: {:ok, {:queue_review, map()}} | {:error, term()}
   def handle_execution_completion(%Issue{} = issue, workspace) when is_binary(workspace) do
     with {:ok, packet} <- Artifacts.load_completion_packet(workspace),
-         :ok <- Tracker.create_comment(issue.id, render_completion_comment(issue, packet)) do
+         :ok <- Tracker.create_comment(issue.id, render_completion_comment(issue, packet)),
+         :ok <- maybe_store_completion_packet(issue, packet) do
       {:ok,
        {:queue_review,
         %{
@@ -177,7 +178,7 @@ defmodule SymphonyElixir.Workflow.Controller do
      |> Registry.put_node("root", %{
        "issue_id" => root_issue.id,
        "issue_identifier" => root_issue.identifier,
-       "agent_id" => "root",
+       "agent_id" => plan["agent_id"],
        "node_key" => "root",
        "task_type" => "direct_execution",
        "workflow_semantics" => "executable",
@@ -367,6 +368,28 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp maybe_apply_review_registry_update(_issue, _decision), do: :ok
 
+  defp maybe_store_completion_packet(%Issue{} = issue, packet) when is_map(packet) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, _node} ->
+        registry
+        |> put_node_completion_packet(node_key, packet)
+        |> Registry.save!()
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp put_node_completion_packet(registry, node_key, packet) do
+    update_in(registry, ["nodes", node_key], fn
+      %{} = node -> Map.put(node, "completion_packet", packet)
+      node -> node
+    end)
+  end
+
   defp put_node_status(registry, node_key, status) do
     update_in(registry, ["nodes", node_key], fn
       %{} = node -> Map.put(node, "status", status)
@@ -516,10 +539,31 @@ defmodule SymphonyElixir.Workflow.Controller do
       "instructions" => node["instructions"],
       "dependencies" => node["dependencies"] || [],
       "handoff" => node["handoff"] || [],
+      "upstream_packets" => upstream_packets(registry, node),
       "evidence_expectations" => node["evidence_expectations"] || [],
       "issue_identifier" => node["issue_identifier"]
     }
   end
+
+  defp upstream_packets(registry, node) when is_map(registry) and is_map(node) do
+    node
+    |> Map.get("dependencies", [])
+    |> Enum.flat_map(fn dependency ->
+      case Registry.node(registry, dependency) do
+        %{"completion_packet" => packet} = upstream_node when is_map(packet) ->
+          [
+            packet
+            |> Map.put_new("node_key", upstream_node["node_key"] || dependency)
+            |> Map.put_new("issue_identifier", upstream_node["issue_identifier"])
+          ]
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp upstream_packets(_registry, _node), do: []
 
   defp dependency_map(edges) do
     Enum.reduce(edges, %{}, fn edge, acc ->

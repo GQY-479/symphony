@@ -73,6 +73,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert root_node["issue_id"] == "root-1"
     assert root_node["issue_identifier"] == "YQE-100"
     assert root_node["status"] == "ready"
+    assert root_node["agent_id"] == nil
 
     refute_receive {:memory_tracker_issue_created, _}
 
@@ -567,6 +568,108 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert Registry.node(registry, "research")["status"] == "completed"
     assert Registry.node(registry, "implementation")["status"] == "ready"
     assert Controller.issue_ready?(waiting_issue.id)
+  end
+
+  test "execution completion 会把 completion packet 保存到对应 registry 节点" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-packet-registry-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-packet", identifier: "YQE-807", title: "root", state: "In Progress"}
+    issue = %Issue{id: "derived-packet", identifier: "YQE-808", title: "调研任务", state: "In Progress"}
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("research", %{
+      "node_key" => "research",
+      "issue_id" => issue.id,
+      "issue_identifier" => issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "research",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => []
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.completion_packet_path(workspace),
+      Jason.encode!(%{
+        "outcome" => "completed",
+        "summary" => "完成上游调研",
+        "evidence" => ["调研结论已写入文档"],
+        "decisions" => ["采用 issue 交接"],
+        "open_questions" => [],
+        "next_handoff" => "实现任务应消费该调研结论"
+      })
+    )
+
+    assert {:ok, {:queue_review, _metadata}} = Controller.handle_execution_completion(issue, workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    packet = Registry.node(registry, "research")["completion_packet"]
+    assert packet["summary"] == "完成上游调研"
+    assert packet["evidence"] == ["调研结论已写入文档"]
+    assert packet["next_handoff"] == "实现任务应消费该调研结论"
+  end
+
+  test "dispatch metadata 会把依赖节点的 completion packet 交给下游 issue" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-upstream-packets-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{id: "root-upstream", identifier: "YQE-809", title: "root", state: "In Progress"}
+    research_issue = %Issue{id: "derived-upstream-research", identifier: "YQE-810", title: "调研", state: "Done"}
+    implementation_issue = %Issue{id: "derived-upstream-implementation", identifier: "YQE-811", title: "实现", state: "Todo"}
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("research", %{
+      "node_key" => "research",
+      "issue_id" => research_issue.id,
+      "issue_identifier" => research_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "research",
+      "workflow_semantics" => "executable",
+      "status" => "completed",
+      "dependencies" => [],
+      "completion_packet" => %{
+        "outcome" => "completed",
+        "summary" => "上游调研完成",
+        "evidence" => ["research.md"]
+      }
+    })
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => implementation_issue.id,
+      "issue_identifier" => implementation_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => ["research"]
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    assert {:ok, metadata} = Controller.issue_dispatch_metadata(implementation_issue.id)
+    assert [%{"summary" => "上游调研完成", "evidence" => ["research.md"]}] = metadata.workflow_context["upstream_packets"]
   end
 
   test "review pass 会关闭当前 issue，并在所有可执行节点完成后关闭 root issue" do

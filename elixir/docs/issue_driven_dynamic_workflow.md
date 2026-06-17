@@ -32,12 +32,18 @@ orchestration:
 
 1. root issue 被发现后，先由 `planner_agent` 执行 planning。
 2. planner 写出 `workflow_plan.json`。
-3. `direct_execution` 计划只在 registry 中落 root 节点；`issue_graph` 计划会创建普通派生 Linear issue。
+3. `direct_execution` 计划只在 registry 中落 root 节点，并让 root issue 进入 `execution` phase；如果计划没有显式指定 `agent_id`，root issue 会继续使用普通 `routing` 规则选择 agent。
 4. 派生 issue 只有在 registry 节点为 `ready` 且依赖已完成时才会执行。
 5. execution agent 写出 `completion_packet.json` 后，Symphony 写回 Completion Packet 评论，并排队 review。
 6. reviewer 写出 `review_decision.json`。
 7. review `pass` 会把当前节点标记为 `completed`，并把依赖满足的下游节点推进到 `ready`。
 8. `needs_human`、`needs_rework`、`fail` 等决策会把 issue 留在 blocked 状态，避免静默成功。
+
+## Issue 交接
+
+每个执行 issue 的 `completion_packet.json` 会被写回对应 registry 节点。下游 issue 被派发时，Symphony 会把依赖节点的 Completion Packet 放入 `workflow_context.upstream_packets`，执行阶段提示词会把这些上游摘要追加给 agent。
+
+这意味着 issue 之间的协作不是只靠 Linear 标题或 blocker 顺序串起来；上游任务完成时产出的结构化交接内容会成为下游任务的显式输入。
 
 ## Registry
 

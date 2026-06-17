@@ -286,6 +286,49 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert body =~ "Review Decision"
   end
 
+  test "direct execution root issue 使用普通路由进入 execution dispatch" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-direct-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{kind: "cli_run", command: "mimo"}
+      },
+      routing: %{default_agent: "mimocode"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    issue = %Issue{
+      id: "root-direct",
+      identifier: "YQE-705",
+      title: "可以直接执行的 root issue",
+      state: "In Progress",
+      url: "https://linear.app/yqeeqy/issue/YQE-705"
+    }
+
+    issue
+    |> Registry.new_root()
+    |> Registry.put_node("root", %{
+      "node_key" => "root",
+      "issue_id" => issue.id,
+      "issue_identifier" => issue.identifier,
+      "task_type" => "direct_execution",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => []
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    assert {:dispatch, metadata} = Orchestrator.workflow_dispatch_decision_for_test(issue, workflow_state())
+    assert metadata.workflow_phase == :execution
+    assert metadata.workflow_root_issue_id == "YQE-705"
+    assert metadata.agent_id == nil
+  end
+
   defp workflow_state do
     %Orchestrator.State{
       max_concurrent_agents: 3,
