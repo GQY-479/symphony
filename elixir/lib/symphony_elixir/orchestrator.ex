@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.Agent.Router
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Workflow.{Controller, Registry}
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -220,15 +221,19 @@ defmodule SymphonyElixir.Orchestrator do
 
         state
         |> complete_issue(issue_id)
-        |> schedule_issue_retry(issue_id, 1, %{
-          identifier: running_entry.identifier,
-          issue_url: running_entry.issue.url,
-          delay_type: :continuation,
-          agent_id: Map.get(running_entry, :agent_id),
-          agent_kind: Map.get(running_entry, :agent_kind),
-          worker_host: Map.get(running_entry, :worker_host),
-          workspace_path: Map.get(running_entry, :workspace_path)
-        })
+        |> schedule_issue_retry(
+          issue_id,
+          1,
+          Map.merge(workflow_retry_metadata(running_entry), %{
+            identifier: running_entry.identifier,
+            issue_url: running_entry.issue.url,
+            delay_type: :continuation,
+            agent_id: Map.get(running_entry, :agent_id),
+            agent_kind: Map.get(running_entry, :agent_kind),
+            worker_host: Map.get(running_entry, :worker_host),
+            workspace_path: Map.get(running_entry, :workspace_path)
+          })
+        )
     end
   end
 
@@ -253,15 +258,20 @@ defmodule SymphonyElixir.Orchestrator do
 
     next_attempt = next_retry_attempt_from_running(running_entry)
 
-    schedule_issue_retry(state, issue_id, next_attempt, %{
-      identifier: running_entry.identifier,
-      issue_url: running_entry.issue.url,
-      error: "agent exited: #{inspect(reason)}",
-      agent_id: Map.get(running_entry, :agent_id),
-      agent_kind: Map.get(running_entry, :agent_kind),
-      worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path)
-    })
+    schedule_issue_retry(
+      state,
+      issue_id,
+      next_attempt,
+      Map.merge(workflow_retry_metadata(running_entry), %{
+        identifier: running_entry.identifier,
+        issue_url: running_entry.issue.url,
+        error: "agent exited: #{inspect(reason)}",
+        agent_id: Map.get(running_entry, :agent_id),
+        agent_kind: Map.get(running_entry, :agent_kind),
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path)
+      })
+    )
   end
 
   defp maybe_dispatch(%State{} = state) do
@@ -399,6 +409,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec workflow_dispatch_decision_for_test(Issue.t(), term()) :: :legacy | {:dispatch, map()} | {:block, map()}
+  def workflow_dispatch_decision_for_test(%Issue{} = issue, %State{} = state) do
+    workflow_dispatch_decision(issue, state)
+  end
+
+  @doc false
   @spec revalidate_issue_for_dispatch_for_test(Issue.t(), ([String.t()] -> term())) ::
           {:ok, Issue.t()} | {:skip, Issue.t() | :missing} | {:error, term()}
   def revalidate_issue_for_dispatch_for_test(%Issue{} = issue, issue_fetcher)
@@ -482,7 +498,7 @@ defmodule SymphonyElixir.Orchestrator do
         release_issue_claim(state, issue.id)
 
       active_issue_state?(issue.state, active_states) ->
-        refresh_blocked_issue_state(state, issue)
+        refresh_or_release_blocked_issue_state(state, issue)
 
       true ->
         Logger.info("Blocked issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; releasing block")
@@ -565,6 +581,21 @@ defmodule SymphonyElixir.Orchestrator do
 
       _ ->
         state
+    end
+  end
+
+  defp refresh_or_release_blocked_issue_state(%State{} = state, %Issue{} = issue) do
+    case Map.get(state.blocked, issue.id) do
+      %{workflow_phase: :execution, error: error} when is_binary(error) ->
+        if String.contains?(error, "workflow waiting") and Controller.issue_ready?(issue.id) do
+          Logger.info("Workflow issue became ready: #{issue_context(issue)}; releasing workflow wait block")
+          release_issue_claim(state, issue.id)
+        else
+          refresh_blocked_issue_state(state, issue)
+        end
+
+      _ ->
+        refresh_blocked_issue_state(state, issue)
     end
   end
 
@@ -669,15 +700,19 @@ defmodule SymphonyElixir.Orchestrator do
 
         state
         |> terminate_running_issue(issue_id, false)
-        |> schedule_issue_retry(issue_id, next_attempt, %{
-          identifier: identifier,
-          issue_url: running_entry.issue.url,
-          error: "stalled for #{elapsed_ms}ms without codex activity",
-          agent_id: Map.get(running_entry, :agent_id),
-          agent_kind: Map.get(running_entry, :agent_kind),
-          worker_host: Map.get(running_entry, :worker_host),
-          workspace_path: Map.get(running_entry, :workspace_path)
-        })
+        |> schedule_issue_retry(
+          issue_id,
+          next_attempt,
+          Map.merge(workflow_retry_metadata(running_entry), %{
+            identifier: identifier,
+            issue_url: running_entry.issue.url,
+            error: "stalled for #{elapsed_ms}ms without codex activity",
+            agent_id: Map.get(running_entry, :agent_id),
+            agent_kind: Map.get(running_entry, :agent_kind),
+            worker_host: Map.get(running_entry, :worker_host),
+            workspace_path: Map.get(running_entry, :workspace_path)
+          })
+        )
       end
     else
       state
@@ -821,6 +856,34 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
+  defp block_workflow_issue(%State{} = state, %Issue{} = issue, metadata) when is_map(metadata) do
+    error = Map.get(metadata, :error) || Map.get(metadata, "error") || "workflow issue is not ready"
+
+    Logger.info("Workflow issue waiting: #{issue_context(issue)} error=#{error}")
+
+    blocked_entry = %{
+      issue_id: issue.id,
+      identifier: issue.identifier || issue.id,
+      issue: issue,
+      agent_id: Map.get(metadata, :agent_id) || Map.get(metadata, "agent_id"),
+      agent_kind: nil,
+      worker_host: nil,
+      workspace_path: nil,
+      session_id: nil,
+      error: error,
+      blocked_at: DateTime.utc_now(),
+      workflow_phase: Map.get(metadata, :workflow_phase) || Map.get(metadata, "workflow_phase"),
+      workflow_context: Map.get(metadata, :workflow_context) || Map.get(metadata, "workflow_context"),
+      workflow_root_issue_id: Map.get(metadata, :workflow_root_issue_id) || Map.get(metadata, "workflow_root_issue_id")
+    }
+
+    %{
+      state
+      | claimed: MapSet.put(state.claimed, issue.id),
+        blocked: Map.put(state.blocked, issue.id, blocked_entry)
+    }
+  end
+
   defp choose_issues(issues, state) do
     active_states = active_state_set()
     terminal_states = terminal_state_set()
@@ -829,11 +892,92 @@ defmodule SymphonyElixir.Orchestrator do
     |> sort_issues_for_dispatch()
     |> Enum.reduce(state, fn issue, state_acc ->
       if should_dispatch_issue?(issue, state_acc, active_states, terminal_states) do
-        dispatch_issue(state_acc, issue)
+        case workflow_dispatch_decision(issue, state_acc) do
+          :legacy -> dispatch_issue(state_acc, issue)
+          {:dispatch, metadata} -> dispatch_issue(state_acc, issue, nil, nil, metadata)
+          {:block, metadata} -> block_workflow_issue(state_acc, issue, metadata)
+        end
       else
         state_acc
       end
     end)
+  end
+
+  defp workflow_dispatch_decision(%Issue{} = issue, %State{}) do
+    settings = Config.settings!()
+    orchestration = settings.orchestration
+
+    if orchestration.enabled == true do
+      case Controller.issue_dispatch_metadata(issue.id) do
+        {:ok, metadata} ->
+          if Controller.issue_ready?(issue.id) do
+            {:dispatch, metadata}
+          else
+            {:block, Map.put(metadata, :error, "workflow waiting on dependencies")}
+          end
+
+        {:error, :not_found} ->
+          workflow_root_dispatch_decision(issue, orchestration)
+
+        {:error, reason} ->
+          {:block,
+           workflow_block_metadata(issue, %{
+             workflow_phase: :planning,
+             error: "workflow registry lookup failed: #{inspect(reason)}"
+           })}
+      end
+    else
+      :legacy
+    end
+  end
+
+  defp workflow_root_dispatch_decision(%Issue{} = issue, orchestration) do
+    case Registry.load_by_root_identifier(issue.identifier) do
+      {:ok, %{"status" => "planning"}} ->
+        {:dispatch, planning_dispatch_metadata(issue, orchestration)}
+
+      {:ok, registry} ->
+        {:block,
+         workflow_block_metadata(issue, %{
+           workflow_phase: :planning,
+           workflow_root_issue_id: registry["root_issue_identifier"] || issue.identifier,
+           error: "workflow root issue is waiting on derived issues"
+         })}
+
+      {:error, reason} when reason in [:enoent, :not_found] ->
+        {:dispatch, planning_dispatch_metadata(issue, orchestration)}
+
+      {:error, reason} ->
+        {:block,
+         workflow_block_metadata(issue, %{
+           workflow_phase: :planning,
+           error: "workflow registry lookup failed: #{inspect(reason)}"
+         })}
+    end
+  end
+
+  defp planning_dispatch_metadata(%Issue{} = issue, orchestration) do
+    %{
+      workflow_phase: :planning,
+      workflow_root_issue_id: issue.identifier || issue.id,
+      agent_id: orchestration.planner_agent,
+      max_turns: orchestration.planning_max_turns,
+      workflow_context: %{
+        "root_issue_id" => issue.id,
+        "root_issue_identifier" => issue.identifier,
+        "root_title" => issue.title
+      }
+    }
+  end
+
+  defp workflow_block_metadata(%Issue{} = issue, metadata) when is_map(metadata) do
+    Map.merge(
+      %{
+        workflow_root_issue_id: issue.identifier || issue.id,
+        workflow_context: %{}
+      },
+      metadata
+    )
   end
 
   defp sort_issues_for_dispatch(issues) when is_list(issues) do
@@ -972,7 +1116,7 @@ defmodule SymphonyElixir.Orchestrator do
       {:ok, %Issue{} = refreshed_issue} ->
         case selected_agent_for_dispatch(refreshed_issue, metadata) do
           {:ok, resolved_agent} ->
-            do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, resolved_agent)
+            do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, resolved_agent, metadata)
 
           {:error, reason} ->
             Logger.error("Skipping dispatch; agent route failed for #{issue_context(refreshed_issue)}: #{inspect(reason)}")
@@ -994,7 +1138,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, resolved_agent) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, resolved_agent, metadata) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -1003,17 +1147,13 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, resolved_agent)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, resolved_agent, metadata)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, resolved_agent) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, resolved_agent, metadata) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient,
-             attempt: attempt,
-             worker_host: worker_host,
-             agent_id: resolved_agent.id
-           )
+           AgentRunner.run(issue, recipient, agent_runner_opts(attempt, worker_host, resolved_agent, metadata))
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -1046,6 +1186,10 @@ defmodule SymphonyElixir.Orchestrator do
             agent_stall_timeout_ms: agent_stall_timeout_ms(resolved_agent.config),
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
+            workflow_phase: Map.get(metadata, :workflow_phase) || Map.get(metadata, "workflow_phase"),
+            workflow_context: Map.get(metadata, :workflow_context) || Map.get(metadata, "workflow_context"),
+            workflow_root_issue_id: Map.get(metadata, :workflow_root_issue_id) || Map.get(metadata, "workflow_root_issue_id"),
+            workflow_metadata: metadata,
             started_at: DateTime.utc_now()
           })
 
@@ -1060,14 +1204,19 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
-        schedule_issue_retry(state, issue.id, next_attempt, %{
-          identifier: issue.identifier,
-          issue_url: issue.url,
-          error: "failed to spawn agent: #{inspect(reason)}",
-          agent_id: resolved_agent.id,
-          agent_kind: resolved_agent.kind,
-          worker_host: worker_host
-        })
+        schedule_issue_retry(
+          state,
+          issue.id,
+          next_attempt,
+          Map.merge(workflow_retry_metadata(metadata), %{
+            identifier: issue.identifier,
+            issue_url: issue.url,
+            error: "failed to spawn agent: #{inspect(reason)}",
+            agent_id: resolved_agent.id,
+            agent_kind: resolved_agent.kind,
+            worker_host: worker_host
+          })
+        )
     end
   end
 
@@ -1109,6 +1258,36 @@ defmodule SymphonyElixir.Orchestrator do
   defp metadata_agent_id(metadata) when is_map(metadata) do
     Map.get(metadata, :agent_id) || Map.get(metadata, "agent_id")
   end
+
+  defp agent_runner_opts(attempt, worker_host, resolved_agent, metadata) when is_map(metadata) do
+    [
+      attempt: attempt,
+      worker_host: worker_host,
+      agent_id: resolved_agent.id
+    ]
+    |> maybe_put_runner_opt(:workflow_phase, metadata_value(metadata, :workflow_phase))
+    |> maybe_put_runner_opt(:workflow_context, metadata_value(metadata, :workflow_context))
+    |> maybe_put_runner_opt(:workflow_root_issue_id, metadata_value(metadata, :workflow_root_issue_id))
+    |> maybe_put_runner_opt(:max_turns, metadata_value(metadata, :max_turns))
+  end
+
+  defp metadata_value(metadata, key) when is_map(metadata) and is_atom(key) do
+    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+  end
+
+  defp maybe_put_runner_opt(opts, _key, nil), do: opts
+  defp maybe_put_runner_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp workflow_retry_metadata(metadata) when is_map(metadata) do
+    %{}
+    |> maybe_put_map_value(:workflow_phase, metadata_value(metadata, :workflow_phase))
+    |> maybe_put_map_value(:workflow_context, metadata_value(metadata, :workflow_context))
+    |> maybe_put_map_value(:workflow_root_issue_id, metadata_value(metadata, :workflow_root_issue_id))
+    |> maybe_put_map_value(:max_turns, metadata_value(metadata, :max_turns))
+  end
+
+  defp maybe_put_map_value(map, _key, nil), do: map
+  defp maybe_put_map_value(map, key, value), do: Map.put(map, key, value)
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
        when is_binary(issue_id) and is_function(issue_fetcher, 1) do
@@ -1153,6 +1332,10 @@ defmodule SymphonyElixir.Orchestrator do
     agent_kind = pick_retry_agent_kind(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
+    workflow_phase = pick_retry_workflow_value(previous_retry, metadata, :workflow_phase)
+    workflow_context = pick_retry_workflow_value(previous_retry, metadata, :workflow_context)
+    workflow_root_issue_id = pick_retry_workflow_value(previous_retry, metadata, :workflow_root_issue_id)
+    max_turns = pick_retry_workflow_value(previous_retry, metadata, :max_turns)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1178,7 +1361,11 @@ defmodule SymphonyElixir.Orchestrator do
             agent_id: agent_id,
             agent_kind: agent_kind,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            workflow_phase: workflow_phase,
+            workflow_context: workflow_context,
+            workflow_root_issue_id: workflow_root_issue_id,
+            max_turns: max_turns
           })
     }
   end
@@ -1193,7 +1380,11 @@ defmodule SymphonyElixir.Orchestrator do
           agent_id: Map.get(retry_entry, :agent_id),
           agent_kind: Map.get(retry_entry, :agent_kind),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          workflow_phase: Map.get(retry_entry, :workflow_phase),
+          workflow_context: Map.get(retry_entry, :workflow_context),
+          workflow_root_issue_id: Map.get(retry_entry, :workflow_root_issue_id),
+          max_turns: Map.get(retry_entry, :max_turns)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1366,6 +1557,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp pick_retry_workspace_path(previous_retry, metadata) do
     metadata[:workspace_path] || Map.get(previous_retry, :workspace_path)
+  end
+
+  defp pick_retry_workflow_value(previous_retry, metadata, key) when is_atom(key) do
+    metadata_value(metadata, key) || Map.get(previous_retry, key)
   end
 
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry

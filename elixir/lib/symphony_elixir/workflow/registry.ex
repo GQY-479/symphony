@@ -45,6 +45,58 @@ defmodule SymphonyElixir.Workflow.Registry do
   def load_by_root_identifier(root_identifier) when is_binary(root_identifier) do
     path = registry_path(root_identifier)
 
+    load_registry_path(path)
+  end
+
+  @spec load_by_issue_id(String.t()) :: {:ok, map(), String.t(), map()} | {:error, term()}
+  def load_by_issue_id(issue_id) when is_binary(issue_id) do
+    case File.ls(registry_dir()) do
+      {:ok, files} ->
+        files
+        |> Enum.filter(&String.ends_with?(&1, ".json"))
+        |> Enum.reduce_while({:error, :not_found}, fn file, _acc ->
+          path = Path.join(registry_dir(), file)
+
+          case load_registry_path(path) do
+            {:ok, registry} ->
+              case node_entry_by_issue_id(registry, issue_id) do
+                {node_key, node} -> {:halt, {:ok, registry, node_key, node}}
+                nil -> {:cont, {:error, :not_found}}
+              end
+
+            {:error, _reason} ->
+              {:cont, {:error, :not_found}}
+          end
+        end)
+
+      {:error, :enoent} ->
+        {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec node_by_issue_id(map(), String.t()) :: map() | nil
+  def node_by_issue_id(registry, issue_id) when is_map(registry) and is_binary(issue_id) do
+    case node_entry_by_issue_id(registry, issue_id) do
+      {_node_key, node} -> node
+      nil -> nil
+    end
+  end
+
+  def node_by_issue_id(_registry, _issue_id), do: nil
+
+  @spec registry_path(String.t()) :: Path.t()
+  def registry_path(root_identifier) when is_binary(root_identifier) do
+    Path.join(registry_dir(), "#{root_identifier}.json")
+  end
+
+  defp registry_dir do
+    Path.join([Config.settings!().workspace.root, ".symphony", "workflows"])
+  end
+
+  defp load_registry_path(path) do
     with {:ok, body} <- File.read(path),
          {:ok, decoded} <- Jason.decode(body),
          true <- valid_registry?(decoded) do
@@ -55,24 +107,14 @@ defmodule SymphonyElixir.Workflow.Registry do
     end
   end
 
-  @spec node_by_issue_id(map(), String.t()) :: map() | nil
-  def node_by_issue_id(registry, issue_id) when is_map(registry) and is_binary(issue_id) do
+  defp node_entry_by_issue_id(registry, issue_id) do
     case registry_nodes(registry) do
       nodes when is_map(nodes) ->
-        nodes
-        |> Map.values()
-        |> Enum.find(fn node -> node_issue_id(node) == issue_id end)
+        Enum.find(nodes, fn {_node_key, node} -> node_issue_id(node) == issue_id end)
 
       _ ->
         nil
     end
-  end
-
-  def node_by_issue_id(_registry, _issue_id), do: nil
-
-  @spec registry_path(String.t()) :: Path.t()
-  def registry_path(root_identifier) when is_binary(root_identifier) do
-    Path.join([Config.settings!().workspace.root, ".symphony", "workflows", "#{root_identifier}.json"])
   end
 
   defp normalize_node(node) do

@@ -3,9 +3,12 @@ defmodule SymphonyElixir.Workflow.Controller do
   Workflow 规划结果物化与派生 issue 编排。
   """
 
-  alias SymphonyElixir.Tracker
+  alias SymphonyElixir.{Config, Tracker}
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Workflow.{Artifacts, Registry}
+
+  @ready_statuses MapSet.new(["ready"])
+  @completed_statuses MapSet.new(["completed", "done", "passed"])
 
   @spec handle_planning_completion(Issue.t(), Path.t()) :: {:ok, map()} | {:error, term()}
   def handle_planning_completion(%Issue{} = root_issue, workspace) when is_binary(workspace) do
@@ -24,6 +27,36 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   def handle_planning_completion(_issue, _workspace), do: {:error, :invalid_arguments}
+
+  @spec issue_ready?(String.t()) :: boolean()
+  def issue_ready?(issue_id) when is_binary(issue_id) do
+    case Registry.load_by_issue_id(issue_id) do
+      {:ok, registry, _node_key, node} -> node_ready?(registry, node)
+      {:error, _reason} -> false
+    end
+  end
+
+  def issue_ready?(_issue_id), do: false
+
+  @spec issue_dispatch_metadata(String.t()) :: {:ok, map()} | {:error, term()}
+  def issue_dispatch_metadata(issue_id) when is_binary(issue_id) do
+    case Registry.load_by_issue_id(issue_id) do
+      {:ok, registry, node_key, node} ->
+        {:ok,
+         %{
+           workflow_phase: :execution,
+           workflow_root_issue_id: registry["root_issue_identifier"],
+           agent_id: node["agent_id"],
+           max_turns: Config.settings!().agent.max_turns,
+           workflow_context: workflow_context(registry, node_key, node)
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def issue_dispatch_metadata(_issue_id), do: {:error, :invalid_issue_id}
 
   defp load_or_new_registry(%Issue{} = root_issue) do
     case Registry.load_by_root_identifier(root_issue.identifier) do
@@ -265,6 +298,49 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp readiness_for([]), do: "ready"
   defp readiness_for(_dependencies), do: "waiting"
+
+  defp node_ready?(registry, node) when is_map(registry) and is_map(node) do
+    ready_status?(node["status"]) and dependencies_completed?(registry, node["dependencies"] || [])
+  end
+
+  defp node_ready?(_registry, _node), do: false
+
+  defp ready_status?(status) when is_binary(status) do
+    MapSet.member?(@ready_statuses, String.downcase(String.trim(status)))
+  end
+
+  defp ready_status?(_status), do: false
+
+  defp dependencies_completed?(registry, dependencies) when is_list(dependencies) do
+    Enum.all?(dependencies, fn dependency ->
+      case Registry.node(registry, dependency) do
+        %{} = node -> completed_status?(node["status"])
+        _ -> false
+      end
+    end)
+  end
+
+  defp dependencies_completed?(_registry, _dependencies), do: false
+
+  defp completed_status?(status) when is_binary(status) do
+    MapSet.member?(@completed_statuses, String.downcase(String.trim(status)))
+  end
+
+  defp completed_status?(_status), do: false
+
+  defp workflow_context(registry, node_key, node) do
+    %{
+      "root_issue_id" => registry["root_issue_id"],
+      "root_issue_identifier" => registry["root_issue_identifier"],
+      "node_key" => node_key,
+      "task_type" => node["task_type"],
+      "instructions" => node["instructions"],
+      "dependencies" => node["dependencies"] || [],
+      "handoff" => node["handoff"] || [],
+      "evidence_expectations" => node["evidence_expectations"] || [],
+      "issue_identifier" => node["issue_identifier"]
+    }
+  end
 
   defp dependency_map(edges) do
     Enum.reduce(edges, %{}, fn edge, acc ->
