@@ -420,8 +420,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive {:graphql_called, state_lookup_query, %{stateName: "Todo", teamId: "team-1"}}
     assert state_lookup_query =~ "states"
 
-    assert_receive {:graphql_called,
-                    create_issue_query,
+    assert_receive {:graphql_called, create_issue_query,
                     %{
                       assigneeId: "user-1",
                       description: "来自工作流的任务",

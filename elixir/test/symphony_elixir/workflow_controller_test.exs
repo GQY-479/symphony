@@ -11,6 +11,21 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     def create_issue(attrs), do: SymphonyElixir.Tracker.Memory.create_issue(attrs)
   end
 
+  defmodule FlakyCreateTracker do
+    def create_comment(issue_id, body), do: SymphonyElixir.Tracker.Memory.create_comment(issue_id, body)
+
+    def create_issue(attrs) do
+      count = Process.get({__MODULE__, :create_count}, 0) + 1
+      Process.put({__MODULE__, :create_count}, count)
+
+      if count == Process.get({__MODULE__, :fail_at}) do
+        {:error, :planned_create_failure}
+      else
+        SymphonyElixir.Tracker.Memory.create_issue(attrs)
+      end
+    end
+  end
+
   test "mode direct_execution 仅落 root registry 且不创建派生 issue" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-direct-#{System.unique_integer([:positive])}")
@@ -311,5 +326,80 @@ defmodule SymphonyElixir.WorkflowControllerTest do
 
     refute_receive {:memory_tracker_issue_created, _}
     refute_receive {:memory_tracker_comment, _, _}
+  end
+
+  test "issue_graph 创建中途失败后重试会复用已保存的 node 映射" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-retry-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+    Application.put_env(:symphony_elixir, :tracker_adapter_override, FlakyCreateTracker)
+
+    on_exit(fn ->
+      Application.delete_env(:symphony_elixir, :tracker_adapter_override)
+      Process.delete({FlakyCreateTracker, :create_count})
+      Process.delete({FlakyCreateTracker, :fail_at})
+    end)
+
+    root_issue = %Issue{
+      id: "root-6",
+      identifier: "YQE-600",
+      title: "可恢复规划 root issue",
+      description: "验证派生 issue 幂等创建",
+      state: "In Progress",
+      assignee_id: "worker-6"
+    }
+
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.workflow_plan_path(workspace),
+      Jason.encode!(%{
+        "kind" => "issue_graph",
+        "summary" => "创建第二个节点时失败，重试应复用第一个节点",
+        "confidence" => "medium",
+        "nodes" => [
+          %{"node_key" => "research-1", "task_type" => "research", "title" => "调研", "goal" => "A", "agent_id" => "codex"},
+          %{"node_key" => "implementation-1", "task_type" => "implementation", "title" => "实现", "goal" => "B", "agent_id" => "codex"}
+        ],
+        "edges" => [
+          %{"from" => "research-1", "to" => "implementation-1", "kind" => "handoff", "handoff_summary" => "调研后实现"}
+        ]
+      })
+    )
+
+    Process.put({FlakyCreateTracker, :create_count}, 0)
+    Process.put({FlakyCreateTracker, :fail_at}, 2)
+
+    assert {:error, :planned_create_failure} =
+             Controller.handle_planning_completion(root_issue, workspace)
+
+    assert_receive {:memory_tracker_issue_created, %Issue{} = first_issue}
+    refute_receive {:memory_tracker_issue_created, _}
+
+    assert {:ok, partial_registry} = Registry.load_by_root_identifier("YQE-600")
+    assert Registry.node(partial_registry, "research-1")["issue_id"] == first_issue.id
+    refute Registry.node(partial_registry, "implementation-1")
+
+    Process.put({FlakyCreateTracker, :fail_at}, nil)
+
+    assert {:ok, registry} = Controller.handle_planning_completion(root_issue, workspace)
+
+    assert_receive {:memory_tracker_issue_created, %Issue{} = second_issue}
+    refute_receive {:memory_tracker_issue_created, _}
+    assert_receive {:memory_tracker_comment, "root-6", _comment_body}
+
+    assert Registry.node(registry, "research-1")["issue_id"] == first_issue.id
+    assert Registry.node(registry, "implementation-1")["issue_id"] == second_issue.id
+
+    assert Enum.count(Application.get_env(:symphony_elixir, :memory_tracker_issues, [])) == 2
   end
 end

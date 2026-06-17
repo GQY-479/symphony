@@ -11,7 +11,8 @@ defmodule SymphonyElixir.Workflow.Controller do
   def handle_planning_completion(%Issue{} = root_issue, workspace) when is_binary(workspace) do
     with {:ok, plan} <- Artifacts.load_workflow_plan(workspace),
          :ok <- validate_materialization_plan(plan),
-         {:ok, registry} <- materialize_plan(Registry.new_root(root_issue), root_issue, plan) do
+         {:ok, base_registry} <- load_or_new_registry(root_issue),
+         {:ok, registry} <- materialize_plan(base_registry, root_issue, plan) do
       case Registry.save!(registry) do
         :ok ->
           case maybe_comment_root(root_issue, plan, registry) do
@@ -23,6 +24,14 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   def handle_planning_completion(_issue, _workspace), do: {:error, :invalid_arguments}
+
+  defp load_or_new_registry(%Issue{} = root_issue) do
+    case Registry.load_by_root_identifier(root_issue.identifier) do
+      {:ok, registry} -> {:ok, registry}
+      {:error, :enoent} -> {:ok, Registry.new_root(root_issue)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp validate_materialization_plan(%{"kind" => kind} = plan) when kind in ["direct_execution", "issue_graph"] do
     validate_plan_nodes(plan)
@@ -135,39 +144,66 @@ defmodule SymphonyElixir.Workflow.Controller do
       dependencies = Map.get(dependency_map, node_key, [])
       handoffs = Map.get(handoff_map, node_key, [])
 
-      case Tracker.create_issue(%{
-             title: node["title"],
-             description: node_description(root_issue, node, dependencies, handoffs, plan),
-             state: "Todo",
-             assignee_id: root_issue.assignee_id
-           }) do
-        {:ok, %Issue{} = issue} ->
-          updated_registry =
-            Registry.put_node(acc, node_key, %{
-              "node_key" => node_key,
-              "issue_id" => issue.id,
-              "issue_identifier" => issue.identifier,
-              "agent_id" => node["agent_id"],
-              "task_type" => node["task_type"],
-              "instructions" => node["instructions"],
-              "dependencies" => dependencies,
-              "handoff" => handoffs,
-              "handoff_summary" => handoffs,
-              "evidence_expectations" => node["evidence_expectations"] || [],
-              "workflow_semantics" => "executable",
-              "status" => readiness_for(dependencies),
-              "title" => node["title"]
-            })
-
+      case reusable_node_issue(Registry.node(acc, node_key)) do
+        {:ok, issue_ref} ->
+          updated_registry = put_derived_node(acc, node_key, node, issue_ref, dependencies, handoffs)
           {:cont, {:ok, updated_registry}}
 
-        {:error, reason} ->
-          {:halt, {:error, reason}}
+        :error ->
+          case Tracker.create_issue(%{
+                 title: node["title"],
+                 description: node_description(root_issue, node, dependencies, handoffs, plan),
+                 state: "Todo",
+                 assignee_id: root_issue.assignee_id
+               }) do
+            {:ok, %Issue{} = issue} ->
+              updated_registry =
+                put_derived_node(
+                  acc,
+                  node_key,
+                  node,
+                  %{"issue_id" => issue.id, "issue_identifier" => issue.identifier},
+                  dependencies,
+                  handoffs
+                )
+
+              :ok = Registry.save!(updated_registry)
+              {:cont, {:ok, updated_registry}}
+
+            {:error, reason} ->
+              {:halt, {:error, reason}}
+          end
       end
     end)
   end
 
+  defp reusable_node_issue(%{"issue_id" => issue_id, "issue_identifier" => issue_identifier})
+       when is_binary(issue_id) and is_binary(issue_identifier) do
+    {:ok, %{"issue_id" => issue_id, "issue_identifier" => issue_identifier}}
+  end
+
+  defp reusable_node_issue(_node), do: :error
+
+  defp put_derived_node(registry, node_key, node, issue_ref, dependencies, handoffs) do
+    Registry.put_node(registry, node_key, %{
+      "node_key" => node_key,
+      "issue_id" => issue_ref["issue_id"],
+      "issue_identifier" => issue_ref["issue_identifier"],
+      "agent_id" => node["agent_id"],
+      "task_type" => node["task_type"],
+      "instructions" => node["instructions"],
+      "dependencies" => dependencies,
+      "handoff" => handoffs,
+      "handoff_summary" => handoffs,
+      "evidence_expectations" => node["evidence_expectations"] || [],
+      "workflow_semantics" => "executable",
+      "status" => readiness_for(dependencies),
+      "title" => node["title"]
+    })
+  end
+
   defp attach_edges(registry, edges) do
+    registry = Map.put(registry, "edges", [])
     {:ok, Enum.reduce(edges, registry, &Registry.add_edge(&2, &1))}
   end
 

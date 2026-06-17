@@ -50,6 +50,7 @@ defmodule SymphonyElixir.Workflow.Registry do
          true <- valid_registry?(decoded) do
       {:ok, decoded}
     else
+      {:error, reason} -> {:error, reason}
       false -> {:error, {:invalid_registry_structure, path}}
     end
   end
