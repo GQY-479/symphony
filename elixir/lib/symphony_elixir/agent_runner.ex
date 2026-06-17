@@ -200,7 +200,7 @@ defmodule SymphonyElixir.AgentRunner do
          turn_number,
          max_turns
        ) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns, resolved_agent)
+    prompt = build_turn_prompt(issue, workspace, opts, turn_number, max_turns, resolved_agent)
 
     with {:ok, turn_session} <-
            run_turn.(
@@ -246,13 +246,18 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns, resolved_agent) do
+  defp build_turn_prompt(issue, workspace, opts, 1, _max_turns, resolved_agent) do
     issue
-    |> PromptBuilder.build_prompt(opts)
+    |> PromptBuilder.build_prompt(
+      opts
+      |> Keyword.put(:workflow_phase, Keyword.get(opts, :workflow_phase))
+      |> Keyword.put(:workflow_context, Keyword.get(opts, :workflow_context))
+      |> Keyword.put(:workspace, workspace)
+    )
     |> append_runtime_guidance(resolved_agent)
   end
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns, _resolved_agent) do
+  defp build_turn_prompt(_issue, _workspace, _opts, turn_number, max_turns, _resolved_agent) do
     """
     Continuation guidance:
 

@@ -2086,6 +2086,158 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "retry attempt #2"
   end
 
+  test "提示词构建器附加规划阶段工作流合约" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
+
+    issue = %Issue{
+      identifier: "MT-900",
+      title: "规划阶段提示",
+      description: "确认 workflow phase 合约",
+      state: "Todo",
+      url: "https://example.org/issues/MT-900",
+      labels: []
+    }
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        workflow_phase: :planning,
+        workflow_context: %{workflow_plan_path: "/tmp/workflow_plan.json"},
+        workspace: "/tmp/workspace"
+      )
+
+    assert prompt =~ "workflow_plan.json"
+    assert prompt =~ "direct_execution"
+    assert prompt =~ "issue_graph"
+  end
+
+  test "提示词构建器附加执行阶段完成包合约" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
+
+    issue = %Issue{
+      identifier: "MT-901",
+      title: "执行阶段提示",
+      description: "确认 completion packet 合约",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-901",
+      labels: []
+    }
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        workflow_phase: :execution,
+        workflow_context: %{upstream_packets: [%{"summary" => "上游摘要 A"}, %{"summary" => "上游摘要 B"}]},
+        workspace: "/tmp/workspace"
+      )
+
+    assert prompt =~ "completion_packet.json"
+    assert prompt =~ "上游摘要 A"
+    assert prompt =~ "上游摘要 B"
+  end
+
+  test "提示词构建器附加审查阶段决策合约" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
+
+    issue = %Issue{
+      identifier: "MT-902",
+      title: "审查阶段提示",
+      description: "确认 review decision 合约",
+      state: "In Review",
+      url: "https://example.org/issues/MT-902",
+      labels: []
+    }
+
+    prompt =
+      PromptBuilder.build_prompt(issue,
+        workflow_phase: :review,
+        workflow_context: %{},
+        workspace: "/tmp/workspace"
+      )
+
+    assert prompt =~ "review_decision.json"
+    assert prompt =~ "pass"
+    assert prompt =~ "needs_rework"
+    assert prompt =~ "needs_replan"
+    assert prompt =~ "needs_human"
+    assert prompt =~ "fail"
+  end
+
+  test "AgentRunner ?? workflow_phase workspace ? workflow_context" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-workflow-phase-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      cli_binary = Path.join(test_root, "fake-cli")
+      trace_file = Path.join(test_root, "cli.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(cli_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CLI_TRACE:-/tmp/cli.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      printf 'CWD:%s\\n' "$PWD" >> "$trace_file"
+      printf '%s\\n' '{"kind":"runner-progress"}'
+      """)
+
+      File.chmod!(cli_binary, 0o755)
+      System.put_env("SYMP_TEST_CLI_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CLI_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        agents: %{
+          codex: %{kind: "codex_app_server", command: "codex app-server"},
+          mimocode: %{
+            kind: "cli_run",
+            command: cli_binary,
+            args: ["run", "--workspace", "{{workspace}}"]
+          }
+        },
+        routing: %{default_agent: "codex"},
+        max_turns: 1
+      )
+
+      issue = %Issue{
+        id: "issue-phase",
+        identifier: "MT-903",
+        title: "?? workflow ??",
+        description: "?? runner ??",
+        state: "Todo",
+        url: "https://example.org/issues/MT-903",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 agent_id: "mimocode",
+                 workflow_phase: :execution,
+                 workflow_context: %{upstream_packets: [%{"summary" => "?? packet ??"}]},
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      trace = File.read!(trace_file)
+      assert trace =~ "completion_packet.json"
+      assert trace =~ "?? packet ??"
+      assert trace =~ Path.join(workspace_root, "MT-903")
+    after
+      System.delete_env("SYMP_TEST_CLI_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
   test "prompt builder adds continuation guidance for retries" do
     workflow_prompt = "{% if attempt %}Retry #" <> "{{ attempt }}" <> "{% endif %}"
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)

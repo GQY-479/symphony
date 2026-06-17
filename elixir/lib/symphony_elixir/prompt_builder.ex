@@ -1,14 +1,19 @@
 defmodule SymphonyElixir.PromptBuilder do
   @moduledoc """
-  Builds agent prompts from Linear issue data.
+  根据 Linear 工单数据和工作流阶段构建代理提示词。
   """
 
   alias SymphonyElixir.{Config, Workflow}
+  alias SymphonyElixir.Workflow.Prompts
 
   @render_opts [strict_variables: true, strict_filters: true]
 
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
+    workflow_phase = Keyword.get(opts, :workflow_phase)
+    workflow_context = Keyword.get(opts, :workflow_context)
+    workspace = Keyword.get(opts, :workspace)
+
     template =
       Workflow.current()
       |> prompt_template!()
@@ -24,6 +29,7 @@ defmodule SymphonyElixir.PromptBuilder do
     )
     |> IO.iodata_to_binary()
     |> ensure_valid_utf8()
+    |> Prompts.append(workflow_phase, workflow_context, workspace)
   end
 
   defp ensure_valid_utf8(binary) when is_binary(binary) do
