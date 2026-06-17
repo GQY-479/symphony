@@ -22,6 +22,9 @@ defmodule SymphonyElixir.Workflow.Artifacts do
   @spec load_plan(Path.t()) :: {:ok, map()} | {:error, term()}
   def load_plan(workspace), do: load_json(workflow_plan_path(workspace), &validate_plan/1)
 
+  @spec load_workflow_plan(Path.t()) :: {:ok, map()} | {:error, term()}
+  def load_workflow_plan(workspace), do: load_plan(workspace)
+
   @spec load_completion_packet(Path.t()) :: {:ok, map()} | {:error, term()}
   def load_completion_packet(workspace),
     do: load_json(completion_packet_path(workspace), &validate_completion_packet/1)
