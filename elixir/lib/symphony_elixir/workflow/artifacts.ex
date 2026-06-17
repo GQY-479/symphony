@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Workflow.Artifacts do
   @moduledoc """
-  工作流规划、完成与评审文件的路径和最小校验工具。
+  工作流规划、完成与审查产物的路径和最小结构校验。
   """
 
   alias SymphonyElixir.Config
@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Workflow.Artifacts do
   @workflow_plan_filename "workflow_plan.json"
   @completion_packet_filename "completion_packet.json"
   @review_decision_filename "review_decision.json"
+  @review_decisions ["pass", "needs_rework", "needs_replan", "needs_human", "fail"]
 
   @spec workflow_plan_path(Path.t()) :: Path.t()
   def workflow_plan_path(workspace), do: artifact_path(workspace, @workflow_plan_filename)
@@ -22,46 +23,61 @@ defmodule SymphonyElixir.Workflow.Artifacts do
   def load_plan(workspace), do: load_json(workflow_plan_path(workspace), &validate_plan/1)
 
   @spec load_completion_packet(Path.t()) :: {:ok, map()} | {:error, term()}
-  def load_completion_packet(workspace), do: load_json(completion_packet_path(workspace), &validate_completion_packet/1)
+  def load_completion_packet(workspace),
+    do: load_json(completion_packet_path(workspace), &validate_completion_packet/1)
 
   @spec load_review_decision(Path.t()) :: {:ok, map()} | {:error, term()}
-  def load_review_decision(workspace), do: load_json(review_decision_path(workspace), &validate_review_decision/1)
+  def load_review_decision(workspace),
+    do: load_json(review_decision_path(workspace), &validate_review_decision/1)
 
-  @spec validate_plan(term()) :: :ok | {:error, term()}
-  def validate_plan(plan) when is_map(plan) do
-    case plan_mode(plan) do
-      "direct_execution" ->
-        :ok
+  @spec validate_plan(term()) :: :ok | {:error, :invalid_workflow_plan}
+  def validate_plan(%{"kind" => "direct_execution", "summary" => summary, "confidence" => confidence})
+      when is_binary(summary) and is_binary(confidence),
+      do: :ok
 
-      "issue_graph" ->
-        validate_issue_graph_plan(plan)
+  def validate_plan(%{"mode" => "direct_execution", "summary" => summary, "confidence" => confidence})
+      when is_binary(summary) and is_binary(confidence),
+      do: :ok
 
-      _ ->
-        {:error, :invalid_workflow_plan}
-    end
+  def validate_plan(%{
+        "kind" => "issue_graph",
+        "summary" => summary,
+        "confidence" => confidence,
+        "nodes" => nodes,
+        "edges" => edges
+      })
+      when is_binary(summary) and is_binary(confidence) and is_list(nodes) and is_list(edges) do
+    validate_plan_nodes(nodes)
+  end
+
+  def validate_plan(%{
+        "mode" => "issue_graph",
+        "summary" => summary,
+        "confidence" => confidence,
+        "nodes" => nodes,
+        "edges" => edges
+      })
+      when is_binary(summary) and is_binary(confidence) and is_list(nodes) and is_list(edges) do
+    validate_plan_nodes(nodes)
   end
 
   def validate_plan(_plan), do: {:error, :invalid_workflow_plan}
 
-  @spec validate_completion_packet(term()) :: :ok | {:error, term()}
-  def validate_completion_packet(packet) when is_map(packet) do
-    if required_map_keys?(packet, ["outcome", "summary", "evidence"]) do
-      :ok
-    else
-      {:error, :invalid_completion_packet}
-    end
-  end
+  @spec validate_completion_packet(term()) :: :ok | {:error, :invalid_completion_packet}
+  def validate_completion_packet(%{"outcome" => outcome, "summary" => summary, "evidence" => evidence})
+      when is_binary(outcome) and is_binary(summary) and is_list(evidence),
+      do: :ok
 
   def validate_completion_packet(_packet), do: {:error, :invalid_completion_packet}
 
-  @spec validate_review_decision(term()) :: :ok | {:error, term()}
-  def validate_review_decision(decision) when is_map(decision) do
-    if required_map_keys?(decision, ["decision", "summary", "confidence"]) do
-      :ok
-    else
-      {:error, :invalid_review_decision}
-    end
-  end
+  @spec validate_review_decision(term()) :: :ok | {:error, :invalid_review_decision}
+  def validate_review_decision(%{
+        "decision" => decision,
+        "summary" => summary,
+        "confidence" => confidence
+      })
+      when decision in @review_decisions and is_binary(summary) and is_binary(confidence),
+      do: :ok
 
   def validate_review_decision(_decision), do: {:error, :invalid_review_decision}
 
@@ -79,33 +95,29 @@ defmodule SymphonyElixir.Workflow.Artifacts do
          :ok <- validator.(decoded) do
       {:ok, decoded}
     else
-      {:error, reason} -> {:error, {:invalid_json_artifact, path, reason}}
+      {:error, reason} -> {:error, reason}
       other -> other
     end
   end
 
-  defp plan_mode(plan) do
-    Map.get(plan, "mode") || Map.get(plan, "kind")
-  end
-
-  defp validate_issue_graph_plan(plan) do
-    with true <- required_map_keys?(plan, ["summary", "confidence", "nodes", "edges"]),
-         true <- is_list(Map.get(plan, "nodes")),
-         true <- is_list(Map.get(plan, "edges")),
-         true <- Enum.all?(Map.get(plan, "nodes"), &valid_issue_graph_node?/1) do
+  defp validate_plan_nodes(nodes) do
+    if Enum.all?(nodes, &valid_node?/1) do
       :ok
     else
-      _ -> {:error, :invalid_workflow_plan}
+      {:error, :invalid_workflow_plan}
     end
   end
 
-  defp valid_issue_graph_node?(node) when is_map(node) do
-    required_map_keys?(node, ["node_key", "task_type", "title", "goal", "agent_id"])
-  end
+  defp valid_node?(%{
+         "node_key" => node_key,
+         "task_type" => task_type,
+         "title" => title,
+         "goal" => goal,
+         "agent_id" => agent_id
+       })
+       when is_binary(node_key) and is_binary(task_type) and is_binary(title) and is_binary(goal) and
+              is_binary(agent_id),
+       do: true
 
-  defp valid_issue_graph_node?(_node), do: false
-
-  defp required_map_keys?(map, keys) when is_map(map) and is_list(keys) do
-    Enum.all?(keys, &Map.has_key?(map, &1))
-  end
+  defp valid_node?(_node), do: false
 end

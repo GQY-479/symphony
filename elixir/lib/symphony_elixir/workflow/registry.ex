@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.Workflow.Registry do
   @moduledoc """
-  以文件持久化的工作流注册表，存放在 `workspace.root/.symphony/workflows`。
+  存放在 `workspace.root/.symphony/workflows/` 下的文件型工作流注册表。
   """
 
   alias SymphonyElixir.{Config, Linear.Issue}
@@ -11,7 +11,7 @@ defmodule SymphonyElixir.Workflow.Registry do
       "root_issue_id" => issue.id,
       "root_issue_identifier" => issue.identifier,
       "root_title" => issue.title,
-      "status" => issue.state,
+      "status" => "planning",
       "nodes" => %{},
       "edges" => [],
       "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
@@ -20,26 +20,25 @@ defmodule SymphonyElixir.Workflow.Registry do
 
   @spec put_node(map(), String.t(), map()) :: map()
   def put_node(registry, node_key, node) when is_map(registry) and is_binary(node_key) and is_map(node) do
-    Map.update(registry, "nodes", %{node_key => node}, &Map.put(&1 || %{}, node_key, node))
+    put_in(registry, ["nodes", node_key], normalize_node(node))
   end
 
   @spec node(map(), String.t()) :: map() | nil
   def node(registry, node_key) when is_map(registry) and is_binary(node_key) do
-    registry_nodes(registry)[node_key]
+    get_in(registry, ["nodes", node_key])
   end
 
-  @spec add_edge(map(), term()) :: map()
+  @spec add_edge(map(), map() | {String.t(), String.t()}) :: map()
   def add_edge(registry, edge) when is_map(registry) do
-    normalized_edge = normalize_edge(edge)
-    Map.update(registry, "edges", [normalized_edge], &(&1 ++ [normalized_edge]))
+    update_in(registry, ["edges"], fn edges -> (edges || []) ++ [normalize_edge(edge)] end)
   end
 
-  @spec save!(map()) :: {:ok, Path.t()}
+  @spec save!(map()) :: :ok
   def save!(registry) when is_map(registry) do
-    path = registry_path(root_identifier(registry))
+    path = registry_path(registry["root_issue_identifier"])
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, Jason.encode_to_iodata!(registry, pretty: true))
-    {:ok, path}
+    :ok
   end
 
   @spec load_by_root_identifier(String.t()) :: {:ok, map()} | {:error, term()}
@@ -49,16 +48,14 @@ defmodule SymphonyElixir.Workflow.Registry do
     with {:ok, body} <- File.read(path),
          {:ok, decoded} <- Jason.decode(body) do
       {:ok, decoded}
-    else
-      {:error, reason} -> {:error, {:invalid_registry_json, path, reason}}
     end
   end
 
   @spec node_by_issue_id(map(), String.t()) :: map() | nil
   def node_by_issue_id(registry, issue_id) when is_map(registry) and is_binary(issue_id) do
-    registry_nodes(registry)
+    registry["nodes"]
     |> Map.values()
-    |> Enum.find(fn node -> node_issue_id(node) == issue_id end)
+    |> Enum.find(fn node -> node["issue_id"] == issue_id end)
   end
 
   @spec registry_path(String.t()) :: Path.t()
@@ -66,24 +63,21 @@ defmodule SymphonyElixir.Workflow.Registry do
     Path.join([Config.settings!().workspace.root, ".symphony", "workflows", "#{root_identifier}.json"])
   end
 
-  defp registry_nodes(registry) do
-    Map.get(registry, "nodes") || Map.get(registry, :nodes) || %{}
-  end
-
-  defp node_issue_id(node) when is_map(node) do
-    Map.get(node, "issue_id") || Map.get(node, :issue_id)
-  end
-
-  defp node_issue_id(_node), do: nil
-
-  defp root_identifier(registry) do
-    Map.get(registry, "root_issue_identifier") || Map.get(registry, :root_issue_identifier) || Map.get(registry, "root_issue_id")
+  defp normalize_node(node) do
+    Enum.into(node, %{}, fn
+      {key, value} when is_atom(key) -> {Atom.to_string(key), value}
+      pair -> pair
+    end)
   end
 
   defp normalize_edge({from_node, to_node}) do
     %{"from" => from_node, "to" => to_node}
   end
 
-  defp normalize_edge(%{} = edge), do: edge
-  defp normalize_edge(edge), do: edge
+  defp normalize_edge(%{} = edge) do
+    Enum.into(edge, %{}, fn
+      {key, value} when is_atom(key) -> {Atom.to_string(key), value}
+      pair -> pair
+    end)
+  end
 end
