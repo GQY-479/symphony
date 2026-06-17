@@ -261,10 +261,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp handle_workflow_phase_down(state, issue_id, running_entry, :planning) do
     with {:ok, workspace} <- running_workspace(running_entry),
-         {:ok, _registry} <- Controller.handle_planning_completion(running_entry.issue, workspace) do
-      state
-      |> complete_issue(issue_id)
-      |> release_issue_claim(issue_id)
+         {:ok, registry} <- Controller.handle_planning_completion(running_entry.issue, workspace) do
+      apply_workflow_planning_result(state, issue_id, running_entry, registry)
     else
       {:error, reason} ->
         block_issue_from_entry(state, issue_id, running_entry, "planning artifact invalid: #{inspect(reason)}")
@@ -295,6 +293,20 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         block_issue_from_entry(state, issue_id, running_entry, "review decision invalid: #{inspect(reason)}")
     end
+  end
+
+  defp apply_workflow_planning_result(state, issue_id, running_entry, %{"status" => "needs_human_input"} = registry) do
+    request = registry["human_input_request"] || "workflow needs human input"
+
+    state
+    |> complete_issue(issue_id)
+    |> block_issue_from_entry(issue_id, running_entry, "workflow needs human input: #{request}")
+  end
+
+  defp apply_workflow_planning_result(state, issue_id, _running_entry, _registry) do
+    state
+    |> complete_issue(issue_id)
+    |> release_issue_claim(issue_id)
   end
 
   defp running_workspace(%{workspace_path: workspace}) when is_binary(workspace) and workspace != "" do
@@ -946,7 +958,10 @@ defmodule SymphonyElixir.Orchestrator do
       blocked_at: DateTime.utc_now(),
       last_codex_message: Map.get(running_entry, :last_codex_message),
       last_codex_event: Map.get(running_entry, :last_codex_event),
-      last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
+      last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp),
+      workflow_phase: Map.get(running_entry, :workflow_phase),
+      workflow_context: Map.get(running_entry, :workflow_context),
+      workflow_root_issue_id: Map.get(running_entry, :workflow_root_issue_id)
     }
 
     %{
@@ -1037,6 +1052,14 @@ defmodule SymphonyElixir.Orchestrator do
     case Registry.load_by_root_identifier(issue.identifier) do
       {:ok, %{"status" => "planning"}} ->
         {:dispatch, planning_dispatch_metadata(issue, orchestration)}
+
+      {:ok, %{"status" => "needs_human_input"} = registry} ->
+        {:block,
+         workflow_block_metadata(issue, %{
+           workflow_phase: :planning,
+           workflow_root_issue_id: registry["root_issue_identifier"] || issue.identifier,
+           error: "workflow needs human input: #{registry["human_input_request"] || "missing request"}"
+         })}
 
       {:ok, registry} ->
         {:block,

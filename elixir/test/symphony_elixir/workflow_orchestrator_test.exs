@@ -286,6 +286,56 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert body =~ "Review Decision"
   end
 
+  test "planning phase 产出 needs_human_input 后阻塞 root issue 并保留明确原因" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-human-input-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{codex: %{kind: "cli_run", command: "missing-codex-test-binary"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{
+      id: "root-human-input-down",
+      identifier: "YQE-713",
+      title: "信息不足",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.workflow_plan_path(workspace),
+      Jason.encode!(%{
+        "kind" => "needs_human_input",
+        "summary" => "缺少验收标准",
+        "confidence" => "low",
+        "request" => "请补充验收标准"
+      })
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    state = %{workflow_state() | claimed: MapSet.new([root_issue.id])}
+    running_entry = running_entry(root_issue, workspace, :planning)
+
+    updated_state =
+      Orchestrator.handle_agent_down_for_test(:normal, state, root_issue.id, running_entry)
+
+    assert MapSet.member?(updated_state.claimed, root_issue.id)
+    assert blocked = Map.fetch!(updated_state.blocked, root_issue.id)
+    assert blocked.workflow_phase == :planning
+    assert blocked.workflow_root_issue_id == "YQE-713"
+    assert blocked.error =~ "workflow needs human input"
+    assert blocked.error =~ "请补充验收标准"
+    assert_receive {:memory_tracker_comment, "root-human-input-down", body}
+    assert body =~ "Needs Human Input"
+  end
+
   test "direct execution root issue 使用普通路由进入 execution dispatch" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-direct-#{System.unique_integer([:positive])}")

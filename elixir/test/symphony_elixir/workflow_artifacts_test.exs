@@ -48,6 +48,24 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
              })
   end
 
+  test "validate_plan accepts needs_human_input" do
+    assert :ok ==
+             Artifacts.validate_plan(%{
+               "kind" => "needs_human_input",
+               "summary" => "需求信息不足",
+               "confidence" => "low",
+               "request" => "请补充目标仓库和验收标准"
+             })
+
+    assert :ok ==
+             Artifacts.validate_plan(%{
+               "mode" => "needs_human_input",
+               "summary" => "需求信息不足",
+               "confidence" => "low",
+               "request" => "请补充目标仓库和验收标准"
+             })
+  end
+
   test "validate_plan rejects invalid issue graph edges" do
     assert {:error, :invalid_workflow_plan} ==
              Artifacts.validate_plan(%{

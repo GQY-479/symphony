@@ -43,6 +43,24 @@ defmodule SymphonyElixir.Workflow.Artifacts do
       do: :ok
 
   def validate_plan(%{
+        "kind" => "needs_human_input",
+        "summary" => summary,
+        "confidence" => confidence,
+        "request" => request
+      })
+      when is_binary(summary) and is_binary(confidence) and is_binary(request),
+      do: :ok
+
+  def validate_plan(%{
+        "mode" => "needs_human_input",
+        "summary" => summary,
+        "confidence" => confidence,
+        "request" => request
+      })
+      when is_binary(summary) and is_binary(confidence) and is_binary(request),
+      do: :ok
+
+  def validate_plan(%{
         "kind" => "issue_graph",
         "summary" => summary,
         "confidence" => confidence,

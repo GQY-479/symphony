@@ -570,6 +570,49 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert Controller.issue_ready?(waiting_issue.id)
   end
 
+  test "needs_human_input plan 会保存明确的人工输入请求并写回 root 评论" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-human-input-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{
+      id: "root-human-input",
+      identifier: "YQE-812",
+      title: "信息不足的 root issue",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.workflow_plan_path(workspace),
+      Jason.encode!(%{
+        "kind" => "needs_human_input",
+        "summary" => "任务信息不足，无法可靠规划",
+        "confidence" => "low",
+        "request" => "请补充目标仓库、目标行为和验收标准"
+      })
+    )
+
+    assert {:ok, registry} = Controller.handle_planning_completion(root_issue, workspace)
+
+    assert registry["status"] == "needs_human_input"
+    assert registry["human_input_request"] == "请补充目标仓库、目标行为和验收标准"
+    assert registry["human_input_summary"] == "任务信息不足，无法可靠规划"
+
+    assert_receive {:memory_tracker_comment, "root-human-input", body}
+    assert body =~ "Needs Human Input"
+    assert body =~ "请补充目标仓库、目标行为和验收标准"
+  end
+
   test "execution completion 会把 completion packet 保存到对应 registry 节点" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-packet-registry-#{System.unique_integer([:positive])}")

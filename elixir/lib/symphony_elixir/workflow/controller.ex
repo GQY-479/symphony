@@ -105,11 +105,13 @@ defmodule SymphonyElixir.Workflow.Controller do
     end
   end
 
-  defp validate_materialization_plan(%{"kind" => kind} = plan) when kind in ["direct_execution", "issue_graph"] do
+  defp validate_materialization_plan(%{"kind" => kind} = plan)
+       when kind in ["direct_execution", "issue_graph", "needs_human_input"] do
     validate_plan_nodes(plan)
   end
 
-  defp validate_materialization_plan(%{"mode" => mode} = plan) when mode in ["direct_execution", "issue_graph"] do
+  defp validate_materialization_plan(%{"mode" => mode} = plan)
+       when mode in ["direct_execution", "issue_graph", "needs_human_input"] do
     validate_plan_nodes(plan)
   end
 
@@ -117,6 +119,8 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp validate_plan_nodes(%{"kind" => "direct_execution"}), do: :ok
   defp validate_plan_nodes(%{"mode" => "direct_execution"}), do: :ok
+  defp validate_plan_nodes(%{"kind" => "needs_human_input", "request" => request}) when is_binary(request), do: :ok
+  defp validate_plan_nodes(%{"mode" => "needs_human_input", "request" => request}) when is_binary(request), do: :ok
 
   defp validate_plan_nodes(%{"kind" => "issue_graph", "nodes" => nodes, "edges" => edges}) do
     validate_graph_nodes(nodes, edges)
@@ -195,12 +199,25 @@ defmodule SymphonyElixir.Workflow.Controller do
     end
   end
 
+  defp materialize_plan(registry, _root_issue, %{"kind" => "needs_human_input"} = plan) do
+    {:ok,
+     registry
+     |> Map.put("status", "needs_human_input")
+     |> Map.put("human_input_request", plan["request"])
+     |> Map.put("human_input_summary", plan["summary"])
+     |> Map.put("human_input_confidence", plan["confidence"])}
+  end
+
   defp materialize_plan(registry, root_issue, %{"mode" => "direct_execution"} = plan) do
     materialize_plan(registry, root_issue, Map.put(plan, "kind", "direct_execution"))
   end
 
   defp materialize_plan(registry, root_issue, %{"mode" => "issue_graph"} = plan) do
     materialize_plan(registry, root_issue, Map.put(plan, "kind", "issue_graph"))
+  end
+
+  defp materialize_plan(registry, root_issue, %{"mode" => "needs_human_input"} = plan) do
+    materialize_plan(registry, root_issue, Map.put(plan, "kind", "needs_human_input"))
   end
 
   defp materialize_plan(registry, _root_issue, _plan) do
@@ -285,6 +302,14 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp maybe_comment_root(root_issue, %{"mode" => "issue_graph"} = plan, registry) do
     Tracker.create_comment(root_issue.id, render_plan_comment(root_issue, Map.put(plan, "kind", "issue_graph"), registry))
+  end
+
+  defp maybe_comment_root(root_issue, %{"kind" => "needs_human_input"} = plan, _registry) do
+    Tracker.create_comment(root_issue.id, render_human_input_comment(root_issue, plan))
+  end
+
+  defp maybe_comment_root(root_issue, %{"mode" => "needs_human_input"} = plan, registry) do
+    maybe_comment_root(root_issue, Map.put(plan, "kind", "needs_human_input"), registry)
   end
 
   defp maybe_comment_root(_root_issue, _plan, _registry), do: :ok
@@ -494,6 +519,20 @@ defmodule SymphonyElixir.Workflow.Controller do
 
     Derived issues:
     #{derived_lines}
+    """
+    |> String.trim()
+  end
+
+  defp render_human_input_comment(root_issue, plan) do
+    """
+    ## Needs Human Input
+
+    Root issue: #{root_issue.identifier}
+    Summary: #{plan["summary"]}
+    Confidence: #{plan["confidence"]}
+
+    Request:
+    #{plan["request"]}
     """
     |> String.trim()
   end

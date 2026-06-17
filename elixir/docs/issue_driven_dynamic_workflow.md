@@ -39,6 +39,21 @@ orchestration:
 7. review `pass` 会把当前节点标记为 `completed`，并把依赖满足的下游节点推进到 `ready`。
 8. `needs_human`、`needs_rework`、`fail` 等决策会把 issue 留在 blocked 状态，避免静默成功。
 
+## 需要人工输入
+
+Planner 可以写出 `needs_human_input` 计划：
+
+```json
+{
+  "kind": "needs_human_input",
+  "summary": "任务信息不足，无法可靠规划",
+  "confidence": "low",
+  "request": "请补充目标仓库、目标行为和验收标准"
+}
+```
+
+Symphony 会把这个请求写入 root issue 评论，registry 状态会变成 `needs_human_input`，Orchestrator 会把 root issue 放入 blocked，并在 dashboard/API 中显示明确原因。
+
 ## Issue 交接
 
 每个执行 issue 的 `completion_packet.json` 会被写回对应 registry 节点。下游 issue 被派发时，Symphony 会把依赖节点的 Completion Packet 放入 `workflow_context.upstream_packets`，执行阶段提示词会把这些上游摘要追加给 agent。
