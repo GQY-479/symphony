@@ -2161,7 +2161,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "fail"
   end
 
-  test "AgentRunner ?? workflow_phase workspace ? workflow_context" do
+  test "AgentRunner 将 workflow_phase、workspace 和 workflow_context 传给首轮提示词" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -2213,8 +2213,8 @@ defmodule SymphonyElixir.CoreTest do
       issue = %Issue{
         id: "issue-phase",
         identifier: "MT-903",
-        title: "?? workflow ??",
-        description: "?? runner ??",
+        title: "执行阶段工作流",
+        description: "确认 runner 传递阶段上下文",
         state: "Todo",
         url: "https://example.org/issues/MT-903",
         labels: []
@@ -2224,13 +2224,13 @@ defmodule SymphonyElixir.CoreTest do
                AgentRunner.run(issue, self(),
                  agent_id: "mimocode",
                  workflow_phase: :execution,
-                 workflow_context: %{upstream_packets: [%{"summary" => "?? packet ??"}]},
+                 workflow_context: %{upstream_packets: [%{"summary" => "上游交接摘要"}]},
                  issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
                )
 
       trace = File.read!(trace_file)
       assert trace =~ "completion_packet.json"
-      assert trace =~ "?? packet ??"
+      assert trace =~ "上游交接摘要"
       assert trace =~ Path.join(workspace_root, "MT-903")
     after
       System.delete_env("SYMP_TEST_CLI_TRACE")
