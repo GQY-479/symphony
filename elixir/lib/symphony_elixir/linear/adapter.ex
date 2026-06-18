@@ -181,10 +181,10 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec create_issue(map()) :: {:ok, term()} | {:error, term()}
   def create_issue(attrs) when is_map(attrs) do
     state_name = Map.get(attrs, :state) || Map.get(attrs, "state") || "Todo"
+    label_names = issue_label_names(attrs)
 
-    with {:ok, project_id, team_id} <- resolve_project(),
-         {:ok, state_id} <- resolve_project_state_id(team_id, state_name),
-         {:ok, label_ids} <- resolve_label_ids(team_id, issue_label_names(attrs)),
+    with {:ok, project_id, team_ids} <- resolve_project(),
+         {:ok, team_id, state_id, label_ids} <- resolve_project_team_inputs(team_ids, state_name, label_names),
          {:ok, response} <-
            client_module().graphql(@create_issue_mutation, issue_create_variables(attrs, team_id, project_id, state_id, label_ids)),
          {:ok, issue} <- normalize_created_issue(response) do
@@ -201,8 +201,8 @@ defmodule SymphonyElixir.Linear.Adapter do
 
     with {:ok, response} <- client_module().graphql(@project_lookup_query, %{projectSlug: project_slug}),
          %{"id" => project_id} = project <- first_project_node(response),
-         team_id when is_binary(team_id) <- project_team_id(project) do
-      {:ok, project_id, team_id}
+         [_ | _] = team_ids <- project_team_ids(project) do
+      {:ok, project_id, team_ids}
     else
       {:error, reason} -> {:error, reason}
       _ -> {:error, :project_not_found}
@@ -228,6 +228,24 @@ defmodule SymphonyElixir.Linear.Adapter do
     else
       {:error, reason} -> {:error, reason}
       _ -> {:error, :state_not_found}
+    end
+  end
+
+  defp resolve_project_team_inputs(team_ids, state_name, label_names) when is_list(team_ids) do
+    Enum.reduce_while(team_ids, {:error, :project_not_found}, fn team_id, _last_error ->
+      case resolve_team_inputs(team_id, state_name, label_names) do
+        {:ok, state_id, label_ids} -> {:halt, {:ok, team_id, state_id, label_ids}}
+        {:error, reason} -> {:cont, {:error, reason}}
+      end
+    end)
+  end
+
+  defp resolve_project_team_inputs(_team_ids, _state_name, _label_names), do: {:error, :project_not_found}
+
+  defp resolve_team_inputs(team_id, state_name, label_names) do
+    with {:ok, state_id} <- resolve_project_state_id(team_id, state_name),
+         {:ok, label_ids} <- resolve_label_ids(team_id, label_names) do
+      {:ok, state_id, label_ids}
     end
   end
 
@@ -273,12 +291,15 @@ defmodule SymphonyElixir.Linear.Adapter do
     get_in(response, ["data", "projects", "nodes", Access.at(0)])
   end
 
-  defp project_team_id(%{"team" => %{"id" => team_id}}) when is_binary(team_id), do: team_id
+  defp project_team_ids(%{"team" => %{"id" => team_id}}) when is_binary(team_id), do: [team_id]
 
-  defp project_team_id(%{"teams" => %{"nodes" => [%{"id" => team_id} | _]}}) when is_binary(team_id),
-    do: team_id
+  defp project_team_ids(%{"teams" => %{"nodes" => teams}}) when is_list(teams) do
+    teams
+    |> Enum.map(& &1["id"])
+    |> Enum.filter(&is_binary/1)
+  end
 
-  defp project_team_id(_project), do: nil
+  defp project_team_ids(_project), do: []
 
   defp extract_state_id(response, path) do
     case get_in(response, path ++ [Access.at(0), "id"]) do

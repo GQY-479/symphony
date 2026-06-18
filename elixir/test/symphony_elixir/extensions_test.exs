@@ -516,6 +516,83 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert create_issue_query =~ "issueCreate"
   end
 
+  test "linear adapter 创建 issue 时会在项目团队中选择能解析状态和标签的 team" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_project_slug: "project-slug"
+    )
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "projects" => %{
+               "nodes" => [
+                 %{
+                   "id" => "project-1",
+                   "teams" => %{
+                     "nodes" => [%{"id" => "team-without-label"}, %{"id" => "team-with-label"}]
+                   }
+                 }
+               ]
+             }
+           }
+         }},
+        {:ok, %{"data" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "state-wrong-team"}]}}}}},
+        {:ok, %{"data" => %{"issueLabels" => %{"nodes" => []}}}},
+        {:ok, %{"data" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "state-right-team"}]}}}}},
+        {:ok,
+         %{
+           "data" => %{
+             "issueLabels" => %{
+               "nodes" => [%{"id" => "label-1", "name" => "symphony-local-test"}]
+             }
+           }
+         }},
+        {:ok,
+         %{
+           "data" => %{
+             "issueCreate" => %{
+               "success" => true,
+               "issue" => %{
+                 "id" => "issue-1",
+                 "identifier" => "MT-1",
+                 "title" => "派生任务",
+                 "description" => "来自 workflow",
+                 "url" => "https://linear.app/issue/MT-1",
+                 "state" => %{"name" => "Todo"},
+                 "labels" => %{"nodes" => [%{"name" => "symphony-local-test"}]}
+               }
+             }
+           }
+         }}
+      ]
+    )
+
+    assert {:ok, %Issue{labels: ["symphony-local-test"]}} =
+             Adapter.create_issue(%{
+               title: "派生任务",
+               description: "来自 workflow",
+               labels: ["symphony-local-test"]
+             })
+
+    assert_receive {:graphql_called, _project_lookup_query, %{projectSlug: "project-slug"}}
+    assert_receive {:graphql_called, _state_lookup_query, %{teamId: "team-without-label", stateName: "Todo"}}
+    assert_receive {:graphql_called, _label_lookup_query, %{teamId: "team-without-label", labelNames: ["symphony-local-test"]}}
+    assert_receive {:graphql_called, _state_lookup_query, %{teamId: "team-with-label", stateName: "Todo"}}
+    assert_receive {:graphql_called, _label_lookup_query, %{teamId: "team-with-label", labelNames: ["symphony-local-test"]}}
+
+    assert_receive {:graphql_called, create_issue_query,
+                    %{teamId: "team-with-label", stateId: "state-right-team", labelIds: ["label-1"]}}
+
+    assert create_issue_query =~ "issueCreate"
+  end
+
   test "linear adapter 创建 issue 失败时会返回项目不存在错误" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear", tracker_project_slug: "project-slug")
