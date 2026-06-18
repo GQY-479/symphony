@@ -32,6 +32,13 @@ hooks:
 agent:
   max_concurrent_agents: 1
   max_turns: 3
+orchestration:
+  enabled: true
+  planner_agent: codex
+  reviewer_agent: codex
+  artifact_dir: ".symphony"
+  planning_max_turns: 1
+  review_max_turns: 1
 codex:
   command: codex app-server
   approval_policy: never
@@ -101,12 +108,17 @@ Description:
 No description provided.
 {% endif %}
 
-Instructions:
+Orchestrated run rules:
 
-1. Make the smallest safe change needed for this ticket.
-2. Do not touch files outside the provided workspace.
-3. Stop and report blocked if required credentials or permissions are missing.
-4. When you need to read or update Linear, prefer `linear_issue_read`, `linear_comment_create`, and `linear_issue_update_state`; use `linear_graphql` only as a fallback.
-5. Move the Linear issue to a terminal state such as `Done` only after all workspace file changes are complete and verified.
-6. Do not write Linear API tokens to files, logs, commits, or issue comments.
-7. Final response should summarize completed actions and blockers only.
+1. Follow the workflow phase instructions appended by Symphony.
+2. Produce the required structured artifact for the current phase:
+   `.symphony/workflow_plan.json`, `.symphony/completion_packet.json`, or
+   `.symphony/review_decision.json`.
+3. Do not move the current Linear issue to a terminal state. Symphony will advance or close issues
+   after it reads and validates the structured artifact.
+4. Do not touch files outside the provided workspace.
+5. Stop and report blocked if required credentials or permissions are missing.
+6. When you need to read or comment on Linear, prefer `linear_issue_read` and
+   `linear_comment_create`; use `linear_graphql` only as a fallback.
+7. Do not write Linear API tokens to files, logs, commits, or issue comments.
+8. Final response should summarize completed actions and blockers only.

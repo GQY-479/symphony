@@ -922,6 +922,31 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.workflow_prompt() == prompt
   end
 
+  test "WORKFLOW.local.md 默认开启编排，避免 root issue 回退到 legacy 直接执行" do
+    original_workflow_path = Workflow.workflow_file_path()
+    local_workflow_path = Path.expand("../../WORKFLOW.local.md", __DIR__)
+
+    on_exit(fn ->
+      Workflow.set_workflow_file_path(original_workflow_path)
+      if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+    end)
+
+    Workflow.set_workflow_file_path(local_workflow_path)
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load()
+
+    orchestration = Map.get(config, "orchestration", %{})
+
+    assert Map.get(orchestration, "enabled") == true
+    assert Map.get(orchestration, "planner_agent") == "codex"
+    assert Map.get(orchestration, "reviewer_agent") == "codex"
+    assert Map.get(orchestration, "planning_max_turns") == 1
+    assert Map.get(orchestration, "review_max_turns") == 1
+    assert prompt =~ "Produce the required structured artifact for the current phase"
+    assert prompt =~ "Do not move the current Linear issue to a terminal state"
+  end
+
   test "linear api token resolves from LINEAR_API_KEY env var" do
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
     env_api_key = "test-linear-api-key"
