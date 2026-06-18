@@ -5,4 +5,5 @@ SPEC.pdf
 .golutra/
 .github/
 graphify-out/
+.superpowers/
 *-local-command-*.txt
