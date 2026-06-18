@@ -161,6 +161,47 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert Registry.node(registry, "root")["status"] == "ready"
   end
 
+  test "planning phase 缺失 workflow_plan.json 时调度 planning retry 而不是阻塞 root issue" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-missing-plan-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{codex: %{kind: "cli_run", command: "missing-codex-test-binary"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{
+      id: "root-missing-plan",
+      identifier: "YQE-MISSING-PLAN",
+      title: "规划产物缺失",
+      state: "In Progress",
+      url: "https://linear.app/yqeeqy/issue/YQE-MISSING-PLAN"
+    }
+
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    state = %{workflow_state() | claimed: MapSet.new([root_issue.id])}
+    running_entry = running_entry(root_issue, workspace, :planning)
+
+    updated_state =
+      Orchestrator.handle_agent_down_for_test(:normal, state, root_issue.id, running_entry)
+
+    refute Map.has_key?(updated_state.blocked, root_issue.id)
+    refute MapSet.member?(updated_state.completed, root_issue.id)
+
+    assert retry = Map.fetch!(updated_state.retry_attempts, root_issue.id)
+    assert retry.workflow_phase == :planning
+    assert retry.workflow_root_issue_id == root_issue.identifier
+    assert retry.agent_id == "codex"
+    assert retry.workspace_path == workspace
+    assert retry.error =~ "workflow_plan.json"
+    assert retry.error =~ "missing"
+  end
+
   test "execution phase 正常结束后读取 completion packet 并排队 review" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-execution-down-#{System.unique_integer([:positive])}")
