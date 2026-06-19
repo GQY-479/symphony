@@ -270,11 +270,25 @@ for candidate in mise "`$HOME/.local/bin/mise" "`$HOME/.mise/bin/mise"; do
   fi
 done
 
+needs_build=true
+if [ -f ./bin/symphony ]; then
+  newest_src=`$(find lib config mix.exs -type f -newer ./bin/symphony 2>/dev/null | head -1)
+  if [ -z "`$newest_src" ]; then
+    needs_build=false
+  fi
+fi
+
+if [ "`$needs_build" = true ]; then
+  if [ -n "`$MISE_BIN" ]; then
+    "`$MISE_BIN" exec -- mix escript.build
+  else
+    mix escript.build
+  fi
+fi
+
 if [ -n "`$MISE_BIN" ]; then
-  "`$MISE_BIN" exec -- mix escript.build
   nohup "`$MISE_BIN" exec -- ./bin/symphony '$workflowWsl' --port $Port --i-understand-that-this-will-be-running-without-the-usual-guardrails > "`$log_file" 2>&1 &
 else
-  mix escript.build
   nohup ./bin/symphony '$workflowWsl' --port $Port --i-understand-that-this-will-be-running-without-the-usual-guardrails > "`$log_file" 2>&1 &
 fi
 echo `$! > "`$pid_file"
