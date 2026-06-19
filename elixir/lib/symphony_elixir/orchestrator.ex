@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.Agent.Router
   alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
-  alias SymphonyElixir.Workflow.{Controller, Registry}
+  alias SymphonyElixir.Workflow.{Artifacts, Controller, Registry}
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -265,7 +265,7 @@ defmodule SymphonyElixir.Orchestrator do
       apply_workflow_planning_result(state, issue_id, running_entry, registry)
     else
       {:error, reason} ->
-        block_issue_from_entry(state, issue_id, running_entry, "planning artifact invalid: #{inspect(reason)}")
+        block_issue_from_entry(state, issue_id, running_entry, workflow_artifact_error(:planning, running_entry, reason))
     end
   end
 
@@ -281,7 +281,7 @@ defmodule SymphonyElixir.Orchestrator do
       )
     else
       {:error, reason} ->
-        block_issue_from_entry(state, issue_id, running_entry, "completion packet invalid: #{inspect(reason)}")
+        block_issue_from_entry(state, issue_id, running_entry, workflow_artifact_error(:execution, running_entry, reason))
     end
   end
 
@@ -291,9 +291,49 @@ defmodule SymphonyElixir.Orchestrator do
       apply_workflow_review_decision(state, issue_id, running_entry, decision)
     else
       {:error, reason} ->
-        block_issue_from_entry(state, issue_id, running_entry, "review decision invalid: #{inspect(reason)}")
+        block_issue_from_entry(state, issue_id, running_entry, workflow_artifact_error(:review, running_entry, reason))
     end
   end
+
+  defp workflow_artifact_error(phase, running_entry, :enoent) do
+    "#{phase_label(phase)} phase completed without required artifact: expected #{artifact_path_for_phase(phase, running_entry)}; #{agent_diagnostics(running_entry)} reason=:enoent"
+  end
+
+  defp workflow_artifact_error(phase, running_entry, reason) do
+    "#{phase_label(phase)} artifact invalid: expected #{artifact_path_for_phase(phase, running_entry)}; #{agent_diagnostics(running_entry)} reason=#{inspect(reason)}"
+  end
+
+  defp phase_label(:planning), do: "planning"
+  defp phase_label(:execution), do: "execution"
+  defp phase_label(:review), do: "review"
+  defp phase_label(phase), do: to_string(phase)
+
+  defp artifact_path_for_phase(:planning, running_entry), do: artifact_path(running_entry, &Artifacts.workflow_plan_path/1)
+  defp artifact_path_for_phase(:execution, running_entry), do: artifact_path(running_entry, &Artifacts.completion_packet_path/1)
+  defp artifact_path_for_phase(:review, running_entry), do: artifact_path(running_entry, &Artifacts.review_decision_path/1)
+  defp artifact_path_for_phase(_phase, running_entry), do: Map.get(running_entry, :workspace_path) || "unknown"
+
+  defp artifact_path(running_entry, builder) when is_function(builder, 1) do
+    case Map.get(running_entry, :workspace_path) do
+      workspace when is_binary(workspace) and workspace != "" -> builder.(workspace)
+      _ -> "unknown"
+    end
+  end
+
+  defp agent_diagnostics(running_entry) do
+    [
+      {"agent_id", Map.get(running_entry, :agent_id)},
+      {"agent_kind", Map.get(running_entry, :agent_kind)},
+      {"session_id", running_entry_session_id(running_entry)}
+    ]
+    |> Enum.map(fn {key, value} -> "#{key}=#{diagnostic_value(value)}" end)
+    |> Enum.join(" ")
+  end
+
+  defp diagnostic_value(value) when is_binary(value) and value != "", do: value
+  defp diagnostic_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp diagnostic_value(value) when is_integer(value), do: Integer.to_string(value)
+  defp diagnostic_value(_value), do: "unknown"
 
   defp apply_workflow_planning_result(state, issue_id, running_entry, %{"status" => "needs_human_input"} = registry) do
     request = registry["human_input_request"] || "workflow needs human input"

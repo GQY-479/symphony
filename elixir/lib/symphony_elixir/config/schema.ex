@@ -612,10 +612,14 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_secret_value(_value), do: nil
 
-  defp default_turn_sandbox_policy(workspace) do
+  defp default_turn_sandbox_policy(workspace) when is_binary(workspace) do
+    default_turn_sandbox_policy([workspace])
+  end
+
+  defp default_turn_sandbox_policy(workspaces) when is_list(workspaces) do
     %{
       "type" => "workspaceWrite",
-      "writableRoots" => [workspace],
+      "writableRoots" => workspaces,
       "readOnlyAccess" => %{"type" => "fullAccess"},
       "networkAccess" => false,
       "excludeTmpdirEnvVar" => false,
@@ -624,12 +628,20 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp default_runtime_turn_sandbox_policy(workspace_root, opts) when is_binary(workspace_root) do
+    extra_writable_roots =
+      opts
+      |> Keyword.get(:extra_writable_roots, [])
+      |> List.wrap()
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+
     if Keyword.get(opts, :remote, false) do
-      {:ok, default_turn_sandbox_policy(workspace_root)}
+      writable_roots = Enum.uniq([workspace_root | extra_writable_roots])
+      {:ok, default_turn_sandbox_policy(writable_roots)}
     else
       with expanded_workspace_root <- expand_local_workspace_root(workspace_root),
-           {:ok, canonical_workspace_root} <- PathSafety.canonicalize(expanded_workspace_root) do
-        {:ok, default_turn_sandbox_policy(canonical_workspace_root)}
+           canonical_writable_roots <- [expanded_workspace_root | Enum.map(extra_writable_roots, &expand_local_workspace_root/1)],
+           {:ok, canonical_writable_roots} <- canonicalize_writable_roots(canonical_writable_roots) do
+        {:ok, default_turn_sandbox_policy(canonical_writable_roots)}
       end
     end
   end
@@ -644,6 +656,22 @@ defmodule SymphonyElixir.Config.Schema do
   defp default_workspace_root(nil, fallback), do: fallback
   defp default_workspace_root("", fallback), do: fallback
   defp default_workspace_root(workspace, _fallback), do: workspace
+
+  defp canonicalize_writable_roots(workspaces) when is_list(workspaces) do
+    Enum.reduce_while(workspaces, {:ok, []}, fn workspace, {:ok, acc} ->
+      case PathSafety.canonicalize(workspace) do
+        {:ok, canonical_workspace} ->
+          {:cont, {:ok, acc ++ [canonical_workspace]}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace, reason}}}}
+      end
+    end)
+    |> case do
+      {:ok, canonical_workspaces} -> {:ok, Enum.uniq(canonical_workspaces)}
+      other -> other
+    end
+  end
 
   defp expand_local_workspace_root(workspace_root)
        when is_binary(workspace_root) and workspace_root != "" do

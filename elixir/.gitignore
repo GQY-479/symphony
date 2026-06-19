@@ -41,6 +41,11 @@ erl_crash.dump
 # Local environment and auth artifacts.
 .env
 .env.*
+.linear_api_key
+*.local.log
+symphony-local-*.log
+wsl-bg-test*.out
+wsl-bg-test*.err
 .secrets
 .credentials
 status.txt

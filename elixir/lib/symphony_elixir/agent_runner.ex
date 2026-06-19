@@ -6,6 +6,7 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
   alias SymphonyElixir.Agent.{Backend, Router}
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.Workflow.Artifacts
 
   @type worker_host :: String.t() | nil
 
@@ -201,14 +202,17 @@ defmodule SymphonyElixir.AgentRunner do
          max_turns
        ) do
     prompt = build_turn_prompt(issue, workspace, opts, turn_number, max_turns, resolved_agent)
+    turn_opts = Keyword.put(opts, :on_message, codex_message_handler(codex_update_recipient, issue))
 
     with {:ok, turn_session} <-
            run_turn.(
              issue,
              prompt,
-             Keyword.put(opts, :on_message, codex_message_handler(codex_update_recipient, issue))
-           ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{session_id(turn_session)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+             turn_opts
+           ),
+         {:ok, verified_turn_session} <-
+           ensure_workflow_artifact(run_turn, workspace, issue, opts, turn_opts, turn_session) do
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{session_id(verified_turn_session)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
       case continue_with_issue?(issue, resolved_agent, issue_state_fetcher, Keyword.get(opts, :enforce_continuation_route?, true)) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
@@ -266,6 +270,166 @@ defmodule SymphonyElixir.AgentRunner do
     - Resume from the current workspace and workpad state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
+    """
+  end
+
+  defp ensure_workflow_artifact(run_turn, workspace, issue, opts, turn_opts, turn_session) do
+    workflow_phase = Keyword.get(opts, :workflow_phase)
+
+    case load_workflow_artifact(workflow_phase, workspace) do
+      :skip ->
+        {:ok, turn_session}
+
+      {:ok, _artifact} ->
+        {:ok, turn_session}
+
+      {:error, artifact_path, reason} ->
+        repair_prompt = workflow_artifact_repair_prompt(workflow_phase, workspace, artifact_path, reason)
+
+        Logger.warning("Workflow artifact missing or invalid for #{issue_context(issue)} phase=#{workflow_phase} path=#{artifact_path} reason=#{inspect(reason)}; requesting artifact repair turn")
+
+        with {:ok, repair_session} <- run_turn.(issue, repair_prompt, turn_opts),
+             {:ok, _artifact} <- expect_workflow_artifact(workflow_phase, workspace) do
+          {:ok, repair_session}
+        else
+          {:error, repair_reason} ->
+            {:error, {:workflow_artifact_repair_failed, workflow_phase, artifact_path, repair_reason}}
+
+          other ->
+            {:error, {:workflow_artifact_repair_failed, workflow_phase, artifact_path, other}}
+        end
+    end
+  end
+
+  defp load_workflow_artifact(:planning, workspace) when is_binary(workspace) do
+    path = Artifacts.workflow_plan_path(workspace)
+    artifact_result(path, Artifacts.load_workflow_plan(workspace))
+  end
+
+  defp load_workflow_artifact(:execution, workspace) when is_binary(workspace) do
+    path = Artifacts.completion_packet_path(workspace)
+    artifact_result(path, Artifacts.load_completion_packet(workspace))
+  end
+
+  defp load_workflow_artifact(:review, workspace) when is_binary(workspace) do
+    path = Artifacts.review_decision_path(workspace)
+    artifact_result(path, Artifacts.load_review_decision(workspace))
+  end
+
+  defp load_workflow_artifact(_workflow_phase, _workspace), do: :skip
+
+  defp expect_workflow_artifact(workflow_phase, workspace) do
+    case load_workflow_artifact(workflow_phase, workspace) do
+      {:ok, artifact} -> {:ok, artifact}
+      {:error, _path, reason} -> {:error, reason}
+      :skip -> {:ok, :skipped}
+    end
+  end
+
+  defp artifact_result(_path, {:ok, artifact}), do: {:ok, artifact}
+  defp artifact_result(path, {:error, reason}), do: {:error, path, reason}
+
+  defp workflow_artifact_repair_prompt(:planning, workspace, artifact_path, reason) do
+    """
+    上一轮 planning 已正常结束，但缺少必需 artifact 或 artifact 无法通过校验。
+
+    现在只做 artifact 修复，不要执行 issue，不要改 Linear 状态，不要写其他文件。
+
+    - 工作区: #{workspace}
+    - 必须创建目录: #{Path.dirname(artifact_path)}
+    - 必须写入文件: #{artifact_path}
+    - 当前错误: #{inspect(reason)}
+
+    写入的 JSON 必须是以下三种之一：`direct_execution`、`issue_graph`、`needs_human_input`。
+
+    `direct_execution` 示例：
+    ```json
+    {
+      "kind": "direct_execution",
+      "summary": "为什么可以直接执行",
+      "confidence": "medium"
+    }
+    ```
+
+    `issue_graph` 示例：
+    ```json
+    {
+      "kind": "issue_graph",
+      "summary": "整体编排摘要",
+      "confidence": "medium",
+      "nodes": [
+        {
+          "node_key": "implementation",
+          "task_type": "implementation",
+          "title": "派生任务标题",
+          "goal": "派生任务目标",
+          "agent_id": "codex"
+        }
+      ],
+      "edges": []
+    }
+    ```
+
+    `needs_human_input` 示例：
+    ```json
+    {
+      "kind": "needs_human_input",
+      "summary": "无法规划的原因",
+      "confidence": "low",
+      "request": "需要用户补充的具体信息"
+    }
+    ```
+
+    完成前必须读回 #{artifact_path}，确认 JSON 可以解析，并且不要只在最终回复里描述计划。
+    """
+  end
+
+  defp workflow_artifact_repair_prompt(:execution, workspace, artifact_path, reason) do
+    """
+    上一轮 execution 已正常结束，但缺少必需 artifact 或 artifact 无法通过校验。
+
+    现在只做 artifact 修复，不要继续实现新功能，不要改 Linear 状态，不要写其他文件。
+
+    - 工作区: #{workspace}
+    - 必须创建目录: #{Path.dirname(artifact_path)}
+    - 必须写入文件: #{artifact_path}
+    - 当前错误: #{inspect(reason)}
+
+    写入的 JSON 至少必须包含：
+    ```json
+    {
+      "outcome": "completed",
+      "summary": "本阶段完成情况",
+      "evidence": ["验证或证据"]
+    }
+    ```
+
+    完成前必须读回 #{artifact_path}，确认 JSON 可以解析。
+    """
+  end
+
+  defp workflow_artifact_repair_prompt(:review, workspace, artifact_path, reason) do
+    """
+    上一轮 review 已正常结束，但缺少必需 artifact 或 artifact 无法通过校验。
+
+    现在只做 artifact 修复，不要继续审查以外的工作，不要改 Linear 状态，不要写其他文件。
+
+    - 工作区: #{workspace}
+    - 必须创建目录: #{Path.dirname(artifact_path)}
+    - 必须写入文件: #{artifact_path}
+    - 当前错误: #{inspect(reason)}
+
+    写入的 JSON 至少必须包含：
+    ```json
+    {
+      "decision": "pass",
+      "summary": "审查结论",
+      "confidence": "medium"
+    }
+    ```
+
+    `decision` 只能是 `pass`、`needs_rework`、`needs_replan`、`needs_human`、`fail`。
+    完成前必须读回 #{artifact_path}，确认 JSON 可以解析。
     """
   end
 

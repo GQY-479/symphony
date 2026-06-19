@@ -73,6 +73,55 @@ mise exec -- mix build
 mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
 
+## 本地启动入口（Windows / Codex Desktop）
+
+在当前本地开发环境中，统一使用 `start-local.ps1` 启动 Symphony。不要直接运行临时
+`symphony_boot_*.exs` 或手写 `mix run` 启动链路；这样容易漏掉新 agent backend、workflow
+路径、端口、日志和环境变量传递。
+
+推荐先做预检：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\elixir\start-local.ps1 -Preflight
+```
+
+启动或重启服务：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\elixir\start-local.ps1
+```
+
+停止服务：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\elixir\stop-local.ps1
+```
+
+默认配置如下：
+
+- workflow：`elixir/WORKFLOW.local.md`
+- dashboard/API 端口：`4000`
+- Linear token：优先读取 `LINEAR_API_KEY` 环境变量，其次读取 `$HOME\.linear_api_key`
+- 日志：WSL 内 `/tmp/symphony-local-4000.log`
+- PID：WSL 内 `/tmp/symphony-local-4000.pid`
+
+如果要用其他端口：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\elixir\start-local.ps1 -Port 4002
+powershell -NoProfile -ExecutionPolicy Bypass -File .\elixir\stop-local.ps1 -Port 4002
+```
+
+如果不想每次输入 `LINEAR_API_KEY`，可以在 Windows 用户目录保存一次密钥：
+
+```powershell
+Set-Content -NoNewline -Path "$HOME\.linear_api_key" -Value "<your-linear-api-key>"
+```
+
+不要把真实 token 写入仓库、issue 评论或日志。`start-local.ps1 -Preflight` 只显示密钥来源，
+不会打印密钥值。每次启动都会重新执行 `mix escript.build`，确保新增功能已经进入
+`bin/symphony` 后再启动服务。
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:

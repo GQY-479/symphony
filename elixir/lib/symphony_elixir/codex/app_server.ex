@@ -264,13 +264,13 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp session_policies(workspace, nil, opts) do
     workspace
-    |> Config.codex_runtime_settings()
+    |> Config.codex_runtime_settings(extra_writable_roots: extra_writable_roots(opts))
     |> maybe_overlay_agent_policies(opts)
   end
 
   defp session_policies(workspace, worker_host, opts) when is_binary(worker_host) do
     workspace
-    |> Config.codex_runtime_settings(remote: true)
+    |> Config.codex_runtime_settings(remote: true, extra_writable_roots: extra_writable_roots(opts))
     |> maybe_overlay_agent_policies(opts)
   end
 
@@ -1077,6 +1077,17 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp agent_config_atom_key("read_timeout_ms"), do: :read_timeout_ms
   defp agent_config_atom_key("timeout_ms"), do: :timeout_ms
   defp agent_config_atom_key(_key), do: nil
+
+  defp extra_writable_roots(opts) do
+    workflow_context = Keyword.get(opts, :workflow_context, %{})
+
+    workflow_context
+    |> Map.get("root_workspace", Map.get(workflow_context, :root_workspace))
+    |> case do
+      workspace when is_binary(workspace) and workspace != "" -> [workspace]
+      _ -> []
+    end
+  end
 
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"

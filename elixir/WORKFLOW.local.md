@@ -2,8 +2,8 @@
 tracker:
   kind: linear
   project_slug: "96f5ac7500e2"
-  required_labels:
-    - symphony-local-test
+  assignee: "me"
+  required_labels: []
   active_states:
     - Todo
     - In Progress

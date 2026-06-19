@@ -2139,8 +2139,14 @@ defmodule SymphonyElixir.CoreTest do
       )
 
     assert prompt =~ "workflow_plan.json"
+    assert prompt =~ "/tmp/workspace/.symphony/workflow_plan.json"
+    assert prompt =~ "mkdir -p /tmp/workspace/.symphony"
     assert prompt =~ "direct_execution"
     assert prompt =~ "issue_graph"
+    assert prompt =~ "\"kind\": \"issue_graph\""
+    assert prompt =~ "\"nodes\""
+    assert prompt =~ "\"edges\""
+    assert prompt =~ "最终回复不能替代 artifact 文件"
   end
 
   test "提示词构建器在重规划时附加 replan 上下文" do
@@ -2191,6 +2197,44 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "completion_packet.json"
     assert prompt =~ "上游摘要 A"
     assert prompt =~ "上游摘要 B"
+  end
+
+  test "提示词构建器在 execution 和 review 阶段附加 root workflow workspace 上下文" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
+
+    issue = %Issue{
+      identifier: "MT-ROOT-CTX",
+      title: "root workspace context",
+      description: "确认 root workflow workspace 会传给派生阶段",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-ROOT-CTX",
+      labels: []
+    }
+
+    execution_prompt =
+      PromptBuilder.build_prompt(issue,
+        workflow_phase: :execution,
+        workflow_context: %{
+          root_workspace: "/tmp/root-workspace",
+          root_issue_identifier: "ROOT-1"
+        },
+        workspace: "/tmp/derived-workspace"
+      )
+
+    review_prompt =
+      PromptBuilder.build_prompt(issue,
+        workflow_phase: :review,
+        workflow_context: %{
+          root_workspace: "/tmp/root-workspace",
+          root_issue_identifier: "ROOT-1"
+        },
+        workspace: "/tmp/derived-workspace"
+      )
+
+    assert execution_prompt =~ "/tmp/root-workspace"
+    assert execution_prompt =~ "ROOT-1"
+    assert review_prompt =~ "/tmp/root-workspace"
+    assert review_prompt =~ "ROOT-1"
   end
 
   test "提示词构建器附加审查阶段决策合约" do
@@ -2246,6 +2290,8 @@ defmodule SymphonyElixir.CoreTest do
       trace_file="${SYMP_TEST_CLI_TRACE:-/tmp/cli.trace}"
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
       printf 'CWD:%s\\n' "$PWD" >> "$trace_file"
+      mkdir -p .symphony
+      printf '%s\\n' '{"outcome":"completed","summary":"fake cli completed execution","evidence":["fake cli wrote completion packet"]}' > .symphony/completion_packet.json
       printf '%s\\n' '{"kind":"runner-progress"}'
       """)
 
@@ -2293,6 +2339,136 @@ defmodule SymphonyElixir.CoreTest do
       assert trace =~ Path.join(workspace_root, "MT-903")
     after
       System.delete_env("SYMP_TEST_CLI_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "AgentRunner 在 planning 产物缺失时追加 artifact 修复回合并写出 workflow_plan" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-planning-artifact-repair-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      codex_script = Path.join(test_root, "fake_codex.py")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_script, """
+      import json
+      import os
+      import sys
+
+      trace_file = os.environ["SYMP_TEST_CODEx_TRACE"]
+      turn_count = 0
+
+      def send(message):
+          print(json.dumps(message), flush=True)
+
+      def prompt_text(message):
+          return "\\n".join(
+              part.get("text", "")
+              for part in message.get("params", {}).get("input", [])
+              if isinstance(part, dict)
+          )
+
+      for line in sys.stdin:
+          message = json.loads(line)
+          method = message.get("method")
+          request_id = message.get("id")
+
+          if method == "initialize":
+              send({"id": request_id, "result": {}})
+          elif method == "initialized":
+              pass
+          elif method == "thread/start":
+              send({"id": request_id, "result": {"thread": {"id": "thread-repair"}}})
+          elif method == "turn/start":
+              turn_count += 1
+              text = prompt_text(message)
+              with open(trace_file, "a", encoding="utf-8") as handle:
+                  handle.write(f"TURN:{turn_count}\\n{text}\\n")
+
+              if turn_count == 2:
+                  os.makedirs(".symphony", exist_ok=True)
+                  with open(".symphony/workflow_plan.json", "w", encoding="utf-8") as handle:
+                      json.dump({
+                          "kind": "direct_execution",
+                          "summary": "artifact repair produced a direct execution plan",
+                          "confidence": "medium"
+                      }, handle)
+
+              send({"id": request_id, "result": {"turn": {"id": f"turn-{turn_count}"}}})
+              send({"method": "turn/completed"})
+          elif request_id is not None:
+              send({"id": request_id, "result": {}})
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      exec python3 -u "#{codex_script}"
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        agents: %{
+          codex: %{
+            kind: "codex_app_server",
+            command: "#{codex_binary} app-server",
+            timeout_ms: 10_000,
+            read_timeout_ms: 5_000
+          }
+        },
+        routing: %{default_agent: "codex"},
+        orchestration: %{
+          enabled: true,
+          planner_agent: "codex",
+          reviewer_agent: "codex",
+          artifact_dir: ".symphony",
+          planning_max_turns: 1,
+          review_max_turns: 1
+        },
+        max_turns: 1
+      )
+
+      issue = %Issue{
+        id: "issue-planning-repair",
+        identifier: "MT-905",
+        title: "规划产物修复",
+        description: "第一轮完成但没有写 workflow_plan.json",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-905",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 workflow_phase: :planning,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      workspace = Path.join(workspace_root, issue.identifier)
+      assert File.exists?(Path.join([workspace, ".symphony", "workflow_plan.json"]))
+      assert File.read!(trace_file) =~ "上一轮 planning 已正常结束，但缺少必需 artifact"
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
     end
   end

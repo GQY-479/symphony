@@ -13,7 +13,7 @@ defmodule SymphonyElixir.FakeAcpServer do
     import select
     import sys
 
-    behavior = json.loads('''#{python_behavior_json}''')
+    behavior = json.loads(r'''#{python_behavior_json}''')
 
     pid_file = behavior.get("pidFile")
     if pid_file:
@@ -120,6 +120,22 @@ defmodule SymphonyElixir.FakeAcpServer do
                         continue
             if behavior.get("malformed"):
                 print("not-json", flush=True)
+            write_file = behavior.get("writeFileOnPrompt")
+            if write_file:
+                path = write_file.get("path")
+                contents = write_file.get("contents", "")
+                if path:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as handle:
+                        handle.write(contents)
+            append_jsonl = behavior.get("appendJsonlOnPrompt")
+            if append_jsonl:
+                path = append_jsonl.get("path")
+                entry = append_jsonl.get("entry", {})
+                if path:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(entry, ensure_ascii=False) + "\\n")
             if behavior.get("delayPromptMs"):
                 import time
                 time.sleep(behavior.get("delayPromptMs") / 1000.0)

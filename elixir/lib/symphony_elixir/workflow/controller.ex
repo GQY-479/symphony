@@ -6,6 +6,7 @@ defmodule SymphonyElixir.Workflow.Controller do
   alias SymphonyElixir.{Config, Tracker}
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Workflow.{Artifacts, Registry}
+  alias SymphonyElixir.Workspace
 
   @ready_statuses MapSet.new(["ready"])
   @completed_statuses MapSet.new(["completed", "done", "passed"])
@@ -33,6 +34,12 @@ defmodule SymphonyElixir.Workflow.Controller do
     with {:ok, packet} <- Artifacts.load_completion_packet(workspace),
          :ok <- Tracker.create_comment(issue.id, render_completion_comment(issue, packet)),
          :ok <- maybe_store_completion_packet(issue, packet) do
+      root_workspace =
+        case Registry.load_by_issue_id(issue.id) do
+          {:ok, registry, _node_key, _node} -> root_workspace_for_registry(registry)
+          _ -> nil
+        end
+
       {:ok,
        {:queue_review,
         %{
@@ -44,6 +51,7 @@ defmodule SymphonyElixir.Workflow.Controller do
             "issue_id" => issue.id,
             "issue_identifier" => issue.identifier,
             "root_issue_identifier" => workflow_root_identifier_for_issue(issue),
+            "root_workspace" => root_workspace,
             "completion_summary" => packet["summary"],
             "completion_outcome" => packet["outcome"],
             "evidence" => packet["evidence"] || []
@@ -844,6 +852,7 @@ defmodule SymphonyElixir.Workflow.Controller do
     %{
       "root_issue_id" => registry["root_issue_id"],
       "root_issue_identifier" => registry["root_issue_identifier"],
+      "root_workspace" => root_workspace_for_registry(registry),
       "node_key" => node_key,
       "task_type" => node["task_type"],
       "instructions" => node["instructions"],
@@ -857,6 +866,15 @@ defmodule SymphonyElixir.Workflow.Controller do
       "previous_completion_packet" => node["previous_completion_packet"]
     }
   end
+
+  defp root_workspace_for_registry(%{"root_issue_identifier" => identifier}) when is_binary(identifier) do
+    case Workspace.create_for_issue(identifier) do
+      {:ok, workspace} -> workspace
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp root_workspace_for_registry(_registry), do: nil
 
   defp upstream_packets(registry, node) when is_map(registry) and is_map(node) do
     node
