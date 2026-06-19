@@ -924,10 +924,23 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp format_list(values) when is_list(values) and values != [] do
-    Enum.map_join(values, "\n", &"- #{&1}")
+    Enum.map_join(values, "\n", &"- #{format_list_item(&1)}")
   end
 
   defp format_list([]), do: "-"
   defp format_list(value) when is_binary(value), do: value
-  defp format_list(_value), do: "-"
+  defp format_list(value), do: format_list_item(value)
+
+  defp format_list_item(value) when is_binary(value), do: value
+  defp format_list_item(value) when is_number(value) or is_boolean(value), do: to_string(value)
+  defp format_list_item(nil), do: "null"
+
+  defp format_list_item(value) when is_map(value) or is_list(value) do
+    case Jason.encode(value) do
+      {:ok, encoded} -> encoded
+      {:error, _reason} -> inspect(value)
+    end
+  end
+
+  defp format_list_item(value), do: inspect(value)
 end

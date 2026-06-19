@@ -76,7 +76,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server passes explicit turn sandbox policies through unchanged" do
+  test "app server merges runtime roots into explicit workspaceWrite policies and passes other policies through" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -144,13 +144,25 @@ defmodule SymphonyElixir.AppServerTest do
       }
 
       policy_cases = [
-        %{"type" => "dangerFullAccess"},
-        %{"type" => "externalSandbox", "profile" => "remote-ci"},
-        %{"type" => "workspaceWrite", "writableRoots" => ["relative/path"], "networkAccess" => true},
-        %{"type" => "futureSandbox", "nested" => %{"flag" => true}}
+        {
+          %{"type" => "dangerFullAccess"},
+          %{"type" => "dangerFullAccess"}
+        },
+        {
+          %{"type" => "externalSandbox", "profile" => "remote-ci"},
+          %{"type" => "externalSandbox", "profile" => "remote-ci"}
+        },
+        {
+          %{"type" => "workspaceWrite", "writableRoots" => ["relative/path"], "networkAccess" => true},
+          %{"type" => "workspaceWrite", "writableRoots" => ["relative/path", Path.expand(workspace)], "networkAccess" => true}
+        },
+        {
+          %{"type" => "futureSandbox", "nested" => %{"flag" => true}},
+          %{"type" => "futureSandbox", "nested" => %{"flag" => true}}
+        }
       ]
 
-      Enum.each(policy_cases, fn configured_policy ->
+      Enum.each(policy_cases, fn {configured_policy, expected_policy} ->
         File.rm(trace_file)
 
         write_workflow_file!(Workflow.workflow_file_path(),
@@ -171,7 +183,7 @@ defmodule SymphonyElixir.AppServerTest do
                    |> Jason.decode!()
                    |> then(fn payload ->
                      payload["method"] == "turn/start" &&
-                       get_in(payload, ["params", "sandboxPolicy"]) == configured_policy
+                       get_in(payload, ["params", "sandboxPolicy"]) == expected_policy
                    end)
                  else
                    false

@@ -7,42 +7,119 @@ defmodule SymphonyElixir.Linear.Client do
   alias SymphonyElixir.{Config, Linear.Issue}
 
   @issue_page_size 50
+  @context_page_size 50
   @max_error_body_log_bytes 1_000
 
   @query """
-  query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+  query SymphonyLinearPoll(
+    $projectSlug: String!
+    $stateNames: [String!]!
+    $first: Int!
+    $relationFirst: Int!
+    $contextFirst: Int!
+    $after: String
+  ) {
     issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
       nodes {
+        ...SymphonyRichIssueFields
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+
+  fragment SymphonyRichIssueFields on Issue {
+    id
+    identifier
+    title
+    description
+    priority
+    priorityLabel
+    estimate
+    sortOrder
+    startedAt
+    completedAt
+    canceledAt
+    archivedAt
+    autoClosedAt
+    autoArchivedAt
+    dueDate
+    slaStartedAt
+    slaBreachesAt
+    trashed
+    state {
+      id
+      name
+      type
+    }
+    branchName
+    url
+    creator {
+      id
+      name
+      email
+    }
+    assignee {
+      id
+      name
+      email
+    }
+    project {
+      id
+      name
+      slugId
+      url
+    }
+    team {
+      id
+      key
+      name
+    }
+    cycle {
+      id
+      name
+      number
+      startsAt
+      endsAt
+    }
+    labels(first: $contextFirst) {
+      nodes {
         id
-        identifier
-        title
-        description
-        priority
-        state {
-          name
-        }
-        branchName
+        name
+        color
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    comments(first: $contextFirst) {
+      nodes {
+        id
+        body
         url
-        assignee {
+        createdAt
+        updatedAt
+        resolvedAt
+        user {
           id
+          name
+          email
         }
-        labels {
-          nodes {
-            name
-          }
-        }
-        inverseRelations(first: $relationFirst) {
-          nodes {
-            type
-            issue {
-              id
-              identifier
-              state {
-                name
-              }
-            }
-          }
-        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    attachments(first: $contextFirst) {
+      nodes {
+        id
+        title
+        url
+        sourceType
         createdAt
         updatedAt
       }
@@ -51,47 +128,276 @@ defmodule SymphonyElixir.Linear.Client do
         endCursor
       }
     }
+    relations(first: $relationFirst) {
+      nodes {
+        id
+        type
+        relatedIssue {
+          id
+          identifier
+          title
+          url
+          state {
+            name
+            type
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    inverseRelations(first: $relationFirst) {
+      nodes {
+        id
+        type
+        issue {
+          id
+          identifier
+          title
+          url
+          state {
+            name
+            type
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    history(first: $contextFirst) {
+      nodes {
+        id
+        createdAt
+        fromState {
+          name
+          type
+        }
+        toState {
+          name
+          type
+        }
+        actor {
+          id
+          name
+          email
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    stateHistory(first: $contextFirst) {
+      nodes {
+        id
+        startedAt
+        endedAt
+        state {
+          name
+          type
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    createdAt
+    updatedAt
   }
   """
 
   @query_by_ids """
-  query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
+  query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!, $contextFirst: Int!) {
     issues(filter: {id: {in: $ids}}, first: $first) {
       nodes {
+        ...SymphonyRichIssueFields
+      }
+    }
+  }
+
+  fragment SymphonyRichIssueFields on Issue {
+    id
+    identifier
+    title
+    description
+    priority
+    priorityLabel
+    estimate
+    sortOrder
+    startedAt
+    completedAt
+    canceledAt
+    archivedAt
+    autoClosedAt
+    autoArchivedAt
+    dueDate
+    slaStartedAt
+    slaBreachesAt
+    trashed
+    state {
+      id
+      name
+      type
+    }
+    branchName
+    url
+    creator {
+      id
+      name
+      email
+    }
+    assignee {
+      id
+      name
+      email
+    }
+    project {
+      id
+      name
+      slugId
+      url
+    }
+    team {
+      id
+      key
+      name
+    }
+    cycle {
+      id
+      name
+      number
+      startsAt
+      endsAt
+    }
+    labels(first: $contextFirst) {
+      nodes {
         id
-        identifier
-        title
-        description
-        priority
-        state {
-          name
-        }
-        branchName
+        name
+        color
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    comments(first: $contextFirst) {
+      nodes {
+        id
+        body
         url
-        assignee {
+        createdAt
+        updatedAt
+        resolvedAt
+        user {
           id
+          name
+          email
         }
-        labels {
-          nodes {
-            name
-          }
-        }
-        inverseRelations(first: $relationFirst) {
-          nodes {
-            type
-            issue {
-              id
-              identifier
-              state {
-                name
-              }
-            }
-          }
-        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    attachments(first: $contextFirst) {
+      nodes {
+        id
+        title
+        url
+        sourceType
         createdAt
         updatedAt
       }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
     }
+    relations(first: $relationFirst) {
+      nodes {
+        id
+        type
+        relatedIssue {
+          id
+          identifier
+          title
+          url
+          state {
+            name
+            type
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    inverseRelations(first: $relationFirst) {
+      nodes {
+        id
+        type
+        issue {
+          id
+          identifier
+          title
+          url
+          state {
+            name
+            type
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    history(first: $contextFirst) {
+      nodes {
+        id
+        createdAt
+        fromState {
+          name
+          type
+        }
+        toState {
+          name
+          type
+        }
+        actor {
+          id
+          name
+          email
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    stateHistory(first: $contextFirst) {
+      nodes {
+        id
+        startedAt
+        endedAt
+        state {
+          name
+          type
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+    createdAt
+    updatedAt
   }
   """
 
@@ -245,6 +551,7 @@ defmodule SymphonyElixir.Linear.Client do
              stateNames: state_names,
              first: @issue_page_size,
              relationFirst: @issue_page_size,
+             contextFirst: @context_page_size,
              after: after_cursor
            }),
          {:ok, issues, page_info} <- decode_linear_page_response(body, assignee_filter) do
@@ -292,7 +599,8 @@ defmodule SymphonyElixir.Linear.Client do
     case graphql_fun.(@query_by_ids, %{
            ids: batch_ids,
            first: length(batch_ids),
-           relationFirst: @issue_page_size
+           relationFirst: @issue_page_size,
+           contextFirst: @context_page_size
          }) do
       {:ok, body} ->
         with {:ok, issues} <- decode_linear_response(body, assignee_filter) do
@@ -461,6 +769,7 @@ defmodule SymphonyElixir.Linear.Client do
       branch_name: issue["branchName"],
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
+      snapshot: issue_snapshot(issue),
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
@@ -574,6 +883,59 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp extract_blockers(_), do: []
+
+  defp issue_snapshot(issue) when is_map(issue) do
+    issue
+    |> Map.take([
+      "id",
+      "identifier",
+      "title",
+      "description",
+      "priority",
+      "priorityLabel",
+      "estimate",
+      "sortOrder",
+      "state",
+      "branchName",
+      "url",
+      "creator",
+      "assignee",
+      "project",
+      "team",
+      "cycle",
+      "labels",
+      "comments",
+      "attachments",
+      "relations",
+      "inverseRelations",
+      "history",
+      "stateHistory",
+      "createdAt",
+      "updatedAt",
+      "startedAt",
+      "completedAt",
+      "canceledAt",
+      "archivedAt",
+      "autoClosedAt",
+      "autoArchivedAt",
+      "dueDate",
+      "slaStartedAt",
+      "slaBreachesAt",
+      "trashed"
+    ])
+    |> drop_nil_values()
+  end
+
+  defp issue_snapshot(_issue), do: %{}
+
+  defp drop_nil_values(map) when is_map(map) do
+    map
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new(fn {key, value} -> {key, drop_nil_values(value)} end)
+  end
+
+  defp drop_nil_values(list) when is_list(list), do: Enum.map(list, &drop_nil_values/1)
+  defp drop_nil_values(value), do: value
 
   defp parse_datetime(nil), do: nil
 

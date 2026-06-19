@@ -367,6 +367,48 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.assigned_to_worker
   end
 
+  test "linear client preserves rich issue context in snapshot" do
+    raw_issue = %{
+      "id" => "issue-rich",
+      "identifier" => "MT-42",
+      "title" => "Rich context",
+      "description" => "Needs all visible Linear context",
+      "state" => %{"id" => "state-1", "name" => "In Progress", "type" => "started"},
+      "assignee" => %{"id" => "user-1", "name" => "Worker"},
+      "creator" => %{"id" => "user-2", "name" => "Reporter"},
+      "labels" => %{
+        "nodes" => [%{"id" => "label-1", "name" => "Workflow", "color" => "#ff0000"}],
+        "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+      },
+      "comments" => %{
+        "nodes" => [
+          %{"id" => "comment-1", "body" => "Please include comment context.", "user" => %{"name" => "Reviewer"}}
+        ],
+        "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+      },
+      "attachments" => %{
+        "nodes" => [%{"id" => "attachment-1", "title" => "Spec", "url" => "https://example.org/spec"}],
+        "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+      },
+      "history" => %{
+        "nodes" => [%{"id" => "history-1", "actor" => %{"name" => "Maintainer"}}],
+        "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+      },
+      "stateHistory" => %{
+        "nodes" => [%{"id" => "span-1", "state" => %{"name" => "Todo"}}],
+        "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+      }
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue)
+
+    assert issue.snapshot["comments"]["nodes"] |> hd() |> Map.fetch!("body") == "Please include comment context."
+    assert issue.snapshot["attachments"]["nodes"] |> hd() |> Map.fetch!("title") == "Spec"
+    assert issue.snapshot["history"]["nodes"] |> hd() |> get_in(["actor", "name"]) == "Maintainer"
+    assert issue.snapshot["stateHistory"]["nodes"] |> hd() |> Map.fetch!("id") == "span-1"
+    assert issue.snapshot["comments"]["pageInfo"] == %{"hasNextPage" => false}
+  end
+
   test "linear client marks explicitly unassigned issues as not routed to worker" do
     raw_issue = %{
       "id" => "issue-99",
@@ -1208,7 +1250,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
            }
   end
 
-  test "runtime sandbox policy resolution passes explicit policies through unchanged" do
+  test "runtime sandbox policy resolution merges extra roots into explicit workspaceWrite policies" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1218,7 +1260,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       issue_workspace = Path.join(workspace_root, "MT-100")
+      root_workspace = Path.join(workspace_root, "ROOT-100")
       File.mkdir_p!(issue_workspace)
+      File.mkdir_p!(root_workspace)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
@@ -1229,11 +1273,18 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         }
       )
 
-      assert {:ok, runtime_settings} = Config.codex_runtime_settings(issue_workspace)
+      assert {:ok, runtime_settings} =
+               Config.codex_runtime_settings(issue_workspace, extra_writable_roots: [root_workspace])
+
+      assert {:ok, canonical_issue_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(issue_workspace)
+
+      assert {:ok, canonical_root_workspace} =
+               SymphonyElixir.PathSafety.canonicalize(root_workspace)
 
       assert runtime_settings.turn_sandbox_policy == %{
                "type" => "workspaceWrite",
-               "writableRoots" => ["relative/path"],
+               "writableRoots" => ["relative/path", canonical_issue_workspace, canonical_root_workspace],
                "networkAccess" => true
              }
 

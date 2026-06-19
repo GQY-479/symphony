@@ -366,7 +366,7 @@ defmodule SymphonyElixir.Config.Schema do
   def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
     case settings.codex.turn_sandbox_policy do
       %{} = policy ->
-        {:ok, policy}
+        maybe_merge_runtime_writable_roots(policy, workspace, opts)
 
       _ ->
         workspace
@@ -649,6 +649,41 @@ defmodule SymphonyElixir.Config.Schema do
   defp default_runtime_turn_sandbox_policy(workspace_root, _opts) do
     {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace_root}}}
   end
+
+  defp maybe_merge_runtime_writable_roots(%{"type" => "workspaceWrite"} = policy, workspace, opts) when is_binary(workspace) and workspace != "" do
+    extra_writable_roots =
+      opts
+      |> Keyword.get(:extra_writable_roots, [])
+      |> List.wrap()
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+
+    if Keyword.get(opts, :remote, false) do
+      writable_roots =
+        policy
+        |> Map.get("writableRoots", [])
+        |> List.wrap()
+        |> Kernel.++([workspace | extra_writable_roots])
+        |> Enum.uniq()
+
+      {:ok, Map.put(policy, "writableRoots", writable_roots)}
+    else
+      with runtime_roots <- [workspace | extra_writable_roots],
+           expanded_runtime_roots <- Enum.map(runtime_roots, &expand_local_workspace_root/1),
+           {:ok, canonical_runtime_roots} <- canonicalize_writable_roots(expanded_runtime_roots) do
+        writable_roots =
+          policy
+          |> Map.get("writableRoots", [])
+          |> List.wrap()
+          |> Kernel.++(canonical_runtime_roots)
+          |> Enum.uniq()
+
+        {:ok, Map.put(policy, "writableRoots", writable_roots)}
+      end
+    end
+  end
+
+  defp maybe_merge_runtime_writable_roots(%{"type" => "workspaceWrite"} = policy, _workspace, _opts), do: {:ok, policy}
+  defp maybe_merge_runtime_writable_roots(policy, _workspace, _opts), do: {:ok, policy}
 
   defp default_workspace_root(workspace, _fallback) when is_binary(workspace) and workspace != "",
     do: workspace

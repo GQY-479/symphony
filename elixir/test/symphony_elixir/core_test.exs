@@ -1957,6 +1957,52 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "updated=2026-02-26T18:07:03Z"
   end
 
+  test "prompt builder appends rich issue snapshot when available" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
+
+    issue = %Issue{
+      identifier: "MT-702",
+      title: "Use complete issue context",
+      description: "Prompt should include Linear context beyond description.",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-702",
+      labels: ["workflow"],
+      snapshot: %{
+        "comments" => %{
+          "nodes" => [
+            %{
+              "id" => "comment-1",
+              "body" => "Reviewer asked for edge-case coverage.",
+              "createdAt" => "2026-06-20T01:00:00Z",
+              "user" => %{"name" => "Reviewer"}
+            }
+          ],
+          "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+        },
+        "attachments" => %{
+          "nodes" => [
+            %{"id" => "attachment-1", "title" => "Pull Request", "url" => "https://example.org/pr/1"}
+          ],
+          "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+        },
+        "history" => %{
+          "nodes" => [
+            %{"id" => "history-1", "createdAt" => "2026-06-20T00:00:00Z", "actor" => %{"name" => "Maintainer"}}
+          ],
+          "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+        }
+      }
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "Ticket MT-702"
+    assert prompt =~ "Linear issue snapshot:"
+    assert prompt =~ "Reviewer asked for edge-case coverage."
+    assert prompt =~ "Pull Request"
+    assert prompt =~ "\"hasNextPage\": false"
+  end
+
   test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
 

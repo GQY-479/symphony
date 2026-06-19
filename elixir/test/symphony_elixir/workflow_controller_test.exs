@@ -504,6 +504,59 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert body =~ "mix test test/symphony_elixir/workflow_controller_test.exs"
   end
 
+  test "execution completion 可以渲染结构化 evidence 而不让 orchestrator 崩溃" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-structured-evidence-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue = %Issue{
+      id: "derived-structured-evidence",
+      identifier: "YQE-STRUCTURED",
+      title: "结构化证据任务",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    structured_evidence = %{
+      "type" => "filesystem_check",
+      "path" => "/tmp/smoke.md",
+      "result" => "missing"
+    }
+
+    File.write!(
+      Artifacts.completion_packet_path(workspace),
+      Jason.encode!(%{
+        "outcome" => "blocked",
+        "summary" => "目标文件缺失",
+        "evidence" => [structured_evidence],
+        "decisions" => [%{"kind" => "blocked", "reason" => "sandbox"}],
+        "open_questions" => [%{"question" => "是否允许写 root workspace？"}],
+        "next_handoff" => "请审查结构化证据"
+      })
+    )
+
+    assert {:ok, {:queue_review, metadata}} =
+             Controller.handle_execution_completion(issue, workspace)
+
+    assert metadata.workflow_context["evidence"] == [structured_evidence]
+
+    assert_receive {:memory_tracker_comment, "derived-structured-evidence", body}
+    assert body =~ "Completion Packet"
+    assert body =~ "\"type\":\"filesystem_check\""
+    assert body =~ "\"result\":\"missing\""
+    assert body =~ "\"kind\":\"blocked\""
+    assert body =~ "是否允许写 root workspace？"
+  end
+
   test "review completion 读取 review decision、回写评论并返回 pass 决策" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-review-#{System.unique_integer([:positive])}")

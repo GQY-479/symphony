@@ -106,6 +106,13 @@ defmodule SymphonyElixir.AgentToolTest do
 
     assert_received {:linear_client_called, query, %{"issueId" => "YQE-31"}, []}
     assert query =~ "query SymphonyLinearToolIssueRead"
+    assert query =~ "comments(first:"
+    assert query =~ "attachments(first:"
+    assert query =~ "relations(first:"
+    assert query =~ "inverseRelations(first:"
+    assert query =~ "history(first:"
+    assert query =~ "creator"
+    assert query =~ "assignee"
     assert Jason.decode!(output)["data"]["issue"]["identifier"] == "YQE-31"
     assert payload["data"]["issue"]["state"]["name"] == "In Progress"
   end
