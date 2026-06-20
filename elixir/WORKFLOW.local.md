@@ -42,14 +42,17 @@ orchestration:
 codex:
   command: codex app-server
   approval_policy: never
-  thread_sandbox: workspace-write
+  thread_sandbox: danger-full-access
   turn_sandbox_policy:
-    type: workspaceWrite
-    networkAccess: true
+    type: dangerFullAccess
 agents:
   codex:
     kind: codex_app_server
     command: codex app-server
+    approval_policy: never
+    thread_sandbox: danger-full-access
+    turn_sandbox_policy:
+      type: dangerFullAccess
   mimocode:
     kind: acp_stdio
     command: /home/gqy47/.npm-global/bin/mimo
