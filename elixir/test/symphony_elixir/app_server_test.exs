@@ -1357,6 +1357,153 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "app server logs error notification payloads with redaction" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-error-notification-log-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-94")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-94"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-94"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"error","params":{"message":"model stream failed","authorization":"Bearer secret-token","nested":{"api_key":"linear-secret"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-error-notification-log",
+        identifier: "MT-94",
+        title: "Log error notification payload",
+        description: "Ensure app-server errors include diagnostic payloads",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-94",
+        labels: ["backend"]
+      }
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _result} =
+                   AppServer.run(workspace, "Log error notification payload", issue)
+        end)
+
+      assert log =~ ~s(Codex notification: "error" payload=)
+      assert log =~ "model stream failed"
+      assert log =~ ~s("authorization" => "[REDACTED]")
+      assert log =~ ~s("api_key" => "[REDACTED]")
+      refute log =~ "secret-token"
+      refute log =~ "linear-secret"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server keeps non-error notification logs concise" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-concise-notification-log-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-95")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-95"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-95"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"total":{"total_tokens":123}}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-concise-notification-log",
+        identifier: "MT-95",
+        title: "Keep non-error notification logs concise",
+        description: "Ensure high-volume app-server notifications do not dump payloads",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-95",
+        labels: ["backend"]
+      }
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _result} =
+                   AppServer.run(workspace, "Keep notification log concise", issue)
+        end)
+
+      assert log =~ ~s(Codex notification: "thread/tokenUsage/updated")
+      refute log =~ ~s(Codex notification: "thread/tokenUsage/updated" payload=)
+      refute log =~ "total_tokens"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server launches over ssh for remote workers" do
     test_root =
       Path.join(

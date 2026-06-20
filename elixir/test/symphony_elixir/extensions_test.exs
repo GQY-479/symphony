@@ -544,13 +544,20 @@ defmodule SymphonyElixir.ExtensionsTest do
            }
          }},
         {:ok, %{"data" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "state-wrong-team"}]}}}}},
-        {:ok, %{"data" => %{"issueLabels" => %{"nodes" => []}}}},
+        {:ok,
+         %{
+           "data" => %{
+             "issueLabels" => %{
+               "nodes" => [%{"id" => "label-1", "name" => "symphony-local-test", "team" => %{"id" => "team-with-label"}}]
+             }
+           }
+         }},
         {:ok, %{"data" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "state-right-team"}]}}}}},
         {:ok,
          %{
            "data" => %{
              "issueLabels" => %{
-               "nodes" => [%{"id" => "label-1", "name" => "symphony-local-test"}]
+               "nodes" => [%{"id" => "label-1", "name" => "symphony-local-test", "team" => %{"id" => "team-with-label"}}]
              }
            }
          }},
@@ -583,9 +590,9 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert_receive {:graphql_called, _project_lookup_query, %{projectSlug: "project-slug"}}
     assert_receive {:graphql_called, _state_lookup_query, %{teamId: "team-without-label", stateName: "Todo"}}
-    assert_receive {:graphql_called, _label_lookup_query, %{teamId: "team-without-label", labelNames: ["symphony-local-test"]}}
+    assert_receive {:graphql_called, _label_lookup_query, %{labelNames: ["symphony-local-test"]}}
     assert_receive {:graphql_called, _state_lookup_query, %{teamId: "team-with-label", stateName: "Todo"}}
-    assert_receive {:graphql_called, _label_lookup_query, %{teamId: "team-with-label", labelNames: ["symphony-local-test"]}}
+    assert_receive {:graphql_called, _label_lookup_query, %{labelNames: ["symphony-local-test"]}}
 
     assert_receive {:graphql_called, create_issue_query,
                     %{teamId: "team-with-label", stateId: "state-right-team", labelIds: ["label-1"]}}
