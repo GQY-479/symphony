@@ -40,289 +40,162 @@ defmodule SymphonyElixirWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <section class="dashboard-shell">
-      <header class="hero-card">
-        <div class="hero-grid">
-          <div>
-            <p class="eyebrow">
-              Symphony Observability
-            </p>
-            <h1 class="hero-title">
-              Operations Dashboard
-            </h1>
-            <p class="hero-copy">
-              Current state, retry pressure, token usage, and orchestration health for the active Symphony runtime.
-            </p>
-          </div>
+    <section class="dashboard-shell-ops">
+      <header class="ops-topbar">
+        <div>
+          <p class="eyebrow">Symphony Observability</p>
+          <h1>Root Workflows</h1>
+        </div>
 
-          <div class="status-stack">
-            <span class="status-badge status-badge-live">
-              <span class="status-badge-dot"></span>
-              Live
-            </span>
-            <span class="status-badge status-badge-offline">
-              <span class="status-badge-dot"></span>
-              Offline
-            </span>
-          </div>
+        <div class="status-stack">
+          <span class="status-badge status-badge-live">
+            <span class="status-badge-dot"></span>
+            Live
+          </span>
+          <span class="status-badge status-badge-offline">
+            <span class="status-badge-dot"></span>
+            Offline
+          </span>
         </div>
       </header>
 
       <%= if @payload[:error] do %>
         <section class="error-card">
-          <h2 class="error-title">
-            Snapshot unavailable
-          </h2>
+          <h2 class="error-title">Snapshot unavailable</h2>
           <p class="error-copy">
             <strong><%= @payload.error.code %>:</strong> <%= @payload.error.message %>
           </p>
         </section>
       <% else %>
-        <section class="metric-grid">
-          <article class="metric-card">
-            <p class="metric-label">Running</p>
-            <p class="metric-value numeric"><%= @payload.counts.running %></p>
-            <p class="metric-detail">Active issue sessions in the current runtime.</p>
+        <section class="ops-metrics">
+          <article>
+            <span>Workflows</span>
+            <strong class="numeric"><%= length(@payload.workflows) %></strong>
           </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Retrying</p>
-            <p class="metric-value numeric"><%= @payload.counts.retrying %></p>
-            <p class="metric-detail">Issues waiting for the next retry window.</p>
+          <article>
+            <span>Running</span>
+            <strong class="numeric"><%= @payload.counts.running %></strong>
           </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Blocked</p>
-            <p class="metric-value numeric"><%= @payload.counts.blocked %></p>
-            <p class="metric-detail">Issues paused for operator input or approval.</p>
+          <article>
+            <span>Blocked</span>
+            <strong class="numeric"><%= @payload.counts.blocked %></strong>
           </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Total tokens</p>
-            <p class="metric-value numeric"><%= format_int(@payload.codex_totals.total_tokens) %></p>
-            <p class="metric-detail numeric">
-              In <%= format_int(@payload.codex_totals.input_tokens) %> / Out <%= format_int(@payload.codex_totals.output_tokens) %>
-            </p>
+          <article>
+            <span>Total tokens</span>
+            <strong class="numeric"><%= format_int(@payload.codex_totals.total_tokens) %></strong>
           </article>
-
-          <article class="metric-card">
-            <p class="metric-label">Runtime</p>
-            <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></p>
-            <p class="metric-detail">Total Codex runtime across completed and active sessions.</p>
+          <article>
+            <span>Runtime</span>
+            <strong class="numeric"><%= format_runtime_seconds(total_runtime_seconds(@payload, @now)) %></strong>
           </article>
         </section>
 
-        <section class="section-card">
-          <div class="section-header">
+        <section class="ops-grid">
+          <aside class="ops-sidebar" aria-label="Workflow filters">
             <div>
-              <h2 class="section-title">Rate limits</h2>
-              <p class="section-copy">Latest upstream rate-limit snapshot, when available.</p>
+              <h2>Filters</h2>
+              <nav class="filter-list">
+                <a href="/" class="filter-pill is-active">All</a>
+                <a href="/" class="filter-pill">Running</a>
+                <a href="/" class="filter-pill">Review</a>
+                <a href="/" class="filter-pill">Blocked</a>
+                <a href="/" class="filter-pill">Retrying</a>
+              </nav>
             </div>
-          </div>
 
-          <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
-        </section>
-
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Running sessions</h2>
-              <p class="section-copy">Active issues, last known agent activity, and token usage.</p>
+            <div class="rate-limit-box">
+              <h2>Rate limits</h2>
+              <pre class="code-panel"><%= pretty_value(@payload.rate_limits) %></pre>
             </div>
-          </div>
+          </aside>
 
-          <%= if @payload.running == [] do %>
-            <p class="empty-state">No active sessions.</p>
-          <% else %>
-            <div class="table-wrap">
-              <table class="data-table data-table-running">
-                <colgroup>
-                  <col style="width: 12rem;" />
-                  <col style="width: 8rem;" />
-                  <col style="width: 7.5rem;" />
-                  <col style="width: 8.5rem;" />
-                  <col />
-                  <col style="width: 10rem;" />
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th>Issue</th>
-                    <th>State</th>
-                    <th>Session</th>
-                    <th>Runtime / turns</th>
-                    <th>Codex update</th>
-                    <th>Tokens</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={entry <- @payload.running}>
-                    <td>
-                      <div class="issue-stack">
-                        <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
-                      </div>
-                    </td>
-                    <td>
-                      <span class={state_badge_class(entry.state)}>
-                        <%= entry.state %>
-                      </span>
-                    </td>
-                    <td>
-                      <div class="session-stack">
-                        <%= if entry.session_id do %>
-                          <button
-                            type="button"
-                            class="subtle-button"
-                            data-label="Copy ID"
-                            data-copy={entry.session_id}
-                            onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                          >
-                            Copy ID
-                          </button>
-                        <% else %>
-                          <span class="muted">n/a</span>
-                        <% end %>
-                      </div>
-                    </td>
-                    <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
-                    <td>
-                      <div class="detail-stack">
-                        <span
-                          class="event-text"
-                          title={entry.last_message || to_string(entry.last_event || "n/a")}
-                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
-                        <span class="muted event-meta">
-                          <%= entry.last_event || "n/a" %>
-                          <%= if entry.last_event_at do %>
-                            · <span class="mono numeric"><%= entry.last_event_at %></span>
-                          <% end %>
-                        </span>
-                      </div>
-                    </td>
-                    <td>
-                      <div class="token-stack numeric">
-                        <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
-                        <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+          <main class="workflow-list" aria-label="Root workflow list">
+            <div class="workflow-list-heading">
+              <h2>Workflow queue</h2>
+              <p>Operations Dashboard · Codex update</p>
             </div>
-          <% end %>
-        </section>
 
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Blocked sessions</h2>
-              <p class="section-copy">Issues paused because Codex requested operator input or approval.</p>
-            </div>
-          </div>
+            <%= if @payload.workflows == [] do %>
+              <p class="empty-state">No active root workflows</p>
+            <% else %>
+              <article :for={workflow <- @payload.workflows} class="workflow-card">
+                <div class="workflow-card-head">
+                  <div>
+                    <a class="issue-id issue-id-link" href={workflow_link(workflow)}>
+                      <%= workflow.root_issue_identifier %>
+                    </a>
+                    <h3><%= workflow_title(workflow) %></h3>
+                  </div>
+                  <span class={workflow_status_badge_class(workflow.status)}><%= workflow.status %></span>
+                </div>
 
-          <%= if @payload.blocked == [] do %>
-            <p class="empty-state">No blocked sessions.</p>
-          <% else %>
-            <div class="table-wrap">
-              <table class="data-table" style="min-width: 760px;">
-                <thead>
-                  <tr>
-                    <th>Issue</th>
-                    <th>State</th>
-                    <th>Session</th>
-                    <th>Blocked at</th>
-                    <th>Last update</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={entry <- @payload.blocked}>
-                    <td>
-                      <div class="issue-stack">
-                        <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
-                      </div>
-                    </td>
-                    <td>
-                      <span class={state_badge_class(entry.state || "Blocked")}>
-                        <%= entry.state || "Blocked" %>
-                      </span>
-                    </td>
-                    <td>
-                      <%= if entry.session_id do %>
-                        <button
-                          type="button"
-                          class="subtle-button"
-                          data-label="Copy ID"
-                          data-copy={entry.session_id}
-                          onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
-                        >
-                          Copy ID
-                        </button>
-                      <% else %>
-                        <span class="muted">n/a</span>
-                      <% end %>
-                    </td>
-                    <td class="mono"><%= entry.blocked_at || "n/a" %></td>
-                    <td>
-                      <div class="detail-stack">
-                        <span
-                          class="event-text"
-                          title={entry.last_message || to_string(entry.last_event || "n/a")}
-                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
-                        <span class="muted event-meta">
-                          <%= entry.last_event || "n/a" %>
-                          <%= if entry.last_event_at do %>
-                            · <span class="mono numeric"><%= entry.last_event_at %></span>
-                          <% end %>
-                        </span>
-                      </div>
-                    </td>
-                    <td><%= entry.error || "n/a" %></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          <% end %>
-        </section>
+                <div class="workflow-phase-row">
+                  <span><%= phase_label(workflow.phase_summary) || "unassigned" %></span>
+                  <span class="muted">Runtime <%= format_runtime_seconds(workflow.runtime_seconds) %></span>
+                </div>
 
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title">Retry queue</h2>
-              <p class="section-copy">Issues waiting for the next retry window.</p>
-            </div>
-          </div>
+                <dl class="workflow-counts">
+                  <div>
+                    <dt>Running</dt>
+                    <dd class="numeric"><%= workflow.counts.running %></dd>
+                  </div>
+                  <div>
+                    <dt>Retrying</dt>
+                    <dd class="numeric"><%= workflow.counts.retrying %></dd>
+                  </div>
+                  <div>
+                    <dt>Blocked</dt>
+                    <dd class="numeric"><%= workflow.counts.blocked %></dd>
+                  </div>
+                  <div>
+                    <dt>Tokens</dt>
+                    <dd class="numeric"><%= format_int(workflow.tokens.total_tokens) %></dd>
+                  </div>
+                </dl>
 
-          <%= if @payload.retrying == [] do %>
-            <p class="empty-state">No issues are currently backing off.</p>
-          <% else %>
-            <div class="table-wrap">
-              <table class="data-table" style="min-width: 680px;">
-                <thead>
-                  <tr>
-                    <th>Issue</th>
-                    <th>Attempt</th>
-                    <th>Due at</th>
-                    <th>Error</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={entry <- @payload.retrying}>
-                    <td>
-                      <div class="issue-stack">
-                        <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
-                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
-                      </div>
-                    </td>
-                    <td><%= entry.attempt %></td>
-                    <td class="mono"><%= entry.due_at || "n/a" %></td>
-                    <td><%= entry.error || "n/a" %></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          <% end %>
+                <div class="active-entry-list">
+                  <div :for={entry <- workflow.active_entries} class="active-entry-row">
+                    <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
+                    <span class={state_badge_class(entry.status)}><%= entry.status %></span>
+                    <span><%= phase_label(entry.phase) || "n/a" %></span>
+                    <span class="event-text"><%= entry_message(entry) %></span>
+                    <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                    <button
+                      :if={entry.session_id}
+                      type="button"
+                      class="subtle-button"
+                      data-label="Copy ID"
+                      data-copy={entry.session_id}
+                      onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                    >
+                      Copy ID
+                    </button>
+                  </div>
+                </div>
+
+                <p :if={workflow.recent_event} class="workflow-event">
+                  <span><%= recent_event_message(workflow.recent_event) %></span>
+                  <span class="muted mono"><%= workflow.recent_event.at || "n/a" %></span>
+                </p>
+              </article>
+            <% end %>
+          </main>
+
+          <aside class="attention-panel" aria-label="Attention Inbox">
+            <h2>Attention Inbox</h2>
+
+            <%= if @payload.attention_items == [] do %>
+              <p class="empty-state">No operator action needed</p>
+            <% else %>
+              <div :for={item <- @payload.attention_items} class="attention-item">
+                <span class={attention_kind_class(item.kind)}><%= item.kind %></span>
+                <a href={workflow_link(item)}><%= item.root_issue_identifier %></a>
+                <strong><%= item.issue_identifier %></strong>
+                <p><%= attention_reason(item) %></p>
+                <small><%= phase_label(item.phase) || "n/a" %></small>
+              </div>
+            <% end %>
+          </aside>
         </section>
       <% end %>
     </section>
@@ -388,20 +261,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
       end)
   end
 
-  defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
-    "#{format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))} / #{turn_count}"
-  end
-
-  defp format_runtime_and_turns(started_at, _turn_count, now),
-    do: format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))
-
-  defp format_runtime_seconds(seconds) when is_number(seconds) do
-    whole_seconds = max(trunc(seconds), 0)
-    mins = div(whole_seconds, 60)
-    secs = rem(whole_seconds, 60)
-    "#{mins}m #{secs}s"
-  end
-
   defp runtime_seconds_from_started_at(%DateTime{} = started_at, %DateTime{} = now) do
     DateTime.diff(now, started_at, :second)
   end
@@ -415,6 +274,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp runtime_seconds_from_started_at(_started_at, _now), do: 0
 
+  defp format_runtime_seconds(seconds) when is_number(seconds) do
+    whole_seconds = max(trunc(seconds), 0)
+    mins = div(whole_seconds, 60)
+    secs = rem(whole_seconds, 60)
+    "#{mins}m #{secs}s"
+  end
+
   defp format_int(value) when is_integer(value) do
     value
     |> Integer.to_string()
@@ -424,6 +290,36 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_int(_value), do: "n/a"
+
+  defp workflow_link(%{root_issue_identifier: root_identifier}) do
+    "/workflows/#{URI.encode(root_identifier)}"
+  end
+
+  defp workflow_title(%{title: title, root_issue_identifier: root_identifier}) when is_binary(title) do
+    if String.trim(title) == root_identifier, do: "Root workflow", else: title
+  end
+
+  defp workflow_title(_workflow), do: "Root workflow"
+
+  defp phase_label(nil), do: nil
+  defp phase_label(phase) when is_atom(phase), do: Atom.to_string(phase)
+  defp phase_label(phase), do: to_string(phase)
+
+  defp attention_reason(%{reason: reason}) when is_binary(reason), do: reason
+  defp attention_reason(%{attempt: attempt}) when is_integer(attempt), do: "Retry attempt #{attempt}"
+  defp attention_reason(_item), do: "Needs operator review"
+
+  defp entry_message(%{last_message: message}) when is_binary(message), do: message
+  defp entry_message(%{last_event: event}) when not is_nil(event), do: to_string(event)
+  defp entry_message(_entry), do: "n/a"
+
+  defp recent_event_message(%{message: message}) when is_binary(message), do: message
+  defp recent_event_message(%{event: event}) when not is_nil(event), do: to_string(event)
+  defp recent_event_message(_event), do: "n/a"
+
+  defp attention_kind_class(kind), do: "attention-kind attention-kind-#{kind}"
+
+  defp workflow_status_badge_class(status), do: state_badge_class(status)
 
   defp state_badge_class(state) do
     base = "state-badge"

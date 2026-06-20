@@ -461,7 +461,10 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_id: Map.get(entry, :issue_id),
       issue_identifier: entry.issue_identifier,
       issue_url: Map.get(entry, :issue_url),
-      phase: Map.get(entry, :workflow_phase)
+      session_id: Map.get(entry, :session_id),
+      phase: Map.get(entry, :workflow_phase),
+      last_event: Map.get(entry, :last_event),
+      last_message: Map.get(entry, :last_message)
     }
   end
 
