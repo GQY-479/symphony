@@ -26,6 +26,7 @@ defmodule SymphonyElixirWeb.Router do
     pipe_through(:browser)
 
     live("/", DashboardLive, :index)
+    live("/workflows/:root_identifier", WorkflowLive, :show)
   end
 
   scope "/", SymphonyElixirWeb, log: false do

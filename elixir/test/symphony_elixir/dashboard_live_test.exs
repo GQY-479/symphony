@@ -44,6 +44,25 @@ defmodule SymphonyElixirWeb.DashboardLiveTest do
     assert html =~ "/workflows/SYM-500"
   end
 
+  test "workflow 详情页在 registry 不可用时展示 runtime entries" do
+    orchestrator_name = Module.concat(__MODULE__, :WorkflowDetailOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: workflow_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/workflows/SYM-500")
+
+    assert html =~ "SYM-500"
+    assert html =~ "Registry unavailable"
+    assert html =~ "SYM-501"
+    assert html =~ "execution"
+  end
+
   defp start_test_endpoint(overrides) do
     endpoint_config =
       :symphony_elixir
