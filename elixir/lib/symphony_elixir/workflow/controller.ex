@@ -247,13 +247,16 @@ defmodule SymphonyElixir.Workflow.Controller do
           {:cont, {:ok, updated_registry}}
 
         :error ->
-          case Tracker.create_issue(%{
-                 title: node["title"],
-                 description: node_description(root_issue, node, dependencies, handoffs, plan),
-                 state: "Todo",
-                 assignee_id: root_issue.assignee_id,
-                 labels: inherited_labels(root_issue)
-               }) do
+          case Tracker.create_issue(
+                 %{
+                   title: node["title"],
+                   description: node_description(root_issue, node, dependencies, handoffs, plan),
+                   state: "Todo",
+                   assignee_id: root_issue.assignee_id,
+                   labels: inherited_labels(root_issue)
+                 }
+                 |> Map.merge(issue_tracker_context(root_issue))
+               ) do
             {:ok, %Issue{} = issue} ->
               updated_registry =
                 put_derived_node(
@@ -491,13 +494,16 @@ defmodule SymphonyElixir.Workflow.Controller do
     description = rework_issue_description(registry, node_key, node, issue, decision)
 
     with {:ok, %Issue{} = rework_issue} <-
-           Tracker.create_issue(%{
-             title: title,
-             description: description,
-             state: "Todo",
-             assignee_id: issue.assignee_id,
-             labels: inherited_labels(issue)
-           }) do
+           Tracker.create_issue(
+             %{
+               title: title,
+               description: description,
+               state: "Todo",
+               assignee_id: issue.assignee_id,
+               labels: inherited_labels(issue)
+             }
+             |> Map.merge(issue_tracker_context(issue))
+           ) do
       dependencies = node["dependencies"] || []
 
       updated_registry =
@@ -536,6 +542,21 @@ defmodule SymphonyElixir.Workflow.Controller do
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq_by(&String.downcase/1)
   end
+
+  defp issue_tracker_context(%Issue{} = issue) do
+    %{
+      project_id: issue.project_id,
+      project_slug: issue.project_slug,
+      project_name: issue.project_name,
+      team_id: issue.team_id,
+      team_key: issue.team_key,
+      team_name: issue.team_name
+    }
+    |> Enum.reject(fn {_key, value} -> blank?(value) end)
+    |> Map.new()
+  end
+
+  defp blank?(value), do: is_nil(value) or value == ""
 
   defp next_rework_node_key(registry, node_key) do
     existing_keys =

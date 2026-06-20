@@ -239,6 +239,59 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert Issue.routable?(derived_issue, Config.settings!().tracker.required_labels)
   end
 
+  test "issue_graph 派生 issue 会继承 root 的 Linear project/team 上下文" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-context-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{
+      id: "root-context",
+      identifier: "YQE-CONTEXT",
+      title: "带 Linear 上下文的 root issue",
+      state: "In Progress",
+      assignee_id: "worker-1",
+      project_id: "project-root",
+      team_id: "team-root",
+      labels: ["symphony-local-test"]
+    }
+
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.workflow_plan_path(workspace),
+      Jason.encode!(%{
+        "kind" => "issue_graph",
+        "summary" => "验证派生 issue 使用 root Linear 上下文",
+        "confidence" => "high",
+        "nodes" => [
+          %{
+            "node_key" => "implementation",
+            "task_type" => "implementation",
+            "title" => "继承 Linear 上下文的派生任务",
+            "goal" => "证明派生任务创建时使用同一 project/team",
+            "agent_id" => "codex"
+          }
+        ],
+        "edges" => []
+      })
+    )
+
+    assert {:ok, _registry} = Controller.handle_planning_completion(root_issue, workspace)
+    assert_receive {:memory_tracker_issue_created, %Issue{} = derived_issue}
+
+    assert derived_issue.project_id == "project-root"
+    assert derived_issue.team_id == "team-root"
+  end
+
   test "issue_graph 规划注释失败会向上返回错误" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-comment-fail-#{System.unique_integer([:positive])}")

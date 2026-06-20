@@ -43,7 +43,7 @@ defmodule SymphonyElixir.Linear.Adapter do
     projects(filter: {slugId: {eq: $projectSlug}}, first: 1) {
       nodes {
         id
-        teams(first: 1) {
+        teams(first: 50) {
           nodes {
             id
           }
@@ -66,10 +66,9 @@ defmodule SymphonyElixir.Linear.Adapter do
   """
 
   @label_lookup_query """
-  query SymphonyResolveIssueLabelIds($teamId: ID!, $labelNames: [String!]!) {
+  query SymphonyResolveIssueLabelIds($labelNames: [String!]!) {
     issueLabels(
       filter: {
-        team: {id: {eq: $teamId}}
         name: {in: $labelNames}
       }
       first: 50
@@ -77,6 +76,9 @@ defmodule SymphonyElixir.Linear.Adapter do
       nodes {
         id
         name
+        team {
+          id
+        }
       }
     }
   }
@@ -118,8 +120,19 @@ defmodule SymphonyElixir.Linear.Adapter do
         assignee {
           id
         }
+        project {
+          id
+          name
+          slugId
+        }
+        team {
+          id
+          key
+          name
+        }
         labels {
           nodes {
+            id
             name
           }
         }
@@ -183,7 +196,7 @@ defmodule SymphonyElixir.Linear.Adapter do
     state_name = Map.get(attrs, :state) || Map.get(attrs, "state") || "Todo"
     label_names = issue_label_names(attrs)
 
-    with {:ok, project_id, team_ids} <- resolve_project(),
+    with {:ok, project_id, team_ids} <- resolve_issue_context(attrs),
          {:ok, team_id, state_id, label_ids} <- resolve_project_team_inputs(team_ids, state_name, label_names),
          {:ok, response} <-
            client_module().graphql(@create_issue_mutation, issue_create_variables(attrs, team_id, project_id, state_id, label_ids)),
@@ -194,6 +207,22 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   defp client_module do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
+  end
+
+  defp resolve_issue_context(attrs) do
+    project_id = attr_string(attrs, :project_id)
+    team_id = attr_string(attrs, :team_id)
+
+    cond do
+      is_binary(project_id) and is_binary(team_id) ->
+        {:ok, project_id, [team_id]}
+
+      is_nil(project_id) and is_nil(team_id) ->
+        resolve_project()
+
+      true ->
+        {:error, :incomplete_issue_context}
+    end
   end
 
   defp resolve_project do
@@ -253,8 +282,8 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   defp resolve_label_ids(team_id, label_names) do
     with {:ok, response} <-
-           client_module().graphql(@label_lookup_query, %{teamId: team_id, labelNames: label_names}),
-         {:ok, label_ids} <- extract_label_ids(response, label_names) do
+           client_module().graphql(@label_lookup_query, %{labelNames: label_names}),
+         {:ok, label_ids} <- extract_label_ids(response, team_id, label_names) do
       {:ok, label_ids}
     else
       {:error, reason} -> {:error, reason}
@@ -272,6 +301,19 @@ defmodule SymphonyElixir.Linear.Adapter do
       assigneeId: Map.get(attrs, :assignee_id) || Map.get(attrs, "assignee_id"),
       labelIds: label_ids
     }
+  end
+
+  defp attr_string(attrs, key) when is_map(attrs) and is_atom(key) do
+    case Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key)) do
+      value when is_binary(value) ->
+        case String.trim(value) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _ ->
+        nil
+    end
   end
 
   defp normalize_created_issue(%{"data" => %{"issueCreate" => %{"success" => true, "issue" => %{} = issue}}}) do
@@ -316,17 +358,12 @@ defmodule SymphonyElixir.Linear.Adapter do
     |> Enum.uniq_by(&String.downcase/1)
   end
 
-  defp extract_label_ids(response, label_names) do
+  defp extract_label_ids(response, team_id, label_names) do
     labels = get_in(response, ["data", "issueLabels", "nodes"]) || []
-
-    labels_by_name =
-      Map.new(labels, fn label ->
-        {normalize_label_name(label["name"]), label["id"]}
-      end)
 
     label_ids =
       Enum.map(label_names, fn label_name ->
-        Map.get(labels_by_name, normalize_label_name(label_name))
+        matching_label_id(labels, team_id, label_name)
       end)
 
     if Enum.all?(label_ids, &is_binary/1) do
@@ -335,6 +372,26 @@ defmodule SymphonyElixir.Linear.Adapter do
       {:error, {:labels_not_found, label_names}}
     end
   end
+
+  defp matching_label_id(labels, team_id, label_name) do
+    normalized_name = normalize_label_name(label_name)
+
+    matching_labels =
+      Enum.filter(labels, fn label ->
+        normalize_label_name(label["name"]) == normalized_name
+      end)
+
+    matching_labels
+    |> Enum.find(fn label -> label_team_id(label) == team_id end)
+    |> label_id()
+    |> Kernel.||(matching_labels |> Enum.find(fn label -> is_nil(label_team_id(label)) end) |> label_id())
+  end
+
+  defp label_id(%{"id" => label_id}) when is_binary(label_id), do: label_id
+  defp label_id(_label), do: nil
+
+  defp label_team_id(%{"team" => %{"id" => team_id}}) when is_binary(team_id), do: team_id
+  defp label_team_id(_label), do: nil
 
   defp normalize_label_name(label_name) when is_binary(label_name) do
     label_name

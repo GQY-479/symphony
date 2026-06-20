@@ -409,6 +409,26 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert issue.snapshot["comments"]["pageInfo"] == %{"hasNextPage" => false}
   end
 
+  test "linear client exposes project and team context on normalized issues" do
+    raw_issue = %{
+      "id" => "issue-project-team",
+      "identifier" => "MT-43",
+      "title" => "Project team context",
+      "state" => %{"name" => "Todo"},
+      "project" => %{"id" => "project-1", "name" => "Symphony", "slugId" => "96f5ac7500e2"},
+      "team" => %{"id" => "team-1", "key" => "YQE", "name" => "YQEEQY"}
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue)
+
+    assert Map.get(issue, :project_id) == "project-1"
+    assert Map.get(issue, :project_slug) == "96f5ac7500e2"
+    assert Map.get(issue, :project_name) == "Symphony"
+    assert Map.get(issue, :team_id) == "team-1"
+    assert Map.get(issue, :team_key) == "YQE"
+    assert Map.get(issue, :team_name) == "YQEEQY"
+  end
+
   test "linear client marks explicitly unassigned issues as not routed to worker" do
     raw_issue = %{
       "id" => "issue-99",
