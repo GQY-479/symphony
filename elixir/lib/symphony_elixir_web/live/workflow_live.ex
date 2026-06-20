@@ -1,6 +1,6 @@
 defmodule SymphonyElixirWeb.WorkflowLive do
   @moduledoc """
-  Root workflow detail page for the observability dashboard.
+  Root workflow 详情页。
   """
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}

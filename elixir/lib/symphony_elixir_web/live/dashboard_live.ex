@@ -1,6 +1,6 @@
 defmodule SymphonyElixirWeb.DashboardLive do
   @moduledoc """
-  Live observability dashboard for Symphony.
+  Symphony 运行观测首页。
   """
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
