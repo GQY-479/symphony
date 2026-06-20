@@ -10,6 +10,11 @@ defmodule SymphonyElixir.AgentRunner do
 
   @type worker_host :: String.t() | nil
 
+  defmodule Error do
+    @moduledoc false
+    defexception [:message, :reason]
+  end
+
   @doc false
   @spec continue_with_issue_for_test(Issue.t(), ([String.t()] -> term())) ::
           {:continue, Issue.t()} | {:done, Issue.t()} | {:error, term()}
@@ -31,7 +36,7 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-        raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+        raise Error, message: "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}", reason: reason
     end
   end
 

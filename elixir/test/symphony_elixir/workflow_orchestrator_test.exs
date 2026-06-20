@@ -213,6 +213,59 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     refute Map.has_key?(updated_state.retry_attempts, root_issue.id)
   end
 
+  test "workflow artifact repair failed 时阻塞 issue 而不是继续重试" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    issue = %Issue{
+      id: "derived-repair-failed",
+      identifier: "YQE-799",
+      title: "artifact repair failed",
+      state: "Todo",
+      url: "https://linear.app/yqeeqy/issue/YQE-799"
+    }
+
+    workspace = Path.join(System.tmp_dir!(), "workflow-orchestrator-repair-failed-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+
+    state = %{workflow_state() | claimed: MapSet.new([issue.id])}
+
+    running_entry =
+      running_entry(issue, workspace, :execution)
+      |> Map.merge(%{
+        agent_id: "codex",
+        agent_kind: "codex_app_server",
+        session_id: "session-repair-failed"
+      })
+
+    reason =
+      {%AgentRunner.Error{
+         message:
+           "Agent run failed for issue_id=#{issue.id} issue_identifier=#{issue.identifier}: " <>
+             "{:workflow_artifact_repair_failed, :execution, " <>
+             "\"#{Path.join([workspace, ".symphony", "completion_packet.json"])}\", :enoent}",
+         reason: {:workflow_artifact_repair_failed, :execution, Path.join([workspace, ".symphony", "completion_packet.json"]), :enoent}
+       }, []}
+
+    updated_state =
+      Orchestrator.handle_agent_down_for_test(reason, state, issue.id, running_entry)
+
+    refute Map.has_key?(updated_state.retry_attempts, issue.id)
+    assert MapSet.member?(updated_state.claimed, issue.id)
+    assert blocked = Map.fetch!(updated_state.blocked, issue.id)
+    assert blocked.workflow_phase == :execution
+    assert blocked.agent_id == "codex"
+    assert blocked.agent_kind == "codex_app_server"
+    assert blocked.session_id == "session-repair-failed"
+    assert blocked.error =~ "workflow artifact repair failed"
+    assert blocked.error =~ "completion_packet.json"
+    assert blocked.error =~ "reason=:enoent"
+  end
+
   test "execution phase 正常结束后读取 completion packet 并排队 review" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-execution-down-#{System.unique_integer([:positive])}")

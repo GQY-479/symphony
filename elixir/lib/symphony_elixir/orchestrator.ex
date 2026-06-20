@@ -443,25 +443,82 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_agent_down(state, issue_id, running_entry, session_id, reason) do
-    Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+    case workflow_artifact_repair_failure(reason) do
+      {:ok, phase, artifact_path, repair_reason} ->
+        error =
+          "workflow artifact repair failed: phase=#{phase} expected #{artifact_path}; " <>
+            "#{agent_diagnostics(running_entry)} reason=#{inspect(repair_reason)}"
 
-    next_attempt = next_retry_attempt_from_running(running_entry)
+        Logger.warning("Agent task blocked for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}")
 
-    schedule_issue_retry(
-      state,
-      issue_id,
-      next_attempt,
-      Map.merge(workflow_retry_metadata(running_entry), %{
-        identifier: running_entry.identifier,
-        issue_url: running_entry.issue.url,
-        error: "agent exited: #{inspect(reason)}",
-        agent_id: Map.get(running_entry, :agent_id),
-        agent_kind: Map.get(running_entry, :agent_kind),
-        worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path)
-      })
-    )
+        block_issue_from_entry(state, issue_id, running_entry, error)
+
+      :error ->
+        Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+
+        next_attempt = next_retry_attempt_from_running(running_entry)
+
+        schedule_issue_retry(
+          state,
+          issue_id,
+          next_attempt,
+          Map.merge(workflow_retry_metadata(running_entry), %{
+            identifier: running_entry.identifier,
+            issue_url: running_entry.issue.url,
+            error: "agent exited: #{inspect(reason)}",
+            agent_id: Map.get(running_entry, :agent_id),
+            agent_kind: Map.get(running_entry, :agent_kind),
+            worker_host: Map.get(running_entry, :worker_host),
+            workspace_path: Map.get(running_entry, :workspace_path)
+          })
+        )
+    end
   end
+
+  defp workflow_artifact_repair_failure({%AgentRunner.Error{reason: {:workflow_artifact_repair_failed, phase, artifact_path, repair_reason}}, _stacktrace}) do
+    {:ok, phase, artifact_path, repair_reason}
+  end
+
+  defp workflow_artifact_repair_failure(%AgentRunner.Error{
+         reason: {:workflow_artifact_repair_failed, phase, artifact_path, repair_reason}
+       }) do
+    {:ok, phase, artifact_path, repair_reason}
+  end
+
+  defp workflow_artifact_repair_failure({%{message: message}, _stacktrace})
+       when is_binary(message) do
+    workflow_artifact_repair_failure(message)
+  end
+
+  defp workflow_artifact_repair_failure(%{message: message}) when is_binary(message) do
+    workflow_artifact_repair_failure(message)
+  end
+
+  defp workflow_artifact_repair_failure(message) when is_binary(message) do
+    case Regex.run(
+           ~r/\{:workflow_artifact_repair_failed, :([a-z_]+), "([^"]+)", (:[a-z_]+)\}/,
+           message
+         ) do
+      [_, phase, artifact_path, repair_reason] ->
+        {:ok, normalize_workflow_phase(phase), artifact_path, normalize_repair_reason(repair_reason)}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp workflow_artifact_repair_failure(_reason), do: :error
+
+  defp normalize_workflow_phase("planning"), do: :planning
+  defp normalize_workflow_phase("execution"), do: :execution
+  defp normalize_workflow_phase("review"), do: :review
+  defp normalize_workflow_phase(phase), do: phase
+
+  defp normalize_repair_reason(":enoent"), do: :enoent
+  defp normalize_repair_reason(":invalid_workflow_plan"), do: :invalid_workflow_plan
+  defp normalize_repair_reason(":invalid_completion_packet"), do: :invalid_completion_packet
+  defp normalize_repair_reason(":invalid_review_decision"), do: :invalid_review_decision
+  defp normalize_repair_reason(reason), do: reason
 
   defp maybe_dispatch(%State{} = state) do
     state =
