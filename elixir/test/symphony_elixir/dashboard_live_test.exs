@@ -63,6 +63,23 @@ defmodule SymphonyElixirWeb.DashboardLiveTest do
     assert html =~ "execution"
   end
 
+  test "首页在没有活动 workflow 时展示安静空态" do
+    orchestrator_name = Module.concat(__MODULE__, :EmptyWorkflowHomeOrchestrator)
+
+    {:ok, _pid} =
+      StaticOrchestrator.start_link(
+        name: orchestrator_name,
+        snapshot: empty_snapshot()
+      )
+
+    start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ "No active root workflows"
+    assert html =~ "No operator action needed"
+  end
+
   defp start_test_endpoint(overrides) do
     endpoint_config =
       :symphony_elixir
@@ -121,6 +138,16 @@ defmodule SymphonyElixirWeb.DashboardLiveTest do
         }
       ],
       codex_totals: %{input_tokens: 10, output_tokens: 20, total_tokens: 30, seconds_running: 60},
+      rate_limits: nil
+    }
+  end
+
+  defp empty_snapshot do
+    %{
+      running: [],
+      retrying: [],
+      blocked: [],
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
       rate_limits: nil
     }
   end
