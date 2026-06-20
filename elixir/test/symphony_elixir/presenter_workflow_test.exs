@@ -88,6 +88,103 @@ defmodule SymphonyElixirWeb.PresenterWorkflowTest do
     assert payload.attention_items == []
   end
 
+  test "workflow_payload/3 读取 registry 并投影详情节点和边" do
+    root_identifier = "MT-ROOT"
+    workspace_root = configure_temporary_workspace_root("presenter-workflow-registry")
+    on_exit(fn -> File.rm_rf(workspace_root) end)
+
+    registry =
+      %{
+        "root_issue_id" => "root-id",
+        "root_issue_identifier" => root_identifier,
+        "root_title" => "Root workflow title",
+        "status" => "running",
+        "nodes" => %{
+          "build" => %{
+            "node_key" => "build",
+            "issue_id" => "issue-build",
+            "issue_identifier" => "MT-102",
+            "title" => "Build dashboard",
+            "task_type" => "implementation",
+            "status" => "running",
+            "workflow_semantics" => "executable",
+            "completion_summary" => "UI ready",
+            "evidence" => ["mix test"],
+            "review_summary" => "reviewed",
+            "blocked_reason" => nil,
+            "hidden_field" => "不要暴露"
+          },
+          "plan" => %{
+            "node_key" => "plan",
+            "issue_id" => "issue-plan",
+            "issue_identifier" => "MT-101",
+            "title" => "Plan dashboard",
+            "task_type" => "planning",
+            "status" => "completed",
+            "workflow_semantics" => "coordination",
+            "completion_summary" => "Plan accepted",
+            "evidence" => ["plan.json"],
+            "review_summary" => nil,
+            "blocked_reason" => nil
+          }
+        },
+        "edges" => [
+          %{"from" => "plan", "to" => "build", "type" => "depends_on"}
+        ]
+      }
+
+    registry_path = Path.join([workspace_root, ".symphony", "workflows", "#{root_identifier}.json"])
+    File.mkdir_p!(Path.dirname(registry_path))
+    File.write!(registry_path, Jason.encode!(registry))
+
+    assert {:ok, payload} = Presenter.workflow_payload(root_identifier, {:snapshot, workflow_snapshot()}, 1_000)
+
+    assert payload.root_issue_identifier == root_identifier
+    assert payload.root_issue_id == "root-id"
+    assert payload.registry_available? == true
+    assert payload.root_title == "Root workflow title"
+    assert payload.status == "running"
+    assert Enum.map(payload.nodes, & &1.node_key) == ["build", "plan"]
+
+    assert List.first(payload.nodes) == %{
+             node_key: "build",
+             issue_id: "issue-build",
+             issue_identifier: "MT-102",
+             title: "Build dashboard",
+             task_type: "implementation",
+             status: "running",
+             workflow_semantics: "executable",
+             completion_summary: "UI ready",
+             evidence_count: 1,
+             review_summary: "reviewed",
+             blocked_reason: nil
+           }
+
+    assert payload.edges == [%{from: "plan", to: "build", type: "depends_on"}]
+    assert Enum.map(payload.runtime_entries, & &1.issue_identifier) == ["MT-RUN", "MT-RETRY", "MT-BLOCKED"]
+    assert Enum.any?(payload.attention_items, &(&1.kind == "blocked"))
+  end
+
+  test "workflow_payload/3 在 registry 缺失但 snapshot 有 workflow 时返回 fallback payload" do
+    workspace_root = configure_temporary_workspace_root("presenter-workflow-fallback")
+    on_exit(fn -> File.rm_rf(workspace_root) end)
+
+    assert {:ok, payload} = Presenter.workflow_payload("MT-ROOT", {:snapshot, workflow_snapshot()}, 1_000)
+
+    assert payload.root_issue_identifier == "MT-ROOT"
+    assert payload.registry_available? == false
+    assert payload.nodes == []
+    assert Enum.map(payload.runtime_entries, & &1.issue_identifier) == ["MT-RUN", "MT-RETRY", "MT-BLOCKED"]
+  end
+
+  test "workflow_payload/3 在 registry 和 runtime 都缺失时返回 workflow_not_found" do
+    workspace_root = configure_temporary_workspace_root("presenter-workflow-missing")
+    on_exit(fn -> File.rm_rf(workspace_root) end)
+
+    assert {:error, :workflow_not_found} =
+             Presenter.workflow_payload("MT-MISSING", {:snapshot, workflow_snapshot()}, 1_000)
+  end
+
   defp workflow_snapshot do
     %{
       running: [
@@ -173,5 +270,16 @@ defmodule SymphonyElixirWeb.PresenterWorkflowTest do
       },
       overrides
     )
+  end
+
+  defp configure_temporary_workspace_root(prefix) do
+    workspace_root = Path.join(System.tmp_dir!(), "#{prefix}-#{System.unique_integer([:positive, :monotonic])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace_root
   end
 end

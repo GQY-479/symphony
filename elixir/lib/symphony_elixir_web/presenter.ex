@@ -4,6 +4,7 @@ defmodule SymphonyElixirWeb.Presenter do
   """
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.Workflow.Registry
 
   @spec state_payload(GenServer.name() | {:snapshot, map()}, timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -42,6 +43,21 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp snapshot_for({:snapshot, snapshot}, _snapshot_timeout_ms), do: snapshot
   defp snapshot_for(orchestrator, snapshot_timeout_ms), do: Orchestrator.snapshot(orchestrator, snapshot_timeout_ms)
+
+  @spec workflow_payload(String.t(), GenServer.name() | {:snapshot, map()}, timeout()) ::
+          {:ok, map()} | {:error, :workflow_not_found}
+  def workflow_payload(root_identifier, orchestrator, snapshot_timeout_ms) when is_binary(root_identifier) do
+    snapshot = snapshot_for(orchestrator, snapshot_timeout_ms)
+    runtime_workflow = runtime_workflow_payload(root_identifier, snapshot)
+
+    case Registry.load_by_root_identifier(root_identifier) do
+      {:ok, registry} ->
+        {:ok, registry_workflow_payload(registry, runtime_workflow)}
+
+      {:error, _reason} ->
+        fallback_workflow_payload(runtime_workflow)
+    end
+  end
 
   @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
   def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms) when is_binary(issue_identifier) do
@@ -305,6 +321,138 @@ defmodule SymphonyElixirWeb.Presenter do
       runtime_seconds: runtime_seconds(entries),
       registry_available?: false
     }
+  end
+
+  defp runtime_workflow_payload(_root_identifier, snapshot) when snapshot in [:timeout, :unavailable], do: nil
+
+  defp runtime_workflow_payload(root_identifier, %{} = snapshot) do
+    running = Enum.map(snapshot.running, &running_entry_payload/1)
+    retrying = Enum.map(snapshot.retrying, &retry_entry_payload/1)
+    blocked = Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1)
+
+    running
+    |> Enum.map(&workflow_group_entry(&1, "running"))
+    |> Kernel.++(Enum.map(retrying, &workflow_group_entry(&1, "retrying")))
+    |> Kernel.++(Enum.map(blocked, &workflow_group_entry(&1, "blocked")))
+    |> Enum.filter(&(&1.root_issue_identifier == root_identifier))
+    |> case do
+      [] -> nil
+      entries -> workflow_payload(entries)
+    end
+  end
+
+  defp runtime_workflow_payload(_root_identifier, _snapshot), do: nil
+
+  defp registry_workflow_payload(registry, runtime_workflow) do
+    %{
+      root_issue_identifier: registry_value(registry, "root_issue_identifier"),
+      root_issue_id: registry_value(registry, "root_issue_id"),
+      root_title: registry_value(registry, "root_title"),
+      status: registry_value(registry, "status"),
+      registry_available?: true,
+      nodes: registry_nodes_payload(registry),
+      edges: registry_edges_payload(registry),
+      runtime_entries: runtime_entries(runtime_workflow),
+      attention_items: runtime_attention_items(runtime_workflow)
+    }
+  end
+
+  defp fallback_workflow_payload(nil), do: {:error, :workflow_not_found}
+
+  defp fallback_workflow_payload(runtime_workflow) do
+    {:ok,
+     %{
+       root_issue_identifier: runtime_workflow.root_issue_identifier,
+       root_issue_id: runtime_workflow.root_issue_id,
+       root_title: runtime_workflow.title,
+       status: runtime_workflow.status,
+       registry_available?: false,
+       nodes: [],
+       edges: [],
+       runtime_entries: runtime_entries(runtime_workflow),
+       attention_items: runtime_attention_items(runtime_workflow)
+     }}
+  end
+
+  defp registry_nodes_payload(registry) do
+    registry
+    |> registry_value("nodes", %{})
+    |> Enum.map(fn {node_key, node} -> registry_node_payload(node_key, node) end)
+    |> Enum.sort_by(& &1.node_key)
+  end
+
+  defp registry_node_payload(node_key, node) do
+    %{
+      node_key: registry_value(node, "node_key") || node_key,
+      issue_id: registry_value(node, "issue_id"),
+      issue_identifier: registry_value(node, "issue_identifier"),
+      title: registry_value(node, "title"),
+      task_type: registry_value(node, "task_type"),
+      status: registry_value(node, "status"),
+      workflow_semantics: registry_value(node, "workflow_semantics"),
+      completion_summary: registry_value(node, "completion_summary"),
+      evidence_count: evidence_count_payload(node),
+      review_summary: registry_value(node, "review_summary"),
+      blocked_reason: registry_value(node, "blocked_reason")
+    }
+  end
+
+  defp registry_edges_payload(registry) do
+    registry
+    |> registry_value("edges", [])
+    |> Enum.map(fn edge ->
+      %{
+        from: registry_value(edge, "from"),
+        to: registry_value(edge, "to"),
+        type: registry_value(edge, "type")
+      }
+    end)
+  end
+
+  defp runtime_entries(nil), do: []
+  defp runtime_entries(runtime_workflow), do: runtime_workflow.active_entries
+
+  defp runtime_attention_items(nil), do: []
+  defp runtime_attention_items(runtime_workflow), do: runtime_workflow.attention_items
+
+  defp evidence_count_payload(node) do
+    registry_value(node, "evidence_count") || evidence_count(registry_value(node, "evidence"))
+  end
+
+  defp evidence_count(evidence) when is_list(evidence), do: length(evidence)
+  defp evidence_count(_evidence), do: 0
+
+  defp registry_value(map, key, default \\ nil)
+
+  defp registry_value(map, key, default) when is_map(map) do
+    Map.get(map, key) || Map.get(map, registry_atom_key(key), default)
+  end
+
+  defp registry_value(_map, _key, default), do: default
+
+  defp registry_atom_key(key) do
+    case key do
+      "blocked_reason" -> :blocked_reason
+      "completion_summary" -> :completion_summary
+      "edges" -> :edges
+      "evidence" -> :evidence
+      "evidence_count" -> :evidence_count
+      "from" -> :from
+      "issue_id" -> :issue_id
+      "issue_identifier" -> :issue_identifier
+      "node_key" -> :node_key
+      "nodes" -> :nodes
+      "review_summary" -> :review_summary
+      "root_issue_id" -> :root_issue_id
+      "root_issue_identifier" -> :root_issue_identifier
+      "root_title" -> :root_title
+      "status" -> :status
+      "task_type" -> :task_type
+      "title" -> :title
+      "to" -> :to
+      "type" -> :type
+      "workflow_semantics" -> :workflow_semantics
+    end
   end
 
   defp active_entry_payload(%{state: state, entry: entry}) do
