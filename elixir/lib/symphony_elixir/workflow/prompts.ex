@@ -33,6 +33,9 @@ defmodule SymphonyElixir.Workflow.Prompts do
 
     规划阶段附加要求:
 
+    - 这是工作流控制层规划；输出会被控制层消费，不是普通进度记录。
+    - `workflow_plan.json` 是控制信号，不是 progress note。
+    - Linear comment/workpad 只用于 visibility，不是 authoritative source of truth。
     - 必须创建 artifact 目录：`mkdir -p #{artifact_dir}`。
     - 必须把规划结果写入：`#{plan_path}`。
     - 最终回复不能替代 artifact 文件；完成前必须读回该文件，确认它是合法 JSON，且符合下面三种结构之一。
@@ -110,7 +113,20 @@ defmodule SymphonyElixir.Workflow.Prompts do
 
     执行阶段附加要求:
 
-    - 生成或更新 `completion_packet.json`。
+    - 生成或更新 `completion_packet.json`；这是交给控制层和审查阶段消费的 Completion Packet。
+    - `completion_packet.json` 必须包含所有字段，且 `evidence` 必须是非空数组:
+
+      ```json
+      {
+        "outcome": "completed | blocked | partial | failed",
+        "summary": "完成内容摘要",
+        "evidence": ["非空验证证据，例如命令、输出摘要、文件路径或截图"],
+        "decisions": ["执行期间作出的关键决定"],
+        "open_questions": ["仍未解决的问题，没有则为空数组"],
+        "next_handoff": "交给审查或下一阶段的简短说明"
+      }
+      ```
+
     - 当前派生 issue workspace: #{workspace_text(workspace)}
     - Root workflow issue: #{value_or_dash(root_issue_identifier)}
     - Root workflow workspace: #{workspace_text(root_workspace)}
@@ -129,8 +145,9 @@ defmodule SymphonyElixir.Workflow.Prompts do
 
     审查阶段附加要求:
 
-    - 生成或更新 `review_decision.json`。
+    - 生成或更新 `review_decision.json`；这是控制层消费的 Review Decision，不能被最终回复或 Linear comment 替代。
     - 允许的 decision 集合: #{Enum.join(@review_decisions, ", ")}。
+    - 如果 Completion Packet 缺少 `evidence` 或证据不足，`pass` 无效；必须选择 `needs_rework`、`needs_replan`、`needs_human` 或 `fail` 并说明原因。
     - 当前派生 issue workspace: #{workspace_text(workspace)}
     - Root workflow issue: #{value_or_dash(root_issue_identifier)}
     - Root workflow workspace: #{workspace_text(root_workspace)}
