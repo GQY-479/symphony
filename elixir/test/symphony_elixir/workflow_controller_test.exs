@@ -986,6 +986,114 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert Registry.node(registry, "verification")["status"] == "superseded"
   end
 
+  test "review needs_human 会阻塞 registry 并保存人工输入请求" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-review-human-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-review-human", identifier: "YQE-820", title: "root", state: "In Progress"}
+    reviewed_issue = %Issue{id: "derived-review-human", identifier: "YQE-821", title: "实现任务", state: "In Progress"}
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => reviewed_issue.id,
+      "issue_identifier" => reviewed_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => []
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, reviewed_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.review_decision_path(workspace),
+      Jason.encode!(%{
+        "decision" => "needs_human",
+        "summary" => "需要产品确认是否允许破坏兼容性",
+        "confidence" => "medium",
+        "reason" => "兼容性策略不明确",
+        "requested_input" => "请确认是否允许移除旧字段"
+      })
+    )
+
+    assert {:ok, {:needs_human, "derived-review-human", "需要产品确认是否允许破坏兼容性"}} =
+             Controller.handle_review_completion(reviewed_issue, workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert registry["status"] == "blocked"
+    assert registry["blocked_reason"] == "需要产品确认是否允许破坏兼容性"
+    assert registry["human_input_request"] == "请确认是否允许移除旧字段"
+    assert Registry.node(registry, "implementation")["status"] == "blocked"
+    assert Registry.node(registry, "implementation")["review_summary"] == "需要产品确认是否允许破坏兼容性"
+  end
+
+  test "review fail 会标记 registry 失败并保存审查摘要" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-review-fail-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-review-fail", identifier: "YQE-822", title: "root", state: "In Progress"}
+    reviewed_issue = %Issue{id: "derived-review-fail", identifier: "YQE-823", title: "实现任务", state: "In Progress"}
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => reviewed_issue.id,
+      "issue_identifier" => reviewed_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => []
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, reviewed_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.review_decision_path(workspace),
+      Jason.encode!(%{
+        "decision" => "fail",
+        "summary" => "实现删除了用户数据，不能继续",
+        "confidence" => "high",
+        "reason" => "发现不可接受的数据丢失"
+      })
+    )
+
+    assert {:ok, {:fail, "derived-review-fail", "实现删除了用户数据，不能继续"}} =
+             Controller.handle_review_completion(reviewed_issue, workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert registry["status"] == "failed"
+    assert registry["failure_reason"] == "实现删除了用户数据，不能继续"
+    assert Registry.node(registry, "implementation")["status"] == "failed"
+    assert Registry.node(registry, "implementation")["review_summary"] == "实现删除了用户数据，不能继续"
+  end
+
   test "needs_human_input plan 会保存明确的人工输入请求并写回 root 评论" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-human-input-#{System.unique_integer([:positive])}")

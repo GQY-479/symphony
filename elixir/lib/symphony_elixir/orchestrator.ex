@@ -1212,6 +1212,24 @@ defmodule SymphonyElixir.Orchestrator do
            error: "workflow needs human input: #{registry["human_input_request"] || "missing request"}"
          })}
 
+      {:ok, %{"status" => "blocked"} = registry} ->
+        {:block,
+         workflow_block_metadata(issue, %{
+           workflow_phase: :planning,
+           workflow_root_issue_id: registry["root_issue_identifier"] || issue.identifier,
+           error:
+             "workflow blocked: #{registry["blocked_reason"] || "missing blocked reason"}; " <>
+               "human input request: #{registry["human_input_request"] || "missing request"}"
+         })}
+
+      {:ok, %{"status" => "failed"} = registry} ->
+        {:block,
+         workflow_block_metadata(issue, %{
+           workflow_phase: :planning,
+           workflow_root_issue_id: registry["root_issue_identifier"] || issue.identifier,
+           error: "workflow failed: #{registry["failure_reason"] || "missing failure reason"}"
+         })}
+
       {:ok, registry} ->
         {:block,
          workflow_block_metadata(issue, %{

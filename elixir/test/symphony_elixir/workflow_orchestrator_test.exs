@@ -107,6 +107,71 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert metadata.max_turns == 1
   end
 
+  test "blocked root registry blocks planning dispatch with review reason and human request" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-root-blocked-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    issue = %Issue{
+      id: "root-blocked-review",
+      identifier: "YQE-704",
+      title: "审查后需要人工输入",
+      state: "In Progress"
+    }
+
+    issue
+    |> Registry.new_root()
+    |> Map.put("status", "blocked")
+    |> Map.put("blocked_reason", "需要产品确认是否允许破坏兼容性")
+    |> Map.put("human_input_request", "请确认是否允许移除旧字段")
+    |> Registry.save!()
+
+    assert {:block, metadata} = Orchestrator.workflow_dispatch_decision_for_test(issue, workflow_state())
+    assert metadata.workflow_phase == :planning
+    assert metadata.workflow_root_issue_id == issue.identifier
+    assert metadata.error =~ "需要产品确认是否允许破坏兼容性"
+    assert metadata.error =~ "请确认是否允许移除旧字段"
+  end
+
+  test "failed root registry blocks planning dispatch with failure reason" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-root-failed-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    issue = %Issue{
+      id: "root-failed-review",
+      identifier: "YQE-706",
+      title: "审查失败",
+      state: "In Progress"
+    }
+
+    issue
+    |> Registry.new_root()
+    |> Map.put("status", "failed")
+    |> Map.put("failure_reason", "实现删除了用户数据，不能继续")
+    |> Registry.save!()
+
+    assert {:block, metadata} = Orchestrator.workflow_dispatch_decision_for_test(issue, workflow_state())
+    assert metadata.workflow_phase == :planning
+    assert metadata.workflow_root_issue_id == issue.identifier
+    assert metadata.error =~ "workflow failed"
+    assert metadata.error =~ "实现删除了用户数据，不能继续"
+  end
+
   test "derived issue 只有 ready 时才进入 execution dispatch" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-derived-#{System.unique_integer([:positive])}")

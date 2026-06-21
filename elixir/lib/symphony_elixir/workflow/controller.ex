@@ -434,6 +434,36 @@ defmodule SymphonyElixir.Workflow.Controller do
     end
   end
 
+  defp maybe_apply_review_registry_update(%Issue{} = issue, %{"decision" => "needs_human"} = decision) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, _node} ->
+        registry
+        |> mark_registry_blocked_by_review(node_key, decision)
+        |> Registry.save!()
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_apply_review_registry_update(%Issue{} = issue, %{"decision" => "fail"} = decision) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, _node} ->
+        registry
+        |> mark_registry_failed_by_review(node_key, decision)
+        |> Registry.save!()
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp maybe_apply_review_registry_update(_issue, _decision), do: :ok
 
   defp mark_registry_for_replanning(registry, node_key, %Issue{} = issue, decision) do
@@ -444,6 +474,33 @@ defmodule SymphonyElixir.Workflow.Controller do
     |> Map.put("replan_source_issue_id", issue.id)
     |> Map.put("replan_source_issue_identifier", issue.identifier)
     |> supersede_unfinished_executable_nodes_for_replan(decision)
+  end
+
+  defp mark_registry_blocked_by_review(registry, node_key, decision) do
+    registry
+    |> put_node_review_outcome(node_key, "blocked", decision)
+    |> Map.put("status", "blocked")
+    |> Map.put("blocked_reason", decision["summary"])
+    |> Map.put("human_input_request", decision["requested_input"] || decision["reason"])
+  end
+
+  defp mark_registry_failed_by_review(registry, node_key, decision) do
+    registry
+    |> put_node_review_outcome(node_key, "failed", decision)
+    |> Map.put("status", "failed")
+    |> Map.put("failure_reason", decision["summary"])
+  end
+
+  defp put_node_review_outcome(registry, node_key, status, decision) do
+    update_in(registry, ["nodes", node_key], fn
+      %{} = node ->
+        node
+        |> Map.put("status", status)
+        |> Map.put("review_summary", decision["summary"])
+
+      node ->
+        node
+    end)
   end
 
   defp supersede_unfinished_executable_nodes_for_replan(registry, decision) do
