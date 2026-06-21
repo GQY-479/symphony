@@ -44,6 +44,13 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
     assert local_workflow =~ "  mimocode:"
   end
 
+  test "local workflow shares the canonical prompt body" do
+    workflow = File.read!(Path.expand("../../WORKFLOW.md", __DIR__))
+    local_workflow = File.read!(Path.expand("../../WORKFLOW.local.md", __DIR__))
+
+    assert workflow_body(local_workflow) == workflow_body(workflow)
+  end
+
   test "phase prompts document orchestration artifact contracts" do
     write_workflow_file!(Workflow.workflow_file_path(),
       orchestration: %{enabled: true, artifact_dir: ".symphony"}
@@ -92,6 +99,13 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "requested_input"
         ] do
       assert review =~ text
+    end
+  end
+
+  defp workflow_body(contents) do
+    case String.split(contents, "---", parts: 3) do
+      [_prefix, _front_matter, body] -> String.trim_leading(body)
+      _other -> flunk("workflow file must contain YAML front matter")
     end
   end
 end

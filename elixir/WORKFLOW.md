@@ -29,6 +29,28 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
+agents:
+  mimocode:
+    kind: acp_stdio
+    command: mimo-code
+    args:
+      - --agent
+      - compose
+      - acp
+      - --cwd
+      - "{{workspace}}"
+    permission_policy: allow
+    config_options:
+      model: "mimo/mimo-auto"
+    mcp:
+      linear_tools: true
+    timeout_ms: 3600000
+    read_timeout_ms: 5000
+    close_timeout_ms: 1000
+    stall_timeout_ms: 300000
+  codex:
+    kind: codex_app_server
+    command: codex app-server
 routing:
   default_agent: mimocode
 orchestration:
@@ -79,7 +101,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 
 ## Agent configuration
 
-The default workflow agent is `mimocode`. Symphony supplies the built-in `mimocode` and `codex` agent defaults from the config schema; user overrides belong under `agents.<id>`.
+The default workflow agent is `mimocode`. This workflow pins `agents.mimocode` explicitly so MiMo starts in compose mode and ACP permission requests are auto-approved. If `agents:` is omitted, Symphony supplies the built-in `mimocode` and `codex` agent defaults from the config schema; user overrides belong under `agents.<id>`. When declaring `agents:`, include every agent that routing or orchestration may reference.
 
 To opt specific tickets into Codex, configure an `agents.codex` override and route only those tickets to it:
 
@@ -109,6 +131,7 @@ The legacy top-level `codex:` config is accepted for compatibility only. New wor
 - Keep ticket metadata current (state, checklist, acceptance criteria, links).
 - Treat the Workflow registry and artifact files as the source of truth for control state. Linear comments and workpads are visibility only, not authoritative state.
 - When orchestration is active, planning must produce `workflow_plan.json`, execution must produce the Completion Packet in `completion_packet.json`, and review must produce the Review Decision in `review_decision.json`.
+- Do not move the current Linear issue to signal completion, handoff, review, or closure; Symphony advances or closes the current issue after it reads and validates the structured artifact.
 - Completion Packet evidence is required for automatic pass decisions; reviewers must not return `pass` without sufficient evidence in `completion_packet.json`.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as non-negotiable acceptance input: carry it into the relevant artifacts and execute it before considering the work complete.
 - When meaningful out-of-scope improvements are discovered during execution,

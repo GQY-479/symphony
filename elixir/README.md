@@ -79,6 +79,11 @@ mise exec -- ./bin/symphony ./WORKFLOW.md
 `symphony_boot_*.exs` 或手写 `mix run` 启动链路；这样容易漏掉新 agent backend、workflow
 路径、端口、日志和环境变量传递。
 
+`WORKFLOW.local.md` 是仓库维护的本地运行 profile，不是启动时从 `WORKFLOW.md` 自动生成的文件。
+如果需要为另一台机器创建 local profile，先复制 `WORKFLOW.md`，再只修改本地差异，例如 workspace
+root、clone 来源、端口、agent 命令路径、并发数和 smoke-test hooks。
+本地 profile 应保留与 `WORKFLOW.md` 相同的 prompt body，只让 YAML front matter 承载运行环境差异。
+
 推荐先做预检：
 
 ```powershell

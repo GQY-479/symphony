@@ -964,8 +964,9 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.get(orchestration, "reviewer_agent") == "mimocode"
     assert Map.get(orchestration, "planning_max_turns") == 1
     assert Map.get(orchestration, "review_max_turns") == 1
-    assert prompt =~ "Produce the required structured artifact for the current phase"
-    assert prompt =~ "Do not move the current Linear issue to a terminal state"
+    assert prompt =~ "Workflow registry and phase artifacts"
+    assert prompt =~ "Completion Packet"
+    assert prompt =~ "Do not move the current Linear issue to signal completion, handoff, review, or closure"
   end
 
   test "linear api token resolves from LINEAR_API_KEY env var" do
