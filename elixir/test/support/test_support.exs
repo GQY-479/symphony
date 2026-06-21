@@ -1,10 +1,12 @@
 defmodule SymphonyElixir.TestSupport do
+  alias SymphonyElixir.Config.Schema
+
   @workflow_prompt "You are an agent for this repository."
   @orchestration_defaults %{
     "enabled" => true,
     "mode" => "workflow",
-    "planner_agent" => "codex",
-    "reviewer_agent" => "codex",
+    "planner_agent" => Schema.default_agent_id(),
+    "reviewer_agent" => Schema.default_agent_id(),
     "artifact_dir" => ".symphony",
     "planning_max_turns" => 1,
     "review_max_turns" => 1

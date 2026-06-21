@@ -1259,12 +1259,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         end
       end)
 
+    worker_ref = Process.monitor(worker_pid)
     stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
     initial_state = :sys.get_state(pid)
 
     running_entry = %{
       pid: worker_pid,
-      ref: make_ref(),
+      ref: worker_ref,
       identifier: "MT-STALL",
       issue: %Issue{
         id: issue_id,
@@ -1289,7 +1290,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     Process.sleep(100)
     state = :sys.get_state(pid)
 
-    refute Process.alive?(worker_pid)
+    wait_until_dead!(worker_pid)
     refute Map.has_key?(state.running, issue_id)
 
     assert %{
@@ -1407,6 +1408,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       },
       agent_id: "mimocode",
       agent_kind: "cli_run",
+      agent_stall_timeout_ms: 1_000,
       worker_host: "dm-dev2",
       workspace_path: "/workspaces/MT-MCP",
       session_id: "thread-mcp-turn-mcp",
@@ -1430,7 +1432,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     Process.sleep(100)
     state = :sys.get_state(pid)
 
-    refute Process.alive?(worker_pid)
+    wait_until_dead!(worker_pid)
     refute Map.has_key?(state.running, issue_id)
     refute Map.has_key?(state.retry_attempts, issue_id)
     assert MapSet.member?(state.claimed, issue_id)
@@ -2303,6 +2305,25 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end)
 
     {tokens, [{timestamp, tokens} | samples]}
+  end
+
+  defp wait_until_dead!(pid, timeout_ms \\ 1_000) when is_pid(pid) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_until_dead!(pid, deadline_ms)
+  end
+
+  defp do_wait_until_dead!(pid, deadline_ms) do
+    cond do
+      not Process.alive?(pid) ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline_ms ->
+        flunk("timed out waiting for process to exit: #{inspect(pid)}")
+
+      true ->
+        Process.sleep(5)
+        do_wait_until_dead!(pid, deadline_ms)
+    end
   end
 
   defp graph_samples_for_stability_test(now_ms) do

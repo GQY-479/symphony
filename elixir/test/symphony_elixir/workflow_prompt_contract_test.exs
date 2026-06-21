@@ -9,6 +9,10 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
     for text <- [
           "orchestration:",
           "enabled: true",
+          "routing:",
+          "default_agent: mimocode",
+          "agents:",
+          "agents.<id>",
           "Workflow registry",
           "Completion Packet",
           "Review Decision",
@@ -21,10 +25,23 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
     for old_text <- [
           "Treat a single persistent Linear comment as the source of truth",
           "single persistent scratchpad comment",
-          "Use exactly one persistent workpad comment"
+          "Use exactly one persistent workpad comment",
+          "\ncodex:"
         ] do
       refute workflow =~ old_text
     end
+  end
+
+  test "in-repo workflow files keep agent overrides under agents" do
+    workflow = File.read!(Path.expand("../../WORKFLOW.md", __DIR__))
+    local_workflow = File.read!(Path.expand("../../WORKFLOW.local.md", __DIR__))
+
+    refute workflow =~ "\ncodex:"
+    refute local_workflow =~ "\ncodex:"
+
+    assert local_workflow =~ "\nagents:"
+    assert local_workflow =~ "  codex:"
+    assert local_workflow =~ "  mimocode:"
   end
 
   test "phase prompts document orchestration artifact contracts" do

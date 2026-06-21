@@ -604,8 +604,6 @@ defmodule SymphonyElixir.LiveE2ETest do
           orchestration: %{
             enabled: true,
             mode: "workflow",
-            planner_agent: "codex",
-            reviewer_agent: "codex",
             artifact_dir: ".symphony",
             planning_max_turns: 1,
             review_max_turns: 1

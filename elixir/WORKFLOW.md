@@ -29,16 +29,12 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
-codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
-  approval_policy: never
-  thread_sandbox: danger-full-access
-  turn_sandbox_policy:
-    type: dangerFullAccess
+routing:
+  default_agent: mimocode
 orchestration:
   enabled: true
-  planner_agent: codex
-  reviewer_agent: codex
+  planner_agent: mimocode
+  reviewer_agent: mimocode
   artifact_dir: ".symphony"
   planning_max_turns: 1
   review_max_turns: 1
@@ -80,6 +76,29 @@ Work only in the provided repository copy. Do not touch any other path.
 ## Prerequisite: Linear MCP or `linear_graphql` tool is available
 
 The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
+
+## Agent configuration
+
+The default workflow agent is `mimocode`. Symphony supplies the built-in `mimocode` and `codex` agent defaults from the config schema; user overrides belong under `agents.<id>`.
+
+To opt specific tickets into Codex, configure an `agents.codex` override and route only those tickets to it:
+
+```yaml
+agents:
+  codex:
+    kind: codex_app_server
+    command: codex app-server
+    approval_policy: never
+    thread_sandbox: danger-full-access
+    turn_sandbox_policy:
+      type: dangerFullAccess
+routing:
+  default_agent: mimocode
+  by_label:
+    "agent:codex": codex
+```
+
+The legacy top-level `codex:` config is accepted for compatibility only. New workflow files should use `agents.codex` so all agent runtime settings live in one place.
 
 ## Default posture
 

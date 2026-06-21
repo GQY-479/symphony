@@ -22,8 +22,7 @@ defmodule SymphonyElixir.Agent.Router do
   defp selected_agent_id(issue, config) do
     label_route(issue, config) ||
       assignee_route(issue, config) ||
-      default_agent(config) ||
-      "codex"
+      default_agent(config)
   end
 
   defp label_route(%Issue{} = issue, %Schema{} = config) do

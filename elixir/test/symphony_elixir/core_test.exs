@@ -11,7 +11,7 @@ defmodule SymphonyElixir.CoreTest do
       poll_interval_ms: nil,
       tracker_active_states: nil,
       tracker_terminal_states: nil,
-      codex_command: nil
+      codex_command: "codex app-server"
     )
 
     config = Config.settings!()
@@ -23,8 +23,8 @@ defmodule SymphonyElixir.CoreTest do
     assert config.agent.max_turns == 20
     assert config.orchestration.enabled == true
     assert config.orchestration.mode == "workflow"
-    assert config.orchestration.planner_agent == "codex"
-    assert config.orchestration.reviewer_agent == "codex"
+    assert config.orchestration.planner_agent == "mimocode"
+    assert config.orchestration.reviewer_agent == "mimocode"
     assert config.orchestration.artifact_dir == ".symphony"
     assert config.orchestration.planning_max_turns == 1
     assert config.orchestration.review_max_turns == 1
@@ -102,7 +102,7 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
   end
 
-  test "orchestration config defaults to workflow mode and codex planner/reviewer" do
+  test "orchestration config defaults to workflow mode and mimocode planner/reviewer" do
     write_workflow_file!(Workflow.workflow_file_path(),
       orchestration: nil
     )
@@ -111,8 +111,8 @@ defmodule SymphonyElixir.CoreTest do
 
     assert settings.orchestration.enabled == true
     assert settings.orchestration.mode == "workflow"
-    assert settings.orchestration.planner_agent == "codex"
-    assert settings.orchestration.reviewer_agent == "codex"
+    assert settings.orchestration.planner_agent == "mimocode"
+    assert settings.orchestration.reviewer_agent == "mimocode"
     assert settings.orchestration.artifact_dir == ".symphony"
     assert settings.orchestration.planning_max_turns == 1
     assert settings.orchestration.review_max_turns == 1
@@ -253,7 +253,7 @@ defmodule SymphonyElixir.CoreTest do
     assert message =~ "orchestration.review_max_turns"
   end
 
-  test "legacy codex config synthesizes the default codex agent" do
+  test "default config synthesizes mimocode as the default agent and preserves codex opt-in config" do
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_command: "custom-codex app-server",
       codex_approval_policy: "never",
@@ -263,7 +263,16 @@ defmodule SymphonyElixir.CoreTest do
 
     settings = Config.settings!()
 
-    assert settings.routing.default_agent == "codex"
+    assert settings.routing.default_agent == "mimocode"
+    assert settings.orchestration.planner_agent == "mimocode"
+    assert settings.orchestration.reviewer_agent == "mimocode"
+    assert settings.agents["mimocode"]["kind"] == "acp_stdio"
+    assert settings.agents["mimocode"]["command"] == "mimo-code"
+    assert settings.agents["mimocode"]["args"] == ["acp", "--cwd", "{{workspace}}"]
+    assert settings.agents["mimocode"]["permission_policy"] == "reject"
+    assert settings.agents["mimocode"]["config_options"] == %{"model" => "mimo/mimo-auto"}
+    assert settings.agents["mimocode"]["mcp"] == %{"linear_tools" => true}
+
     assert settings.agents["codex"]["kind"] == "codex_app_server"
     assert settings.agents["codex"]["command"] == "custom-codex app-server"
     assert settings.agents["codex"]["approval_policy"] == "never"
@@ -325,7 +334,8 @@ defmodule SymphonyElixir.CoreTest do
       routing: %{
         default_agent: "codex",
         by_label: %{"agent:omnigent" => "omnigent"}
-      }
+      },
+      orchestration: %{planner_agent: "codex", reviewer_agent: "codex"}
     )
 
     settings = Config.settings!()
@@ -950,8 +960,8 @@ defmodule SymphonyElixir.CoreTest do
     orchestration = Map.get(config, "orchestration", %{})
 
     assert Map.get(orchestration, "enabled") == true
-    assert Map.get(orchestration, "planner_agent") == "codex"
-    assert Map.get(orchestration, "reviewer_agent") == "codex"
+    assert Map.get(orchestration, "planner_agent") == "mimocode"
+    assert Map.get(orchestration, "reviewer_agent") == "mimocode"
     assert Map.get(orchestration, "planning_max_turns") == 1
     assert Map.get(orchestration, "review_max_turns") == 1
     assert prompt =~ "Produce the required structured artifact for the current phase"
@@ -1689,6 +1699,7 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    before_down_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
     Process.sleep(50)
     state = :sys.get_state(pid)
@@ -1696,7 +1707,7 @@ defmodule SymphonyElixir.CoreTest do
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 39_500, 40_500)
+    assert_due_in_range(due_at_ms, before_down_ms, 39_500, 40_500)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -1728,6 +1739,7 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    before_down_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
     Process.sleep(50)
     state = :sys.get_state(pid)
@@ -1735,7 +1747,7 @@ defmodule SymphonyElixir.CoreTest do
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 9_000, 10_500)
+    assert_due_in_range(due_at_ms, before_down_ms, 9_000, 10_500)
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -1856,7 +1868,11 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+    assert_due_in_range(due_at_ms, System.monotonic_time(:millisecond), min_remaining_ms, max_remaining_ms)
+  end
+
+  defp assert_due_in_range(due_at_ms, baseline_ms, min_remaining_ms, max_remaining_ms) do
+    remaining_ms = due_at_ms - baseline_ms
 
     assert remaining_ms >= min_remaining_ms
     assert remaining_ms <= max_remaining_ms
@@ -2740,7 +2756,9 @@ defmodule SymphonyElixir.CoreTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server"
+        codex_command: "#{codex_binary} app-server",
+        routing: %{default_agent: "codex"},
+        orchestration: %{planner_agent: "codex", reviewer_agent: "codex"}
       )
 
       issue = %Issue{
@@ -2825,7 +2843,9 @@ defmodule SymphonyElixir.CoreTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server"
+        codex_command: "#{codex_binary} app-server",
+        routing: %{default_agent: "codex"},
+        orchestration: %{planner_agent: "codex", reviewer_agent: "codex"}
       )
 
       issue = %Issue{
@@ -3071,6 +3091,8 @@ defmodule SymphonyElixir.CoreTest do
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         codex_command: "#{codex_binary} app-server",
+        routing: %{default_agent: "codex"},
+        orchestration: %{planner_agent: "codex", reviewer_agent: "codex"},
         max_turns: 3
       )
 
@@ -3201,6 +3223,8 @@ defmodule SymphonyElixir.CoreTest do
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         codex_command: "#{codex_binary} app-server",
+        routing: %{default_agent: "codex"},
+        orchestration: %{planner_agent: "codex", reviewer_agent: "codex"},
         max_turns: 2
       )
 

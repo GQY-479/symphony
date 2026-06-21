@@ -49,7 +49,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
 
     assert {:dispatch, metadata} = Orchestrator.workflow_dispatch_decision_for_test(issue, workflow_state())
     assert metadata.workflow_phase == :planning
-    assert metadata.agent_id == "codex"
+    assert metadata.agent_id == "mimocode"
     assert metadata.workflow_root_issue_id == issue.identifier
   end
 

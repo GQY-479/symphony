@@ -34,17 +34,11 @@ agent:
   max_turns: 3
 orchestration:
   enabled: true
-  planner_agent: codex
-  reviewer_agent: codex
+  planner_agent: mimocode
+  reviewer_agent: mimocode
   artifact_dir: ".symphony"
   planning_max_turns: 1
   review_max_turns: 1
-codex:
-  command: codex app-server
-  approval_policy: never
-  thread_sandbox: danger-full-access
-  turn_sandbox_policy:
-    type: dangerFullAccess
 agents:
   codex:
     kind: codex_app_server
@@ -85,7 +79,7 @@ agents:
     runner_ready_timeout_ms: 60000
     runner_ready_poll_ms: 500
 routing:
-  default_agent: codex
+  default_agent: mimocode
   by_label:
     "agent:mimo": mimocode
     "agent:omnigent": omnigent
