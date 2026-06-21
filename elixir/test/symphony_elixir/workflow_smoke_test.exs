@@ -5,6 +5,354 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
 
   @moduletag timeout: 120_000
 
+  test "真实 Orchestrator 通过 direct_execution 跑通 root execution review 闭环" do
+    stop_default_orchestrator()
+
+    test_root =
+      Path.join(System.tmp_dir!(), "workflow-smoke-direct-execution-#{System.unique_integer([:positive])}")
+
+    workspace_root = Path.join(test_root, "workspaces")
+    log_path = Path.join(test_root, "agent_runs.jsonl")
+
+    agent_script =
+      direct_execution_agent_script(
+        log_path,
+        %{
+          "outcome" => "completed",
+          "summary" => "direct execution completed",
+          "evidence" => ["fake cli wrote completion_packet.json"],
+          "decisions" => ["execute root issue directly"],
+          "open_questions" => [],
+          "next_handoff" => "review the direct execution"
+        },
+        %{
+          "decision" => "pass",
+          "summary" => "direct execution review passed",
+          "confidence" => "high"
+        }
+      )
+
+    write_direct_execution_workflow!(workspace_root, agent_script)
+
+    root_issue = %Issue{
+      id: "workflow-smoke-direct-root",
+      identifier: "SMOKE-DIRECT-1",
+      title: "Smoke direct execution root issue",
+      state: "In Progress",
+      url: "https://linear.app/example/issue/SMOKE-DIRECT-1"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [root_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :SmokeDirectExecutionOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    Orchestrator.request_refresh(orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      restart_default_orchestrator()
+      File.rm_rf(test_root)
+    end)
+
+    unless eventually?(fn ->
+             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+             root = Enum.find(issues, &(&1.id == root_issue.id))
+
+             root && root.state == "Done" && orchestrator_idle?(orchestrator_name)
+           end) do
+      flunk("""
+      workflow direct execution smoke did not close
+
+      issues:
+      #{inspect(Application.get_env(:symphony_elixir, :memory_tracker_issues, []), pretty: true)}
+
+      registry:
+      #{inspect(Registry.load_by_root_identifier(root_issue.identifier), pretty: true)}
+
+      snapshot:
+      #{inspect(Orchestrator.snapshot(orchestrator_name, 1_000), pretty: true)}
+
+      agent runs:
+      #{inspect(read_agent_runs(log_path), pretty: true)}
+      """)
+    end
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert registry["status"] == "completed"
+
+    root_node = Registry.node(registry, "root")
+    assert root_node["issue_id"] == root_issue.id
+    assert root_node["issue_identifier"] == root_issue.identifier
+    assert root_node["task_type"] == "direct_execution"
+    assert root_node["status"] == "completed"
+
+    issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+    assert Enum.map(issues, & &1.id) == [root_issue.id]
+
+    runs = read_agent_runs(log_path)
+    assert %{"phase" => "planning", "issue_identifier" => root_issue.identifier, "workspace" => root_issue.identifier} in runs
+    assert %{"phase" => "execution", "issue_identifier" => root_issue.identifier, "workspace" => root_issue.identifier} in runs
+    assert %{"phase" => "review", "issue_identifier" => root_issue.identifier, "workspace" => root_issue.identifier} in runs
+  end
+
+  test "真实 Orchestrator 拒绝缺少 evidence 的 direct_execution completion packet" do
+    stop_default_orchestrator()
+
+    test_root =
+      Path.join(System.tmp_dir!(), "workflow-smoke-direct-missing-evidence-#{System.unique_integer([:positive])}")
+
+    workspace_root = Path.join(test_root, "workspaces")
+    log_path = Path.join(test_root, "agent_runs.jsonl")
+
+    agent_script =
+      direct_execution_agent_script(
+        log_path,
+        %{
+          "outcome" => "completed",
+          "summary" => "direct execution completed without evidence",
+          "evidence" => [],
+          "decisions" => ["execute root issue directly"],
+          "open_questions" => [],
+          "next_handoff" => "review the direct execution"
+        },
+        %{
+          "decision" => "pass",
+          "summary" => "review should not run for invalid completion packet",
+          "confidence" => "high"
+        }
+      )
+
+    write_direct_execution_workflow!(workspace_root, agent_script)
+
+    root_issue = %Issue{
+      id: "workflow-smoke-direct-missing-evidence-root",
+      identifier: "SMOKE-DIRECT-EVIDENCE-1",
+      title: "Smoke direct execution missing evidence",
+      state: "In Progress",
+      url: "https://linear.app/example/issue/SMOKE-DIRECT-EVIDENCE-1"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [root_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :SmokeDirectMissingEvidenceOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    Orchestrator.request_refresh(orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      restart_default_orchestrator()
+      File.rm_rf(test_root)
+    end)
+
+    unless eventually?(fn ->
+             snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+
+             Enum.any?(snapshot.blocked, fn blocked ->
+               blocked.issue_id == root_issue.id and blocked.workflow_phase == :execution and
+                 String.contains?(blocked.error, "invalid_completion_packet")
+             end)
+           end) do
+      flunk("""
+      workflow direct execution missing evidence did not block in execution
+
+      registry:
+      #{inspect(Registry.load_by_root_identifier(root_issue.identifier), pretty: true)}
+
+      snapshot:
+      #{inspect(Orchestrator.snapshot(orchestrator_name, 1_000), pretty: true)}
+
+      agent runs:
+      #{inspect(read_agent_runs(log_path), pretty: true)}
+      """)
+    end
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    refute registry["status"] == "completed"
+    refute Registry.node(registry, "root")["status"] == "completed"
+
+    runs = read_agent_runs(log_path)
+    assert Enum.any?(runs, &(&1["phase"] == "planning" and &1["issue_identifier"] == root_issue.identifier))
+    assert Enum.any?(runs, &(&1["phase"] == "execution" and &1["issue_identifier"] == root_issue.identifier))
+    refute Enum.any?(runs, &(&1["phase"] == "review"))
+  end
+
+  test "真实 Orchestrator 在 direct_execution review needs_human 时阻塞 registry 并保存人工输入请求" do
+    stop_default_orchestrator()
+
+    test_root =
+      Path.join(System.tmp_dir!(), "workflow-smoke-direct-needs-human-#{System.unique_integer([:positive])}")
+
+    workspace_root = Path.join(test_root, "workspaces")
+    log_path = Path.join(test_root, "agent_runs.jsonl")
+
+    agent_script =
+      direct_execution_agent_script(
+        log_path,
+        %{
+          "outcome" => "completed",
+          "summary" => "direct execution completed but needs product input",
+          "evidence" => ["fake cli wrote completion_packet.json"],
+          "decisions" => ["execute root issue directly"],
+          "open_questions" => [],
+          "next_handoff" => "review the direct execution"
+        },
+        %{
+          "decision" => "needs_human",
+          "summary" => "product decision required before closing",
+          "confidence" => "medium",
+          "reason" => "acceptance criteria require human confirmation",
+          "requested_input" => "Please confirm whether this direct execution is acceptable."
+        }
+      )
+
+    write_direct_execution_workflow!(workspace_root, agent_script)
+
+    root_issue = %Issue{
+      id: "workflow-smoke-direct-needs-human-root",
+      identifier: "SMOKE-DIRECT-HUMAN-1",
+      title: "Smoke direct execution needs human",
+      state: "In Progress",
+      url: "https://linear.app/example/issue/SMOKE-DIRECT-HUMAN-1"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [root_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :SmokeDirectNeedsHumanOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    Orchestrator.request_refresh(orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      restart_default_orchestrator()
+      File.rm_rf(test_root)
+    end)
+
+    unless eventually?(fn ->
+             snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+
+             with {:ok, %{"status" => "blocked", "human_input_request" => request}}
+                  when is_binary(request) <- Registry.load_by_root_identifier(root_issue.identifier) do
+               snapshot.running == [] and snapshot.retrying == [] and
+                 Enum.any?(snapshot.blocked, fn blocked ->
+                   blocked.issue_id == root_issue.id and blocked.workflow_phase == :review and
+                     String.contains?(blocked.error, "review needs human")
+                 end)
+             else
+               _ -> false
+             end
+           end) do
+      flunk("""
+      workflow direct execution needs_human did not block registry
+
+      registry:
+      #{inspect(Registry.load_by_root_identifier(root_issue.identifier), pretty: true)}
+
+      snapshot:
+      #{inspect(Orchestrator.snapshot(orchestrator_name, 1_000), pretty: true)}
+
+      agent runs:
+      #{inspect(read_agent_runs(log_path), pretty: true)}
+      """)
+    end
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert registry["status"] == "blocked"
+    assert registry["blocked_reason"] == "product decision required before closing"
+    assert registry["human_input_request"] == "Please confirm whether this direct execution is acceptable."
+    assert Registry.node(registry, "root")["status"] == "blocked"
+    assert Registry.node(registry, "root")["review_summary"] == "product decision required before closing"
+  end
+
+  test "真实 Orchestrator 在 direct_execution review fail 时标记 registry failed 并保存失败原因" do
+    stop_default_orchestrator()
+
+    test_root =
+      Path.join(System.tmp_dir!(), "workflow-smoke-direct-fail-#{System.unique_integer([:positive])}")
+
+    workspace_root = Path.join(test_root, "workspaces")
+    log_path = Path.join(test_root, "agent_runs.jsonl")
+
+    agent_script =
+      direct_execution_agent_script(
+        log_path,
+        %{
+          "outcome" => "completed",
+          "summary" => "direct execution completed with unacceptable result",
+          "evidence" => ["fake cli wrote completion_packet.json"],
+          "decisions" => ["execute root issue directly"],
+          "open_questions" => [],
+          "next_handoff" => "review the direct execution"
+        },
+        %{
+          "decision" => "fail",
+          "summary" => "direct execution failed review",
+          "confidence" => "high",
+          "reason" => "completion evidence proves the wrong behavior"
+        }
+      )
+
+    write_direct_execution_workflow!(workspace_root, agent_script)
+
+    root_issue = %Issue{
+      id: "workflow-smoke-direct-fail-root",
+      identifier: "SMOKE-DIRECT-FAIL-1",
+      title: "Smoke direct execution fail",
+      state: "In Progress",
+      url: "https://linear.app/example/issue/SMOKE-DIRECT-FAIL-1"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [root_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :SmokeDirectFailOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    Orchestrator.request_refresh(orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      restart_default_orchestrator()
+      File.rm_rf(test_root)
+    end)
+
+    unless eventually?(fn ->
+             snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+
+             with {:ok, %{"status" => "failed", "failure_reason" => reason}}
+                  when is_binary(reason) <- Registry.load_by_root_identifier(root_issue.identifier) do
+               snapshot.running == [] and snapshot.retrying == [] and
+                 Enum.any?(snapshot.blocked, fn blocked ->
+                   blocked.issue_id == root_issue.id and blocked.workflow_phase == :review and
+                     String.contains?(blocked.error, "review failed")
+                 end)
+             else
+               _ -> false
+             end
+           end) do
+      flunk("""
+      workflow direct execution fail did not fail registry
+
+      registry:
+      #{inspect(Registry.load_by_root_identifier(root_issue.identifier), pretty: true)}
+
+      snapshot:
+      #{inspect(Orchestrator.snapshot(orchestrator_name, 1_000), pretty: true)}
+
+      agent runs:
+      #{inspect(read_agent_runs(log_path), pretty: true)}
+      """)
+    end
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert registry["status"] == "failed"
+    assert registry["failure_reason"] == "direct execution failed review"
+    refute registry["failure_reason"] == "completion evidence proves the wrong behavior"
+    assert Registry.node(registry, "root")["status"] == "failed"
+    assert Registry.node(registry, "root")["review_summary"] == "direct execution failed review"
+  end
+
   test "真实 Orchestrator 通过 artifacts 跑通 planning execution review 闭环" do
     stop_default_orchestrator()
 
@@ -588,6 +936,63 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       %{running: [], retrying: [], blocked: []} -> true
       _snapshot -> false
     end
+  end
+
+  defp write_direct_execution_workflow!(workspace_root, agent_script) do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Done", "Closed", "Cancelled", "Canceled", "Duplicate"],
+      poll_interval_ms: 50,
+      workspace_root: workspace_root,
+      workspace_preserve_terminal: true,
+      max_concurrent_agents: 1,
+      max_turns: 1,
+      agents: %{
+        codex: %{
+          kind: "cli_run",
+          command: "/usr/bin/env",
+          args: ["python3", "-c", agent_script],
+          timeout_ms: 10_000
+        }
+      },
+      routing: %{default_agent: "codex"},
+      orchestration: %{
+        enabled: true,
+        planner_agent: "codex",
+        reviewer_agent: "codex",
+        artifact_dir: ".symphony",
+        planning_max_turns: 1,
+        review_max_turns: 1
+      },
+      prompt: "Smoke issue {{ issue.identifier }} {{ issue.title }}"
+    )
+  end
+
+  defp direct_execution_agent_script(log_path, completion_packet, review_decision) do
+    plan_json =
+      Jason.encode!(%{
+        "kind" => "direct_execution",
+        "summary" => "smoke planning chose direct execution",
+        "confidence" => "high",
+        "agent_id" => "codex"
+      })
+
+    completion_json = Jason.encode!(completion_packet)
+    review_json = Jason.encode!(review_decision)
+
+    plan_b64 = Base.encode64(plan_json)
+    completion_b64 = Base.encode64(completion_json)
+    review_b64 = Base.encode64(review_json)
+
+    "import base64, json, os, sys; " <>
+      "p=sys.argv[1]; log=#{Jason.encode!(log_path)}; os.makedirs('.symphony', exist_ok=True); os.makedirs(os.path.dirname(log), exist_ok=True); " <>
+      "phase='planning' if 'workflow_plan.json' in p else ('execution' if 'completion_packet.json' in p else ('review' if 'review_decision.json' in p else '')); " <>
+      "loads=lambda v: json.loads(base64.b64decode(v).decode('utf-8')); " <>
+      "payloads={'planning': loads('#{plan_b64}'), 'execution': loads('#{completion_b64}'), 'review': loads('#{review_b64}')}; " <>
+      "paths={'planning': '.symphony/workflow_plan.json', 'execution': '.symphony/completion_packet.json', 'review': '.symphony/review_decision.json'}; " <>
+      "phase or sys.exit(2); open(log, 'a', encoding='utf-8').write(json.dumps({'phase': phase, 'issue_identifier': os.path.basename(os.getcwd()), 'workspace': os.path.basename(os.getcwd())}, ensure_ascii=False)+chr(10)); " <>
+      "open(paths[phase], 'w', encoding='utf-8').write(json.dumps(payloads[phase], ensure_ascii=False))"
   end
 
   defp write_fake_codex_app_server!(test_root, log_path) do
