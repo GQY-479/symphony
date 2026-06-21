@@ -82,7 +82,8 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "非空",
           "decisions",
           "open_questions",
-          "next_handoff"
+          "next_handoff",
+          "不要通过移动当前 Linear issue 状态"
         ] do
       assert execution =~ text
     end
@@ -96,7 +97,8 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "fail",
           "evidence",
           "reason",
-          "requested_input"
+          "requested_input",
+          "不要通过移动当前 Linear issue 状态"
         ] do
       assert review =~ text
     end

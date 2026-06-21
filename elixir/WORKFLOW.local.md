@@ -30,7 +30,7 @@ hooks:
   before_remove: |
     echo "local smoke cleanup"
 agent:
-  max_concurrent_agents: 1
+  max_concurrent_agents: 3
   max_turns: 3
 orchestration:
   enabled: true

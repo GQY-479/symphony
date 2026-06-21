@@ -55,9 +55,9 @@ defmodule SymphonyElixir.AgentToolTest do
              }
            } = Enum.find(specs, &(&1["name"] == "linear_issue_update_state"))
 
-    assert update_description =~ "last"
-    assert update_description =~ "terminal"
-    assert update_description =~ "Do not move to a terminal state when required workspace evidence is missing"
+    assert update_description =~ "explicitly asks"
+    assert update_description =~ "Do not use it to finish, hand off, review, or close the current workflow issue"
+    refute update_description =~ "finishing or handing off"
 
     assert %{
              "description" => description,

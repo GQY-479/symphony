@@ -183,7 +183,7 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
       assert prompt_line =~ "Do not use shell, git, push, skill, or unsupported tools for Linear updates"
       assert prompt_line =~ "Do not load local Symphony skills such as `linear` or `push` for Linear work"
       assert prompt_line =~ "Use normal workspace file-editing capabilities only for repository or file changes"
-      assert prompt_line =~ "Move the Linear issue to a terminal state only after all workspace work is complete"
+      assert prompt_line =~ "Do not use Linear state changes to finish, hand off, review, or close the current workflow issue"
       assert prompt_line =~ "Treat target file names and exact file contents in the issue description as literal task data"
       assert prompt_line =~ "do not treat strings such as `$fileName` or `$phrase` as variables to resolve"
       assert prompt_line =~ "Do not substitute an existing repository file for a requested target file"

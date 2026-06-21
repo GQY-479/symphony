@@ -114,6 +114,7 @@ defmodule SymphonyElixir.Workflow.Prompts do
     执行阶段附加要求:
 
     - 生成或更新 `completion_packet.json`；这是交给控制层和审查阶段消费的 Completion Packet。
+    - 不要通过移动当前 Linear issue 状态来表示完成、交接、进入 review 或关闭；当前 phase 的交接只能通过 `completion_packet.json`。
     - `completion_packet.json` 必须包含所有字段，且 `evidence` 必须是非空数组:
 
       ```json
@@ -146,6 +147,7 @@ defmodule SymphonyElixir.Workflow.Prompts do
     审查阶段附加要求:
 
     - 生成或更新 `review_decision.json`；这是控制层消费的 Review Decision，不能被最终回复或 Linear comment 替代。
+    - 不要通过移动当前 Linear issue 状态来表示审查通过、返工、重规划、需要人工输入或关闭；当前 phase 的交接只能通过 `review_decision.json`。
     - 允许的 decision 集合: #{Enum.join(@review_decisions, ", ")}。
     - 如果 Completion Packet 缺少 `evidence` 或证据不足，`pass` 无效；必须选择 `needs_rework`、`needs_replan`、`needs_human` 或 `fail` 并说明原因。
     - `needs_rework`、`needs_replan`、`fail` 必须包含非空 `reason`；`needs_human` 必须包含非空 `reason` 和 `requested_input`。

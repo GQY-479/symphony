@@ -720,13 +720,25 @@ defmodule SymphonyElixir.Orchestrator do
         refresh_running_issue_state(state, issue)
 
       true ->
-        Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
+        Logger.info(non_active_running_issue_log_message(state, issue))
 
         terminate_running_issue(state, issue.id, false)
     end
   end
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp non_active_running_issue_log_message(%State{} = state, %Issue{} = issue) do
+    base = "Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent"
+
+    case Map.get(state.running, issue.id) do
+      %{workflow_phase: phase} when not is_nil(phase) ->
+        "#{base}; workflow_phase=#{phase} artifact handoff may not have been consumed"
+
+      _ ->
+        base
+    end
+  end
 
   defp reconcile_blocked_issue_states([], state, _active_states, _terminal_states), do: state
 

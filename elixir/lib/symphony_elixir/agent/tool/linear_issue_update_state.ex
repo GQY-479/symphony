@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Agent.Tool.LinearIssueUpdateState do
 
   @tool_name "linear_issue_update_state"
   @description """
-  Move a Linear issue to a state by state name using Symphony's configured auth. Prefer this high-level tool over raw `linear_graphql` when finishing or handing off a task. Use it last when moving to a terminal state, after all workspace changes and issue comments are complete, because terminal states can stop the active Symphony run. Do not move to a terminal state when required workspace evidence is missing, ambiguous, or not yet verified.
+  Move a Linear issue to a state by state name using Symphony's configured auth when the task explicitly asks for a Linear state operation. Do not use it to finish, hand off, review, or close the current workflow issue; Symphony advances the current workflow issue after reading the required artifact.
   """
   @input_schema %{
     "type" => "object",

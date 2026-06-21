@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  import ExUnit.CaptureLog
+
   alias SymphonyElixir.Agent.Router
   alias SymphonyElixir.Config.Schema
 
@@ -1392,6 +1394,60 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.has_key?(updated_state.running, issue_id)
     assert MapSet.member?(updated_state.claimed, issue_id)
     assert updated_entry.issue.state == "In Progress"
+  end
+
+  test "workflow running issue logs artifact guidance when non-active state stops it" do
+    issue_id = "issue-workflow-review-drift"
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: "MT-566",
+          issue: %Issue{
+            id: issue_id,
+            identifier: "MT-566",
+            state: "In Progress"
+          },
+          started_at: DateTime.utc_now(),
+          workflow_phase: :execution,
+          workspace_path: "/tmp/symphony-workflow-drift/MT-566"
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-566",
+      state: "In Review",
+      title: "Moved to review",
+      description: "Agent should have used an artifact",
+      labels: []
+    }
+
+    log =
+      capture_log(fn ->
+        updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+        refute Map.has_key?(updated_state.running, issue_id)
+        refute MapSet.member?(updated_state.claimed, issue_id)
+      end)
+
+    refute Process.alive?(agent_pid)
+    assert log =~ "Issue moved to non-active state"
+    assert log =~ "workflow_phase=execution"
+    assert log =~ "artifact handoff may not have been consumed"
   end
 
   test "reconcile stops running issue when it is reassigned away from this worker" do

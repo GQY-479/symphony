@@ -464,16 +464,16 @@ defmodule SymphonyElixir.AgentRunner do
 
     Runtime tools available through Symphony:
 
-    - Prefer the high-level Linear MCP tools for common issue work: `linear_issue_read` to read the current issue, `linear_comment_create` to add issue comments, and `linear_issue_update_state` to move the issue to another state.
+    - Prefer the high-level Linear MCP tools for common issue work: `linear_issue_read` to read the current issue, `linear_comment_create` to add issue comments, and `linear_issue_update_state` only when the task explicitly asks for a Linear state operation.
     - Use `linear_graphql` as a lower-level fallback only when the high-level tools do not cover the needed Linear operation. If your tool list shows the namespaced form, use `symphony-linear_linear_graphql`. Provide a GraphQL `query` string and optional `variables` object.
     - Do not use shell, git, push, skill, or unsupported tools for Linear updates; they are not part of the Symphony Linear tool surface.
     - Do not load local Symphony skills such as `linear` or `push` for Linear work; the MCP tools listed above are the Linear tool surface for this run.
-    - Use normal workspace file-editing capabilities only for repository or file changes, then use the high-level Linear MCP tools for issue comments and state changes.
+    - Use normal workspace file-editing capabilities only for repository or file changes, then use the high-level Linear MCP tools for issue comments and explicitly requested Linear operations.
+    - Do not use Linear state changes to finish, hand off, review, or close the current workflow issue; Symphony advances the current workflow issue after reading the required artifact.
     - Treat target file names and exact file contents in the issue description as literal task data; do not treat strings such as `$fileName` or `$phrase` as variables to resolve.
     - Do not substitute an existing repository file for a requested target file. If the task requests a target file, create or update that exact file and read it back before reporting success.
     - Before creating a success comment, read back the exact target file and verify its exact required content.
-    - If the target file name or exact content is missing or ambiguous, report blocked in a Linear comment and do not move the issue to a terminal state.
-    - Move the Linear issue to a terminal state only after all workspace work is complete and verified, because a terminal state can stop the active Symphony run.
+    - If the target file name or exact content is missing or ambiguous, report blocked in a Linear comment and leave the current workflow issue state unchanged.
     - Do not expose Linear API tokens in files, logs, commits, or issue comments.
     """
   end
