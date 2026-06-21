@@ -258,7 +258,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         "payloads={" <>
         "'plan': {'kind':'issue_graph','summary':'smoke planning created rework candidate','confidence':'high','nodes':[{'node_key':'implementation','task_type':'implementation','title':'Smoke rework implementation','goal':'Produce a packet that first review rejects','agent_id':'codex','instructions':'Write completion packet for rework smoke.','evidence_expectations':['completion packet exists']}],'edges':[]}, " <>
         "'completion': {'outcome':'completed','summary':'smoke execution completed for '+p[:80],'evidence':['fake cli wrote completion_packet.json'],'decisions':['use artifact handoff'],'open_questions':[],'next_handoff':'review the smoke completion'}, " <>
-        "'review': {'decision':decision,'summary':'smoke rework passed' if decision=='pass' else 'smoke review requested rework','confidence':'high'}}; " <>
+        "'review': {'decision':decision,'summary':'smoke rework passed' if decision=='pass' else 'smoke review requested rework','confidence':'high','reason':'smoke requested rework' if decision!='pass' else ''}}; " <>
         "paths={'plan':'.symphony/workflow_plan.json','completion':'.symphony/completion_packet.json','review':'.symphony/review_decision.json'}; " <>
         "phase or sys.exit(2); open(paths[phase], 'w', encoding='utf-8').write(json.dumps(payloads[phase]))"
 
@@ -355,7 +355,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         "payloads={" <>
         "'plan': {'kind':'issue_graph','summary':summary,'confidence':'high','nodes':[{'node_key':key,'task_type':'implementation','title':title,'goal':'Prove replan closes through a replacement issue','agent_id':'codex','instructions':'Write completion packet for replan smoke.','evidence_expectations':['completion packet exists']}],'edges':[]}, " <>
         "'completion': {'outcome':'completed','summary':'smoke execution completed for '+p[:80],'evidence':['fake cli wrote completion_packet.json'],'decisions':['use artifact handoff'],'open_questions':[],'next_handoff':'review the smoke completion'}, " <>
-        "'review': {'decision':decision,'summary':'smoke review requested replan' if decision=='needs_replan' else 'smoke replanned review passed','confidence':'high'}}; " <>
+        "'review': {'decision':decision,'summary':'smoke review requested replan' if decision=='needs_replan' else 'smoke replanned review passed','confidence':'high','reason':'smoke requested replan' if decision!='pass' else ''}}; " <>
         "paths={'plan':'.symphony/workflow_plan.json','completion':'.symphony/completion_packet.json','review':'.symphony/review_decision.json'}; " <>
         "phase or sys.exit(2); open(paths[phase], 'w', encoding='utf-8').write(json.dumps(payloads[phase]))"
 
@@ -791,7 +791,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
                 write_json(".symphony/review_decision.json", {
                     "decision": "pass" if prompt_contains_root_workspace and exists else "fail",
                     "summary": "review saw root workspace context" if prompt_contains_root_workspace and exists else "review missing root workspace context",
-                    "confidence": "high"
+                    "confidence": "high",
+                    "reason": "" if prompt_contains_root_workspace and exists else "root workspace probe missing"
                 })
                 append_run({
                     "phase": phase,

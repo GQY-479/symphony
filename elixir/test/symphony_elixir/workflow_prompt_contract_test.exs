@@ -70,7 +70,9 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "needs_replan",
           "needs_human",
           "fail",
-          "evidence"
+          "evidence",
+          "reason",
+          "requested_input"
         ] do
       assert review =~ text
     end

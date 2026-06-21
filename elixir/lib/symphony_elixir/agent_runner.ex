@@ -405,7 +405,10 @@ defmodule SymphonyElixir.AgentRunner do
     {
       "outcome": "completed",
       "summary": "本阶段完成情况",
-      "evidence": ["验证或证据"]
+      "evidence": ["验证或证据"],
+      "decisions": [],
+      "open_questions": [],
+      "next_handoff": "交给 review 或下游节点的交接"
     }
     ```
 
@@ -434,6 +437,8 @@ defmodule SymphonyElixir.AgentRunner do
     ```
 
     `decision` 只能是 `pass`、`needs_rework`、`needs_replan`、`needs_human`、`fail`。
+    `needs_rework`、`needs_replan`、`fail` 必须包含非空 `reason`。
+    `needs_human` 必须包含非空 `reason` 和 `requested_input`。
     完成前必须读回 #{artifact_path}，确认 JSON 可以解析。
     """
   end

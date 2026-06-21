@@ -8,7 +8,6 @@ defmodule SymphonyElixir.Workflow.Artifacts do
   @workflow_plan_filename "workflow_plan.json"
   @completion_packet_filename "completion_packet.json"
   @review_decision_filename "review_decision.json"
-  @review_decisions ["pass", "needs_rework", "needs_replan", "needs_human", "fail"]
 
   @spec workflow_plan_path(Path.t()) :: Path.t()
   def workflow_plan_path(workspace), do: artifact_path(workspace, @workflow_plan_filename)
@@ -69,7 +68,9 @@ defmodule SymphonyElixir.Workflow.Artifacts do
       })
       when is_binary(summary) and is_binary(confidence) and is_list(nodes) and is_list(edges) do
     with :ok <- validate_plan_nodes(nodes),
-         :ok <- validate_plan_edges(edges) do
+         :ok <- validate_plan_edges(edges),
+         :ok <- validate_plan_node_keys(nodes),
+         :ok <- validate_plan_edge_references(nodes, edges) do
       :ok
     end
   end
@@ -83,7 +84,9 @@ defmodule SymphonyElixir.Workflow.Artifacts do
       })
       when is_binary(summary) and is_binary(confidence) and is_list(nodes) and is_list(edges) do
     with :ok <- validate_plan_nodes(nodes),
-         :ok <- validate_plan_edges(edges) do
+         :ok <- validate_plan_edges(edges),
+         :ok <- validate_plan_node_keys(nodes),
+         :ok <- validate_plan_edge_references(nodes, edges) do
       :ok
     end
   end
@@ -91,22 +94,70 @@ defmodule SymphonyElixir.Workflow.Artifacts do
   def validate_plan(_plan), do: {:error, :invalid_workflow_plan}
 
   @spec validate_completion_packet(term()) :: :ok | {:error, :invalid_completion_packet}
-  def validate_completion_packet(%{"outcome" => outcome, "summary" => summary, "evidence" => evidence})
-      when is_binary(outcome) and is_binary(summary) and is_list(evidence),
-      do: :ok
+  def validate_completion_packet(%{
+        "outcome" => outcome,
+        "summary" => summary,
+        "evidence" => evidence,
+        "decisions" => decisions,
+        "open_questions" => open_questions,
+        "next_handoff" => next_handoff
+      })
+      when is_list(evidence) and is_list(decisions) and is_list(open_questions) do
+    if non_blank?(outcome) and non_blank?(summary) and non_blank?(next_handoff) and evidence != [] do
+      :ok
+    else
+      {:error, :invalid_completion_packet}
+    end
+  end
 
   def validate_completion_packet(_packet), do: {:error, :invalid_completion_packet}
 
   @spec validate_review_decision(term()) :: :ok | {:error, :invalid_review_decision}
   def validate_review_decision(%{
-        "decision" => decision,
+        "decision" => "pass",
         "summary" => summary,
         "confidence" => confidence
+      }) do
+    if non_blank?(summary) and non_blank?(confidence) do
+      :ok
+    else
+      {:error, :invalid_review_decision}
+    end
+  end
+
+  def validate_review_decision(%{
+        "decision" => "needs_human",
+        "summary" => summary,
+        "confidence" => confidence,
+        "reason" => reason,
+        "requested_input" => requested_input
+      }) do
+    if non_blank?(summary) and non_blank?(confidence) and non_blank?(reason) and
+         non_blank?(requested_input) do
+      :ok
+    else
+      {:error, :invalid_review_decision}
+    end
+  end
+
+  def validate_review_decision(%{
+        "decision" => decision,
+        "summary" => summary,
+        "confidence" => confidence,
+        "reason" => reason
       })
-      when decision in @review_decisions and is_binary(summary) and is_binary(confidence),
-      do: :ok
+      when decision in ["needs_rework", "needs_replan", "fail"] do
+    if non_blank?(summary) and non_blank?(confidence) and non_blank?(reason) do
+      :ok
+    else
+      {:error, :invalid_review_decision}
+    end
+  end
 
   def validate_review_decision(_decision), do: {:error, :invalid_review_decision}
+
+  defp non_blank?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_blank?(_value), do: false
 
   defp artifact_path(workspace, filename) when is_binary(workspace) and is_binary(filename) do
     Path.join([workspace, artifact_dir(), filename])
@@ -143,6 +194,34 @@ defmodule SymphonyElixir.Workflow.Artifacts do
     end
   end
 
+  defp validate_plan_node_keys(nodes) do
+    node_keys = Enum.map(nodes, & &1["node_key"])
+
+    if Enum.all?(node_keys, &non_blank?/1) and Enum.uniq(node_keys) == node_keys do
+      :ok
+    else
+      {:error, :invalid_workflow_plan}
+    end
+  end
+
+  defp validate_plan_edge_references(nodes, edges) do
+    node_keys = MapSet.new(Enum.map(nodes, & &1["node_key"]))
+
+    if Enum.all?(edges, &valid_edge_references?(&1, node_keys)) do
+      :ok
+    else
+      {:error, :invalid_workflow_plan}
+    end
+  end
+
+  defp valid_edge_references?(%{"from" => from_node, "to" => to_node}, node_keys),
+    do: MapSet.member?(node_keys, from_node) and MapSet.member?(node_keys, to_node)
+
+  defp valid_edge_references?(%{from: from_node, to: to_node}, node_keys),
+    do: MapSet.member?(node_keys, from_node) and MapSet.member?(node_keys, to_node)
+
+  defp valid_edge_references?(_edge, _node_keys), do: false
+
   defp valid_node?(%{
          "node_key" => node_key,
          "task_type" => task_type,
@@ -150,9 +229,8 @@ defmodule SymphonyElixir.Workflow.Artifacts do
          "goal" => goal,
          "agent_id" => agent_id
        })
-       when is_binary(node_key) and is_binary(task_type) and is_binary(title) and is_binary(goal) and
-              is_binary(agent_id),
-       do: true
+       when is_binary(task_type) and is_binary(title) and is_binary(goal) and is_binary(agent_id),
+       do: non_blank?(node_key)
 
   defp valid_node?(_node), do: false
 

@@ -85,6 +85,46 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
              })
   end
 
+  test "validate_plan rejects duplicate node keys and unknown edge references" do
+    base_node = %{
+      "node_key" => "research-1",
+      "task_type" => "research",
+      "title" => "调研 ACP 支持",
+      "goal" => "收集适配器设计证据",
+      "agent_id" => "codex"
+    }
+
+    assert {:error, :invalid_workflow_plan} ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "需要拆出调研与实现任务",
+               "confidence" => "medium",
+               "nodes" => [
+                 base_node,
+                 %{base_node | "title" => "重复节点"}
+               ],
+               "edges" => []
+             })
+
+    assert {:error, :invalid_workflow_plan} ==
+             Artifacts.validate_plan(%{
+               "mode" => "issue_graph",
+               "summary" => "需要拆出调研与实现任务",
+               "confidence" => "medium",
+               "nodes" => [base_node],
+               "edges" => [%{"from" => "research-1", "to" => "missing-node"}]
+             })
+
+    assert {:error, :invalid_workflow_plan} ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "需要拆出调研与实现任务",
+               "confidence" => "medium",
+               "nodes" => [base_node],
+               "edges" => [%{from: "missing-node", to: "research-1"}]
+             })
+  end
+
   test "validate_plan 对 mode issue_graph 同样校验 edges" do
     assert {:error, :invalid_workflow_plan} ==
              Artifacts.validate_plan(%{
@@ -109,7 +149,10 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
              Artifacts.validate_completion_packet(%{
                "outcome" => "completed",
                "summary" => "实现了适配器",
-               "evidence" => ["mix test test/symphony_elixir/workflow_controller_test.exs"]
+               "evidence" => ["mix test test/symphony_elixir/workflow_controller_test.exs"],
+               "decisions" => ["保留现有适配器边界"],
+               "open_questions" => [],
+               "next_handoff" => "交给 review 阶段检查实现"
              })
 
     assert {:error, :invalid_completion_packet} ==
@@ -117,6 +160,30 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
                "outcome" => "completed",
                "summary" => "实现了适配器"
              })
+  end
+
+  test "validate_completion_packet requires all handoff fields and non-empty evidence" do
+    valid_packet = %{
+      "outcome" => "completed",
+      "summary" => "实现了适配器",
+      "evidence" => ["mix test test/symphony_elixir/workflow_controller_test.exs"],
+      "decisions" => ["保留现有适配器边界"],
+      "open_questions" => [],
+      "next_handoff" => "交给 review 阶段检查实现"
+    }
+
+    assert :ok == Artifacts.validate_completion_packet(valid_packet)
+
+    for invalid_packet <- [
+          Map.delete(valid_packet, "decisions"),
+          Map.delete(valid_packet, "open_questions"),
+          Map.delete(valid_packet, "next_handoff"),
+          %{valid_packet | "evidence" => []},
+          %{valid_packet | "next_handoff" => ""}
+        ] do
+      assert {:error, :invalid_completion_packet} ==
+               Artifacts.validate_completion_packet(invalid_packet)
+    end
   end
 
   test "validate_review_decision requires allowed decision summary and confidence" do
@@ -132,6 +199,41 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
                "decision" => "unknown",
                "summary" => "不合法",
                "confidence" => "low"
+             })
+  end
+
+  test "validate_review_decision requires reason fields for non-pass decisions" do
+    assert :ok ==
+             Artifacts.validate_review_decision(%{
+               "decision" => "needs_human",
+               "summary" => "需要人工确认上线窗口",
+               "confidence" => "medium",
+               "reason" => "缺少上线窗口约束",
+               "requested_input" => "请确认是否可以今天发布"
+             })
+
+    assert :ok ==
+             Artifacts.validate_review_decision(%{
+               "decision" => "fail",
+               "summary" => "实现没有产出必要文件",
+               "confidence" => "high",
+               "reason" => "缺少 completion_packet.json"
+             })
+
+    assert {:error, :invalid_review_decision} ==
+             Artifacts.validate_review_decision(%{
+               "decision" => "needs_human",
+               "summary" => "需要人工确认上线窗口",
+               "confidence" => "medium",
+               "requested_input" => "请确认是否可以今天发布"
+             })
+
+    assert {:error, :invalid_review_decision} ==
+             Artifacts.validate_review_decision(%{
+               "decision" => "needs_human",
+               "summary" => "需要人工确认上线窗口",
+               "confidence" => "medium",
+               "reason" => "缺少上线窗口约束"
              })
   end
 

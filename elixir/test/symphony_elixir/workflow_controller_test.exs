@@ -427,7 +427,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       })
     )
 
-    assert {:error, {:invalid_workflow_plan_edge_reference, _details}} =
+    assert {:error, :invalid_workflow_plan} =
              Controller.handle_planning_completion(root_issue, workspace)
 
     refute_receive {:memory_tracker_issue_created, _}
@@ -759,7 +759,10 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "completion_packet" => %{
         "outcome" => "completed",
         "summary" => "实现了接口，但缺少错误处理",
-        "evidence" => ["mix test"]
+        "evidence" => ["mix test"],
+        "decisions" => ["提交接口实现供审查"],
+        "open_questions" => [],
+        "next_handoff" => "请审查错误处理覆盖"
       }
     })
     |> Registry.put_node("verification", %{
@@ -784,7 +787,8 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       Jason.encode!(%{
         "decision" => "needs_rework",
         "summary" => "缺少失败场景处理，需要补齐测试和实现",
-        "confidence" => "high"
+        "confidence" => "high",
+        "reason" => "缺少失败场景处理"
       })
     )
 
@@ -853,7 +857,14 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "workflow_semantics" => "executable",
       "status" => "ready",
       "dependencies" => [],
-      "completion_packet" => %{"summary" => "缺陷实现", "evidence" => ["mix test"]}
+      "completion_packet" => %{
+        "outcome" => "completed",
+        "summary" => "缺陷实现",
+        "evidence" => ["mix test"],
+        "decisions" => ["提交缺陷实现供返工审查"],
+        "open_questions" => [],
+        "next_handoff" => "请创建返工任务"
+      }
     })
     |> Map.put("status", "planning_complete")
     |> Registry.save!()
@@ -866,7 +877,8 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       Jason.encode!(%{
         "decision" => "needs_rework",
         "summary" => "需要返工",
-        "confidence" => "high"
+        "confidence" => "high",
+        "reason" => "需要返工"
       })
     )
 
@@ -909,7 +921,14 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "workflow_semantics" => "executable",
       "status" => "completed",
       "dependencies" => [],
-      "completion_packet" => %{"summary" => "已有调研结论", "evidence" => ["research.md"]}
+      "completion_packet" => %{
+        "outcome" => "completed",
+        "summary" => "已有调研结论",
+        "evidence" => ["research.md"],
+        "decisions" => ["沿用调研结论"],
+        "open_questions" => [],
+        "next_handoff" => "供后续实现任务参考"
+      }
     })
     |> Registry.put_node("implementation", %{
       "node_key" => "implementation",
@@ -920,7 +939,14 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "workflow_semantics" => "executable",
       "status" => "ready",
       "dependencies" => ["research"],
-      "completion_packet" => %{"summary" => "实现方向被证明不适用", "evidence" => ["mix test"]}
+      "completion_packet" => %{
+        "outcome" => "completed",
+        "summary" => "实现方向被证明不适用",
+        "evidence" => ["mix test"],
+        "decisions" => ["请求回到 root 重规划"],
+        "open_questions" => [],
+        "next_handoff" => "请判断重规划范围"
+      }
     })
     |> Registry.put_node("verification", %{
       "node_key" => "verification",
@@ -943,7 +969,8 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       Jason.encode!(%{
         "decision" => "needs_replan",
         "summary" => "当前方案不适用，需要回到 root 重新规划",
-        "confidence" => "high"
+        "confidence" => "high",
+        "reason" => "当前方案不适用"
       })
     )
 
@@ -1084,7 +1111,10 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "completion_packet" => %{
         "outcome" => "completed",
         "summary" => "上游调研完成",
-        "evidence" => ["research.md"]
+        "evidence" => ["research.md"],
+        "decisions" => ["使用调研结论推进实现"],
+        "open_questions" => [],
+        "next_handoff" => "实现任务消费该调研结论"
       }
     })
     |> Registry.put_node("implementation", %{

@@ -148,6 +148,7 @@ defmodule SymphonyElixir.Workflow.Prompts do
     - 生成或更新 `review_decision.json`；这是控制层消费的 Review Decision，不能被最终回复或 Linear comment 替代。
     - 允许的 decision 集合: #{Enum.join(@review_decisions, ", ")}。
     - 如果 Completion Packet 缺少 `evidence` 或证据不足，`pass` 无效；必须选择 `needs_rework`、`needs_replan`、`needs_human` 或 `fail` 并说明原因。
+    - `needs_rework`、`needs_replan`、`fail` 必须包含非空 `reason`；`needs_human` 必须包含非空 `reason` 和 `requested_input`。
     - 当前派生 issue workspace: #{workspace_text(workspace)}
     - Root workflow issue: #{value_or_dash(root_issue_identifier)}
     - Root workflow workspace: #{workspace_text(root_workspace)}

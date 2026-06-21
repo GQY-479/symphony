@@ -366,7 +366,10 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
       Jason.encode!(%{
         "outcome" => "completed",
         "summary" => "执行完成，等待 review",
-        "evidence" => ["mix test workflow_orchestrator_test.exs"]
+        "evidence" => ["mix test workflow_orchestrator_test.exs"],
+        "decisions" => ["进入 review 阶段"],
+        "open_questions" => [],
+        "next_handoff" => "请审查执行结果"
       })
     )
 
@@ -504,7 +507,10 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
       "completion_packet" => %{
         "outcome" => "completed",
         "summary" => "实现了主体逻辑但缺少回归测试",
-        "evidence" => ["mix test"]
+        "evidence" => ["mix test"],
+        "decisions" => ["提交当前实现供审查"],
+        "open_questions" => [],
+        "next_handoff" => "请审查缺失的测试范围"
       }
     })
     |> Map.put("status", "planning_complete")
@@ -518,7 +524,8 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
       Jason.encode!(%{
         "decision" => "needs_rework",
         "summary" => "补齐失败路径测试后再验收",
-        "confidence" => "high"
+        "confidence" => "high",
+        "reason" => "缺少失败路径测试"
       })
     )
 
@@ -589,7 +596,10 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
       "completion_packet" => %{
         "outcome" => "completed",
         "summary" => "实现路径被审查判定需要改计划",
-        "evidence" => ["mix test"]
+        "evidence" => ["mix test"],
+        "decisions" => ["提交当前实现供重规划审查"],
+        "open_questions" => [],
+        "next_handoff" => "请判断是否需要重规划"
       }
     })
     |> Map.put("status", "planning_complete")
@@ -603,7 +613,8 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
       Jason.encode!(%{
         "decision" => "needs_replan",
         "summary" => "需要重新拆分 root issue 的后续任务",
-        "confidence" => "high"
+        "confidence" => "high",
+        "reason" => "当前拆分无法覆盖后续任务"
       })
     )
 
