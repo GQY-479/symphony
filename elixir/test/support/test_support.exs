@@ -1,7 +1,8 @@
 defmodule SymphonyElixir.TestSupport do
   @workflow_prompt "You are an agent for this repository."
   @orchestration_defaults %{
-    "enabled" => false,
+    "enabled" => true,
+    "mode" => "workflow",
     "planner_agent" => "codex",
     "reviewer_agent" => "codex",
     "artifact_dir" => ".symphony",
@@ -316,6 +317,7 @@ defmodule SymphonyElixir.TestSupport do
     [
       "orchestration:",
       "  enabled: #{yaml_value(Map.get(config, "enabled"))}",
+      "  mode: #{yaml_value(Map.get(config, "mode"))}",
       "  planner_agent: #{yaml_value(Map.get(config, "planner_agent"))}",
       "  reviewer_agent: #{yaml_value(Map.get(config, "reviewer_agent"))}",
       "  artifact_dir: #{yaml_value(Map.get(config, "artifact_dir"))}",

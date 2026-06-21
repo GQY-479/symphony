@@ -143,25 +143,35 @@ defmodule SymphonyElixir.Config do
   defp validate_orchestration(settings) do
     orchestration = settings.orchestration
 
-    if orchestration.enabled != true do
+    with :ok <- validate_inclusion("orchestration.mode", orchestration.mode, ["workflow", "legacy"]) do
+      if orchestration.mode == "legacy" or orchestration.enabled != true do
+        :ok
+      else
+        agent_ids = MapSet.new(Map.keys(settings.agents || %{}))
+
+        with :ok <-
+               validate_orchestration_agent(
+                 agent_ids,
+                 "orchestration.planner_agent",
+                 orchestration.planner_agent
+               ),
+             :ok <-
+               validate_orchestration_agent(
+                 agent_ids,
+                 "orchestration.reviewer_agent",
+                 orchestration.reviewer_agent
+               ) do
+          validate_non_blank_string("orchestration.artifact_dir", orchestration.artifact_dir)
+        end
+      end
+    end
+  end
+
+  defp validate_inclusion(field, value, allowed) do
+    if value in allowed do
       :ok
     else
-      agent_ids = MapSet.new(Map.keys(settings.agents || %{}))
-
-      with :ok <-
-             validate_orchestration_agent(
-               agent_ids,
-               "orchestration.planner_agent",
-               orchestration.planner_agent
-             ),
-           :ok <-
-             validate_orchestration_agent(
-               agent_ids,
-               "orchestration.reviewer_agent",
-               orchestration.reviewer_agent
-             ) do
-        validate_non_blank_string("orchestration.artifact_dir", orchestration.artifact_dir)
-      end
+      invalid_config("#{field} must be one of #{Enum.join(allowed, ", ")}, got #{inspect(value)}")
     end
   end
 

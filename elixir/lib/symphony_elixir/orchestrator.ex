@@ -1163,27 +1163,36 @@ defmodule SymphonyElixir.Orchestrator do
     settings = Config.settings!()
     orchestration = settings.orchestration
 
-    if orchestration.enabled == true do
-      case Controller.issue_dispatch_metadata(issue.id) do
-        {:ok, metadata} ->
-          if Controller.issue_ready?(issue.id) do
-            {:dispatch, metadata}
-          else
-            {:block, Map.put(metadata, :error, "workflow waiting on dependencies")}
-          end
+    cond do
+      orchestration.mode == "legacy" ->
+        :legacy
 
-        {:error, :not_found} ->
-          workflow_root_dispatch_decision(issue, orchestration)
+      orchestration.enabled == true ->
+        case Controller.issue_dispatch_metadata(issue.id) do
+          {:ok, metadata} ->
+            if Controller.issue_ready?(issue.id) do
+              {:dispatch, metadata}
+            else
+              {:block, Map.put(metadata, :error, "workflow waiting on dependencies")}
+            end
 
-        {:error, reason} ->
-          {:block,
-           workflow_block_metadata(issue, %{
-             workflow_phase: :planning,
-             error: "workflow registry lookup failed: #{inspect(reason)}"
-           })}
-      end
-    else
-      :legacy
+          {:error, :not_found} ->
+            workflow_root_dispatch_decision(issue, orchestration)
+
+          {:error, reason} ->
+            {:block,
+             workflow_block_metadata(issue, %{
+               workflow_phase: :planning,
+               error: "workflow registry lookup failed: #{inspect(reason)}"
+             })}
+        end
+
+      true ->
+        {:block,
+         workflow_block_metadata(issue, %{
+           workflow_phase: :planning,
+           error: "orchestration is disabled; set orchestration.mode: legacy only for compatibility"
+         })}
     end
   end
 

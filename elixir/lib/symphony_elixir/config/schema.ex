@@ -232,7 +232,8 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:enabled, :boolean, default: false)
+      field(:enabled, :boolean, default: true)
+      field(:mode, :string, default: "workflow")
       field(:planner_agent, :string, default: "codex")
       field(:reviewer_agent, :string, default: "codex")
       field(:artifact_dir, :string, default: ".symphony")
@@ -245,7 +246,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:enabled, :planner_agent, :reviewer_agent, :artifact_dir, :planning_max_turns, :review_max_turns],
+        [:enabled, :mode, :planner_agent, :reviewer_agent, :artifact_dir, :planning_max_turns, :review_max_turns],
         empty_values: []
       )
       |> validate_number(:planning_max_turns, greater_than: 0)

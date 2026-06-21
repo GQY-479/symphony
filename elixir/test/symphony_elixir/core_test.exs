@@ -21,7 +21,8 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.assignee == nil
     assert config.workspace.preserve_terminal == false
     assert config.agent.max_turns == 20
-    assert config.orchestration.enabled == false
+    assert config.orchestration.enabled == true
+    assert config.orchestration.mode == "workflow"
     assert config.orchestration.planner_agent == "codex"
     assert config.orchestration.reviewer_agent == "codex"
     assert config.orchestration.artifact_dir == ".symphony"
@@ -101,14 +102,15 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
   end
 
-  test "orchestration config defaults to disabled and codex planner/reviewer" do
+  test "orchestration config defaults to workflow mode and codex planner/reviewer" do
     write_workflow_file!(Workflow.workflow_file_path(),
       orchestration: nil
     )
 
     settings = Config.settings!()
 
-    assert settings.orchestration.enabled == false
+    assert settings.orchestration.enabled == true
+    assert settings.orchestration.mode == "workflow"
     assert settings.orchestration.planner_agent == "codex"
     assert settings.orchestration.reviewer_agent == "codex"
     assert settings.orchestration.artifact_dir == ".symphony"
@@ -144,6 +146,15 @@ defmodule SymphonyElixir.CoreTest do
     assert settings.orchestration.artifact_dir == ".symphony"
     assert settings.orchestration.planning_max_turns == 1
     assert settings.orchestration.review_max_turns == 1
+  end
+
+  test "orchestration config rejects invalid mode" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, mode: "invalid"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "orchestration.mode"
   end
 
   test "orchestration config rejects unknown planner or reviewer agent" do

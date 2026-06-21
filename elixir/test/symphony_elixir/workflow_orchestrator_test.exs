@@ -6,6 +6,75 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
   alias SymphonyElixir.Workflow.Controller
   alias SymphonyElixir.Workflow.Registry
 
+  test "orchestration is enabled by default and new root issues enter planning" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-default-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{kind: "cli_run", command: "mimo"}
+      },
+      routing: %{default_agent: "mimocode"}
+    )
+
+    assert Config.settings!().orchestration.enabled == true
+
+    issue = %Issue{
+      id: "root-default",
+      identifier: "YQE-690",
+      title: "默认进入 workflow planning",
+      state: "In Progress",
+      url: "https://linear.app/yqeeqy/issue/YQE-690"
+    }
+
+    assert {:dispatch, metadata} = Orchestrator.workflow_dispatch_decision_for_test(issue, workflow_state())
+    assert metadata.workflow_phase == :planning
+    assert metadata.agent_id == "codex"
+    assert metadata.workflow_root_issue_id == issue.identifier
+  end
+
+  test "legacy dispatch requires explicit compatibility mode" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: false, mode: "legacy"}
+    )
+
+    issue = %Issue{
+      id: "legacy-root",
+      identifier: "YQE-691",
+      title: "legacy compatibility",
+      state: "In Progress"
+    }
+
+    assert :legacy = Orchestrator.workflow_dispatch_decision_for_test(issue, workflow_state())
+  end
+
+  test "disabled workflow mode blocks instead of falling back to legacy dispatch" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: false, mode: "workflow"}
+    )
+
+    issue = %Issue{
+      id: "disabled-workflow-root",
+      identifier: "YQE-692",
+      title: "disabled workflow mode",
+      state: "In Progress"
+    }
+
+    assert {:block, metadata} = Orchestrator.workflow_dispatch_decision_for_test(issue, workflow_state())
+    assert metadata.workflow_phase == :planning
+    assert metadata.error =~ "orchestration is disabled"
+    assert metadata.error =~ "orchestration.mode: legacy"
+  end
+
   test "root issue 在编排开启且没有 registry 时进入 planning dispatch" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-root-#{System.unique_integer([:positive])}")
