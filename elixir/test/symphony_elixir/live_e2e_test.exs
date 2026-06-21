@@ -3,6 +3,7 @@ defmodule SymphonyElixir.LiveE2ETest do
 
   require Logger
   alias SymphonyElixir.SSH
+  alias SymphonyElixir.Workflow.Registry
 
   @moduletag :live_e2e
   @moduletag timeout: 300_000
@@ -16,6 +17,17 @@ defmodule SymphonyElixir.LiveE2ETest do
   @live_e2e_skip_reason if(System.get_env("SYMPHONY_RUN_LIVE_E2E") != "1",
                           do: "set SYMPHONY_RUN_LIVE_E2E=1 to enable the real Linear/Codex end-to-end test"
                         )
+  @live_orchestration_enabled System.get_env("SYMPHONY_LIVE_ORCHESTRATION_E2E") == "1"
+  @live_orchestration_skip_reason (cond do
+                                     System.get_env("SYMPHONY_RUN_LIVE_E2E") != "1" ->
+                                       "set SYMPHONY_RUN_LIVE_E2E=1 to enable the real Linear/Codex end-to-end test"
+
+                                     !@live_orchestration_enabled ->
+                                       "set SYMPHONY_LIVE_ORCHESTRATION_E2E=1 to enable the real orchestration end-to-end test"
+
+                                     true ->
+                                       nil
+                                   end)
 
   @team_query """
   query SymphonyLiveE2ETeam($key: String!) {
@@ -121,13 +133,19 @@ defmodule SymphonyElixir.LiveE2ETest do
   """
 
   @tag skip: @live_e2e_skip_reason
-  test "creates a real Linear project and issue with a local worker" do
+  test "live AgentRunner can execute a single issue without orchestration using a local worker" do
     run_live_issue_flow!(:local)
   end
 
   @tag skip: @live_e2e_skip_reason
-  test "creates a real Linear project and issue with an ssh worker" do
+  test "live AgentRunner can execute a single issue without orchestration using an ssh worker" do
     run_live_issue_flow!(:ssh)
+  end
+
+  @tag skip: @live_orchestration_skip_reason
+  @tag timeout: 900_000
+  test "live Linear issue runs through real workflow orchestration" do
+    run_live_orchestration_flow!()
   end
 
   defp fetch_team!(team_key) do
@@ -515,6 +533,153 @@ defmodule SymphonyElixir.LiveE2ETest do
       cleanup_live_worker_setup(worker_setup)
       Workflow.set_workflow_file_path(original_workflow_path)
       File.rm_rf(test_root)
+    end
+  end
+
+  defp run_live_orchestration_flow! do
+    unless @live_orchestration_enabled do
+      flunk("set SYMPHONY_LIVE_ORCHESTRATION_E2E=1 to enable the real orchestration end-to-end test")
+    end
+
+    run_id = "symphony-live-orchestration-e2e-#{System.unique_integer([:positive])}"
+    test_root = Path.join(System.tmp_dir!(), run_id)
+    workflow_root = Path.join(test_root, "workflow")
+    workflow_file = Path.join(workflow_root, "WORKFLOW.md")
+    worker_setup = live_worker_setup!(:local, run_id, test_root)
+    team_key = System.get_env("SYMPHONY_LIVE_LINEAR_TEAM_KEY") || @default_team_key
+    original_workflow_path = Workflow.workflow_file_path()
+    orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
+
+    File.mkdir_p!(workflow_root)
+
+    try do
+      if is_pid(orchestrator_pid) do
+        assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+      end
+
+      Workflow.set_workflow_file_path(workflow_file)
+
+      write_workflow_file!(workflow_file,
+        tracker_api_token: "$LINEAR_API_KEY",
+        tracker_project_slug: "bootstrap",
+        workspace_root: worker_setup.workspace_root,
+        worker_ssh_hosts: worker_setup.ssh_worker_hosts,
+        codex_command: worker_setup.codex_command,
+        codex_approval_policy: "never",
+        observability_enabled: false
+      )
+
+      team = fetch_team!(team_key)
+      active_state = active_state!(team)
+      completed_project_status = completed_project_status!()
+      terminal_states = terminal_state_names(team)
+
+      project =
+        create_project!(
+          team["id"],
+          "Symphony Live Orchestration E2E #{System.unique_integer([:positive])}"
+        )
+
+      try do
+        root_issue =
+          create_issue!(
+            team["id"],
+            project["id"],
+            active_state["id"],
+            "Symphony live workflow orchestration issue for #{project["name"]}"
+          )
+
+        write_workflow_file!(workflow_file,
+          tracker_api_token: "$LINEAR_API_KEY",
+          tracker_project_slug: project["slugId"],
+          tracker_active_states: active_state_names(team),
+          tracker_terminal_states: terminal_states,
+          workspace_root: worker_setup.workspace_root,
+          worker_ssh_hosts: worker_setup.ssh_worker_hosts,
+          codex_command: worker_setup.codex_command,
+          codex_approval_policy: "never",
+          codex_turn_timeout_ms: 600_000,
+          codex_stall_timeout_ms: 600_000,
+          observability_enabled: false,
+          orchestration: %{
+            enabled: true,
+            mode: "workflow",
+            planner_agent: "codex",
+            reviewer_agent: "codex",
+            artifact_dir: ".symphony",
+            planning_max_turns: 1,
+            review_max_turns: 1
+          },
+          prompt: "Run this as a workflow orchestration E2E. For simple work, choose direct_execution and produce valid artifacts."
+        )
+
+        orchestrator_name = Module.concat(__MODULE__, :LiveWorkflowOrchestrator)
+        {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+        Orchestrator.request_refresh(orchestrator_name)
+
+        try do
+          unless eventually_live?(fn ->
+                   with {:ok, registry} <- Registry.load_by_root_identifier(root_issue.identifier) do
+                     registry["status"] in ["completed", "blocked", "failed"]
+                   else
+                     _ -> false
+                   end
+                 end) do
+            flunk("""
+            live workflow orchestration did not reach a terminal registry state
+
+            registry:
+            #{inspect(Registry.load_by_root_identifier(root_issue.identifier), pretty: true)}
+
+            snapshot:
+            #{inspect(Orchestrator.snapshot(orchestrator_name, 1_000), pretty: true)}
+            """)
+          end
+
+          assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+          assert map_size(registry["nodes"]) >= 1
+
+          if registry["status"] != "completed" do
+            flunk("""
+            live workflow orchestration reached #{inspect(registry["status"])} instead of completed
+
+            registry:
+            #{inspect(registry, pretty: true)}
+
+            snapshot:
+            #{inspect(Orchestrator.snapshot(orchestrator_name, 1_000), pretty: true)}
+            """)
+          end
+        after
+          if Process.alive?(pid), do: Process.exit(pid, :normal)
+        end
+      after
+        complete_project(project["id"], completed_project_status["id"])
+      end
+    after
+      restart_orchestrator_if_needed()
+      cleanup_live_worker_setup(worker_setup)
+      Workflow.set_workflow_file_path(original_workflow_path)
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp eventually_live?(fun, timeout_ms \\ 720_000) when is_function(fun, 0) and is_integer(timeout_ms) do
+    eventually_live?(fun, System.monotonic_time(:millisecond) + timeout_ms, false)
+  end
+
+  defp eventually_live?(fun, deadline_ms, _last_result) do
+    case fun.() do
+      true ->
+        true
+
+      result ->
+        if System.monotonic_time(:millisecond) < deadline_ms do
+          Process.sleep(1_000)
+          eventually_live?(fun, deadline_ms, result)
+        else
+          false
+        end
     end
   end
 
