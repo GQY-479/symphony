@@ -509,6 +509,88 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert Enum.count(Application.get_env(:symphony_elixir, :memory_tracker_issues, [])) == 2
   end
 
+  test "dispatch metadata uses root workspace path without running workspace hooks" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-root-workspace-#{System.unique_integer([:positive])}")
+
+    hook_marker = Path.join(workspace_root, "after-create-hook-ran")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      hook_after_create: "touch #{hook_marker}",
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{id: "root-workspace", identifier: "YQE-ROOT-WS", title: "Root workspace", state: "In Progress"}
+    derived_issue = %Issue{id: "derived-workspace", identifier: "YQE-DERIVED-WS", title: "Derived workspace", state: "Todo"}
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => derived_issue.id,
+      "issue_identifier" => derived_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => []
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    assert {:ok, metadata} = Controller.issue_dispatch_metadata(derived_issue.id)
+
+    assert metadata.workflow_context["root_workspace"] == Path.join(workspace_root, root_issue.identifier)
+    refute File.exists?(hook_marker)
+  end
+
+  test "dispatch metadata normalizes root workspace identifier without creating workspace" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-root-workspace-safe-#{System.unique_integer([:positive])}")
+
+    hook_marker = Path.join(workspace_root, "after-create-hook-ran")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      hook_after_create: "touch #{hook_marker}",
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{id: "root-workspace-safe", identifier: "YQE-ROOT-SAFE", title: "Root workspace", state: "In Progress"}
+    derived_issue = %Issue{id: "derived-workspace-safe", identifier: "YQE-DERIVED-SAFE", title: "Derived workspace", state: "Todo"}
+
+    registry =
+      root_issue
+      |> Registry.new_root()
+      |> Map.put("root_issue_identifier", "../ROOT/1")
+      |> Registry.put_node("implementation", %{
+        "node_key" => "implementation",
+        "issue_id" => derived_issue.id,
+        "issue_identifier" => derived_issue.identifier,
+        "agent_id" => "codex",
+        "task_type" => "implementation",
+        "workflow_semantics" => "executable",
+        "status" => "ready",
+        "dependencies" => []
+      })
+      |> Map.put("status", "planning_complete")
+
+    registry_path = Registry.registry_path(root_issue.identifier)
+    File.mkdir_p!(Path.dirname(registry_path))
+    File.write!(registry_path, Jason.encode!(registry))
+
+    assert {:ok, metadata} = Controller.issue_dispatch_metadata(derived_issue.id)
+
+    expected_workspace = Path.join(workspace_root, ".._ROOT_1")
+    assert metadata.workflow_context["root_workspace"] == expected_workspace
+    assert String.starts_with?(metadata.workflow_context["root_workspace"], Path.expand(workspace_root) <> "/")
+    refute File.exists?(expected_workspace)
+    refute File.exists?(hook_marker)
+  end
+
   test "execution completion 读取 completion packet、回写评论并排队 review" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-completion-#{System.unique_integer([:positive])}")

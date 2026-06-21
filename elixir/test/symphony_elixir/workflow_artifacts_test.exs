@@ -284,6 +284,31 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
     assert Registry.node(loaded, "research-1")["status"] == "ready"
   end
 
+  test "registry save writes atomically and does not leave temp files" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-registry-atomic-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{id: "root-atomic", identifier: "YQE-ATOMIC", title: "Atomic root", state: "In Progress"}
+    registry = Registry.new_root(root_issue)
+
+    :ok = Registry.save!(registry)
+
+    registry_path = Registry.registry_path(root_issue.identifier)
+    registry_dir = Path.dirname(registry_path)
+
+    assert File.exists?(registry_path)
+    assert {:ok, loaded} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert loaded["root_issue_identifier"] == root_issue.identifier
+
+    assert {:ok, files} = File.ls(registry_dir)
+    refute Enum.any?(files, &String.contains?(&1, ".tmp"))
+  end
+
   test "registry load_by_root_identifier rejects invalid registry structure" do
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: Path.join(System.tmp_dir!(), "workflow-registry-root"),

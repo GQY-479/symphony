@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Workflow.Registry do
   存放在 `workspace.root/.symphony/workflows/` 下的文件型工作流注册表。
   """
 
-  alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.{Config, Linear.Issue, PathSafety}
 
   @spec new_root(Issue.t()) :: map()
   def new_root(%Issue{} = issue) do
@@ -36,9 +36,23 @@ defmodule SymphonyElixir.Workflow.Registry do
   @spec save!(map()) :: :ok
   def save!(registry) when is_map(registry) do
     path = registry_path(registry["root_issue_identifier"])
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, Jason.encode_to_iodata!(registry, pretty: true))
-    :ok
+    dir = Path.dirname(path)
+
+    temp_path =
+      Path.join(
+        dir,
+        "#{Path.basename(path)}.#{System.os_time(:nanosecond)}.#{System.unique_integer([:positive])}.tmp"
+      )
+
+    File.mkdir_p!(dir)
+
+    try do
+      File.write!(temp_path, Jason.encode_to_iodata!(registry, pretty: true))
+      File.rename!(temp_path, path)
+      :ok
+    after
+      if File.exists?(temp_path), do: File.rm!(temp_path)
+    end
   end
 
   @spec load_by_root_identifier(String.t()) :: {:ok, map()} | {:error, term()}
@@ -90,6 +104,29 @@ defmodule SymphonyElixir.Workflow.Registry do
   @spec registry_path(String.t()) :: Path.t()
   def registry_path(root_identifier) when is_binary(root_identifier) do
     Path.join(registry_dir(), "#{root_identifier}.json")
+  end
+
+  @spec root_workspace_path(map()) :: Path.t() | nil
+  def root_workspace_path(%{"root_issue_identifier" => root_issue_identifier}) when is_binary(root_issue_identifier) do
+    root_issue_identifier
+    |> safe_identifier()
+    |> root_workspace_path_for_safe_identifier()
+  end
+
+  def root_workspace_path(_registry), do: nil
+
+  defp root_workspace_path_for_safe_identifier(safe_identifier) do
+    Config.settings!().workspace.root
+    |> Path.join(safe_identifier)
+    |> PathSafety.canonicalize()
+    |> case do
+      {:ok, path} -> path
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp safe_identifier(identifier) do
+    String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
   end
 
   defp registry_dir do

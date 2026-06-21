@@ -6,7 +6,6 @@ defmodule SymphonyElixir.Workflow.Controller do
   alias SymphonyElixir.{Config, Tracker}
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Workflow.{Artifacts, Registry}
-  alias SymphonyElixir.Workspace
 
   @ready_statuses MapSet.new(["ready"])
   @completed_statuses MapSet.new(["completed", "done", "passed"])
@@ -945,14 +944,7 @@ defmodule SymphonyElixir.Workflow.Controller do
     }
   end
 
-  defp root_workspace_for_registry(%{"root_issue_identifier" => identifier}) when is_binary(identifier) do
-    case Workspace.create_for_issue(identifier) do
-      {:ok, workspace} -> workspace
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp root_workspace_for_registry(_registry), do: nil
+  defp root_workspace_for_registry(registry), do: Registry.root_workspace_path(registry)
 
   defp upstream_packets(registry, node) when is_map(registry) and is_map(node) do
     node
