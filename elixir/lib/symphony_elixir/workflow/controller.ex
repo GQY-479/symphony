@@ -196,23 +196,24 @@ defmodule SymphonyElixir.Workflow.Controller do
        "status" => "ready",
        "summary" => plan["summary"]
      })
-     |> Map.put("status", "planning_complete")}
+     |> Registry.put_status("planning_complete", %{})}
   end
 
   defp materialize_plan(registry, root_issue, %{"kind" => "issue_graph", "nodes" => nodes, "edges" => edges} = plan) do
     with {:ok, registry} <- create_derived_nodes(registry, root_issue, nodes, edges, plan),
          {:ok, registry} <- attach_edges(registry, edges) do
-      {:ok, Map.put(registry, "status", "planning_complete")}
+      {:ok, Registry.put_status(registry, "planning_complete", %{})}
     end
   end
 
   defp materialize_plan(registry, _root_issue, %{"kind" => "needs_human_input"} = plan) do
     {:ok,
      registry
-     |> Map.put("status", "needs_human_input")
-     |> Map.put("human_input_request", plan["request"])
-     |> Map.put("human_input_summary", plan["summary"])
-     |> Map.put("human_input_confidence", plan["confidence"])}
+     |> Registry.put_status("needs_human_input", %{
+       "human_input_request" => plan["request"],
+       "human_input_summary" => plan["summary"],
+       "human_input_confidence" => plan["confidence"]
+     })}
   end
 
   defp materialize_plan(registry, root_issue, %{"mode" => "direct_execution"} = plan) do
@@ -228,7 +229,7 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp materialize_plan(registry, _root_issue, _plan) do
-    {:ok, Map.put(registry, "status", "planning_complete")}
+    {:ok, Registry.put_status(registry, "planning_complete", %{})}
   end
 
   defp create_derived_nodes(registry, root_issue, nodes, edges, plan) do
@@ -467,27 +468,28 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp mark_registry_for_replanning(registry, node_key, %Issue{} = issue, decision) do
     registry
-    |> Map.put("status", "replanning")
-    |> Map.put("replan_request", decision["summary"])
-    |> Map.put("replan_source_node_key", node_key)
-    |> Map.put("replan_source_issue_id", issue.id)
-    |> Map.put("replan_source_issue_identifier", issue.identifier)
+    |> Registry.put_status("replanning", %{
+      "replan_request" => decision["summary"],
+      "replan_source_node_key" => node_key,
+      "replan_source_issue_id" => issue.id,
+      "replan_source_issue_identifier" => issue.identifier
+    })
     |> supersede_unfinished_executable_nodes_for_replan(decision)
   end
 
   defp mark_registry_blocked_by_review(registry, node_key, decision) do
     registry
     |> put_node_review_outcome(node_key, "blocked", decision)
-    |> Map.put("status", "blocked")
-    |> Map.put("blocked_reason", decision["summary"])
-    |> Map.put("human_input_request", decision["requested_input"] || decision["reason"])
+    |> Registry.put_status("blocked", %{
+      "blocked_reason" => decision["summary"],
+      "human_input_request" => decision["requested_input"] || decision["reason"]
+    })
   end
 
   defp mark_registry_failed_by_review(registry, node_key, decision) do
     registry
     |> put_node_review_outcome(node_key, "failed", decision)
-    |> Map.put("status", "failed")
-    |> Map.put("failure_reason", decision["summary"])
+    |> Registry.put_status("failed", %{"failure_reason" => decision["summary"]})
   end
 
   defp put_node_review_outcome(registry, node_key, status, decision) do
@@ -574,7 +576,7 @@ defmodule SymphonyElixir.Workflow.Controller do
           "kind" => "rework",
           "handoff_summary" => decision["summary"]
         })
-        |> Map.put("status", "planning_complete")
+        |> Registry.put_status("planning_complete", %{})
 
       with :ok <- Registry.save!(updated_registry),
            :ok <- maybe_close_superseded_issue(registry, issue) do
@@ -780,7 +782,7 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp maybe_complete_registry(registry) do
     if workflow_completed?(registry) do
-      Map.put(registry, "status", "completed")
+      Registry.put_status(registry, "completed", %{})
     else
       registry
     end

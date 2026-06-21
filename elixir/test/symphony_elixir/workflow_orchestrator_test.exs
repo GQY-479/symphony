@@ -6,6 +6,23 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
   alias SymphonyElixir.Workflow.Controller
   alias SymphonyElixir.Workflow.Registry
 
+  test "Registry.put_status merges attributes and writes an updated_at timestamp" do
+    old_updated_at = "2000-01-01T00:00:00Z"
+
+    registry =
+      %{
+        "status" => "planning",
+        "created_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "updated_at" => old_updated_at
+      }
+      |> Registry.put_status("planning_complete", %{"summary" => "plan ready"})
+
+    assert registry["status"] == "planning_complete"
+    assert registry["summary"] == "plan ready"
+    refute registry["updated_at"] == old_updated_at
+    assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
+  end
+
   test "orchestration is enabled by default and new root issues enter planning" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-default-#{System.unique_integer([:positive])}")
@@ -292,6 +309,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert MapSet.member?(updated_state.completed, root_issue.id)
     refute MapSet.member?(updated_state.claimed, root_issue.id)
     assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
     assert Registry.node(registry, "root")["status"] == "ready"
   end
 
@@ -719,6 +737,10 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert {:dispatch, metadata} = Orchestrator.workflow_dispatch_decision_for_test(root_issue, updated_state)
     assert metadata.workflow_phase == :planning
     assert metadata.workflow_context["replan_reason"] == "需要重新拆分 root issue 的后续任务"
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert registry["status"] == "replanning"
+    assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
   end
 
   test "planning phase 产出 needs_human_input 后阻塞 root issue 并保留明确原因" do
@@ -769,6 +791,10 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert blocked.error =~ "请补充验收标准"
     assert_receive {:memory_tracker_comment, "root-human-input-down", body}
     assert body =~ "Needs Human Input"
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert registry["status"] == "needs_human_input"
+    assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
   end
 
   test "direct execution root issue 使用普通路由进入 execution dispatch" do

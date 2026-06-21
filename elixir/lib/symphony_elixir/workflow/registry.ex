@@ -18,6 +18,15 @@ defmodule SymphonyElixir.Workflow.Registry do
     }
   end
 
+  @spec put_status(map(), String.t(), map()) :: map()
+  def put_status(registry, status, attrs)
+      when is_map(registry) and is_binary(status) and is_map(attrs) do
+    registry
+    |> Map.merge(normalize_map(attrs))
+    |> Map.put("status", status)
+    |> Map.put("updated_at", DateTime.utc_now() |> DateTime.to_iso8601())
+  end
+
   @spec put_node(map(), String.t(), map()) :: map()
   def put_node(registry, node_key, node) when is_map(registry) and is_binary(node_key) and is_map(node) do
     put_in(registry, ["nodes", node_key], normalize_node(node))
@@ -155,7 +164,11 @@ defmodule SymphonyElixir.Workflow.Registry do
   end
 
   defp normalize_node(node) do
-    Enum.into(node, %{}, fn
+    normalize_map(node)
+  end
+
+  defp normalize_map(map) do
+    Enum.into(map, %{}, fn
       {key, value} when is_atom(key) -> {Atom.to_string(key), value}
       pair -> pair
     end)

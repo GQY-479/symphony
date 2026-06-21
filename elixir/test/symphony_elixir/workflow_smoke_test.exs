@@ -80,6 +80,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
 
     assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
     assert registry["status"] == "completed"
+    assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
 
     root_node = Registry.node(registry, "root")
     assert root_node["issue_id"] == root_issue.id
@@ -260,6 +261,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
 
     assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
     assert registry["status"] == "blocked"
+    assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
     assert registry["blocked_reason"] == "product decision required before closing"
     assert registry["human_input_request"] == "Please confirm whether this direct execution is acceptable."
     assert Registry.node(registry, "root")["status"] == "blocked"
@@ -347,6 +349,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
 
     assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
     assert registry["status"] == "failed"
+    assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
     assert registry["failure_reason"] == "direct execution failed review"
     refute registry["failure_reason"] == "completion evidence proves the wrong behavior"
     assert Registry.node(registry, "root")["status"] == "failed"
@@ -452,6 +455,169 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     assert snapshot.running == []
     assert snapshot.retrying == []
     assert snapshot.blocked == []
+  end
+
+  test "新的 Orchestrator 从 planning_complete registry 恢复并完成派生 issue 闭环" do
+    stop_default_orchestrator()
+
+    test_root =
+      Path.join(System.tmp_dir!(), "workflow-smoke-recovery-workspaces-#{System.unique_integer([:positive])}")
+
+    workspace_root = Path.join(test_root, "workspaces")
+    log_path = Path.join(test_root, "agent-runs.jsonl")
+
+    agent_script =
+      "import json, os, sys; " <>
+        "p=sys.argv[1]; log=#{Jason.encode!(log_path)}; os.makedirs('.symphony', exist_ok=True); os.makedirs(os.path.dirname(log), exist_ok=True); " <>
+        "phase='planning' if 'workflow_plan.json' in p else ('execution' if 'completion_packet.json' in p else ('review' if 'review_decision.json' in p else '')); " <>
+        "payloads={" <>
+        "'planning': {'kind': 'issue_graph', 'summary': 'recovery planning created one executable child issue', 'confidence': 'high', 'nodes': [{'node_key': 'implementation', 'task_type': 'implementation', 'title': 'Recovery derived implementation', 'goal': 'Finish after orchestrator restart', 'agent_id': 'codex', 'instructions': 'Write the completion packet for recovery smoke.', 'evidence_expectations': ['completion packet exists']}], 'edges': []}, " <>
+        "'execution': {'outcome': 'completed', 'summary': 'recovery execution completed', 'evidence': ['fake cli wrote completion_packet.json'], 'decisions': ['continue from persisted registry'], 'open_questions': [], 'next_handoff': 'review the recovery completion'}, " <>
+        "'review': {'decision': 'pass', 'summary': 'recovery review passed', 'confidence': 'high'}}; " <>
+        "paths={'planning': '.symphony/workflow_plan.json', 'execution': '.symphony/completion_packet.json', 'review': '.symphony/review_decision.json'}; " <>
+        "phase or sys.exit(2); open(log, 'a', encoding='utf-8').write(json.dumps({'phase': phase, 'issue_identifier': os.path.basename(os.getcwd())}, ensure_ascii=False)+chr(10)); " <>
+        "open(paths[phase], 'w', encoding='utf-8').write(json.dumps(payloads[phase], ensure_ascii=False))"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_active_states: ["Todo", "In Progress"],
+      tracker_terminal_states: ["Done", "Closed", "Cancelled", "Canceled", "Duplicate"],
+      poll_interval_ms: 30_000,
+      workspace_root: workspace_root,
+      workspace_preserve_terminal: true,
+      max_concurrent_agents: 3,
+      max_turns: 1,
+      agents: %{
+        codex: %{
+          kind: "cli_run",
+          command: "/usr/bin/env",
+          args: ["python3", "-c", agent_script],
+          timeout_ms: 10_000
+        }
+      },
+      routing: %{default_agent: "codex"},
+      orchestration: %{
+        enabled: true,
+        planner_agent: "codex",
+        reviewer_agent: "codex",
+        artifact_dir: ".symphony",
+        planning_max_turns: 1,
+        review_max_turns: 1
+      },
+      prompt: "Smoke issue {{ issue.identifier }} {{ issue.title }}"
+    )
+
+    root_issue = %Issue{
+      id: "workflow-smoke-recovery-root",
+      identifier: "SMOKE-RECOVERY-1",
+      title: "Smoke recovery root issue",
+      state: "In Progress",
+      url: "https://linear.app/example/issue/SMOKE-RECOVERY-1"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [root_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    first_name = Module.concat(__MODULE__, :SmokeRecoveryFirstOrchestrator)
+    second_name = Module.concat(__MODULE__, :SmokeRecoverySecondOrchestrator)
+    {:ok, first_pid} = Orchestrator.start_link(name: first_name)
+    Orchestrator.request_refresh(first_name)
+
+    on_exit(fn ->
+      if Process.alive?(first_pid), do: Process.exit(first_pid, :normal)
+
+      case Process.whereis(second_name) do
+        pid when is_pid(pid) -> Process.exit(pid, :normal)
+        nil -> :ok
+      end
+
+      restart_default_orchestrator()
+      File.rm_rf(test_root)
+    end)
+
+    unless eventually?(fn ->
+             with {:ok, registry} <- Registry.load_by_root_identifier(root_issue.identifier),
+                  %{"status" => "ready"} <- Registry.node(registry, "implementation") do
+               registry["status"] == "planning_complete" and
+                 Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "planning")) and
+                 not Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "execution")) and
+                 not Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "review"))
+             else
+               _ -> false
+             end
+           end) do
+      flunk("""
+      workflow recovery smoke did not persist planning_complete before restart
+
+      issues:
+      #{inspect(Application.get_env(:symphony_elixir, :memory_tracker_issues, []), pretty: true)}
+
+      registry:
+      #{inspect(Registry.load_by_root_identifier(root_issue.identifier), pretty: true)}
+
+      snapshot:
+      #{inspect(Orchestrator.snapshot(first_name, 1_000), pretty: true)}
+
+      agent runs:
+      #{inspect(read_agent_runs(log_path), pretty: true)}
+      """)
+    end
+
+    planning_runs_before_restart =
+      log_path
+      |> read_agent_runs()
+      |> Enum.count(&(&1["phase"] == "planning"))
+
+    assert planning_runs_before_restart == 1
+
+    GenServer.stop(first_pid, :normal)
+    refute Process.alive?(first_pid)
+
+    {:ok, second_pid} = Orchestrator.start_link(name: second_name)
+    Orchestrator.request_refresh(second_name)
+
+    unless eventually?(fn ->
+             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+             root = Enum.find(issues, &(&1.id == root_issue.id))
+             derived = Enum.find(issues, &(&1.id != root_issue.id))
+
+             if root && derived && root.state == "Done" && derived.state == "Done" do
+               Orchestrator.request_refresh(second_name)
+             end
+
+             root && derived && root.state == "Done" && derived.state == "Done" &&
+               orchestrator_idle?(second_name)
+           end) do
+      flunk("""
+      workflow recovery smoke did not close after restart
+
+      issues:
+      #{inspect(Application.get_env(:symphony_elixir, :memory_tracker_issues, []), pretty: true)}
+
+      registry:
+      #{inspect(Registry.load_by_root_identifier(root_issue.identifier), pretty: true)}
+
+      first snapshot:
+      #{inspect(if(Process.alive?(first_pid), do: Orchestrator.snapshot(first_name, 1_000), else: :stopped), pretty: true)}
+
+      second snapshot:
+      #{inspect(Orchestrator.snapshot(second_name, 1_000), pretty: true)}
+
+      agent runs:
+      #{inspect(read_agent_runs(log_path), pretty: true)}
+      """)
+    end
+
+    assert Process.alive?(second_pid)
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert registry["status"] == "completed"
+    assert Registry.node(registry, "implementation")["status"] == "completed"
+
+    runs = read_agent_runs(log_path)
+    assert Enum.count(runs, &(&1["phase"] == "planning")) == planning_runs_before_restart
+    assert Enum.any?(runs, &(&1["phase"] == "planning" and &1["issue_identifier"] == root_issue.identifier))
+    assert Enum.any?(runs, &(&1["phase"] == "execution" and &1["issue_identifier"] != root_issue.identifier))
+    assert Enum.any?(runs, &(&1["phase"] == "review" and &1["issue_identifier"] != root_issue.identifier))
   end
 
   test "真实 Orchestrator 按规划结果把派生 issue 分派给指定 agent 并完成审查闭环" do
