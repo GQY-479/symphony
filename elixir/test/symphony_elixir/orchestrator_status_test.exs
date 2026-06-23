@@ -1090,6 +1090,75 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert due_in_ms > 0
   end
 
+  test "retry waiting for an orchestrator slot does not consume a failure attempt" do
+    issue = %Issue{
+      id: "issue-retry-slot-wait",
+      identifier: "MT-SLOT",
+      title: "Retry slot wait",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-SLOT"
+    }
+
+    other_issue = %Issue{
+      id: "issue-other-running",
+      identifier: "MT-OTHER",
+      title: "Other running issue",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-OTHER"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :RetrySlotWaitOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: other_issue.identifier,
+      issue: other_issue,
+      agent_id: "mimocode",
+      agent_kind: "cli_run",
+      worker_host: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    initial_state = :sys.get_state(pid)
+
+    state =
+      initial_state
+      |> Map.put(:max_concurrent_agents, 1)
+      |> Map.put(:running, %{other_issue.id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue.id))
+
+    updated_state =
+      Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue.id, 2, %{
+        identifier: issue.identifier,
+        issue_url: issue.url,
+        error: "stalled for 304003ms without codex activity",
+        agent_id: "mimocode",
+        agent_kind: "cli_run",
+        workflow_phase: :planning
+      })
+
+    assert %{
+             attempt: 2,
+             identifier: "MT-SLOT",
+             issue_url: "https://example.org/issues/MT-SLOT",
+             error: "stalled for 304003ms without codex activity",
+             agent_id: "mimocode",
+             agent_kind: "cli_run",
+             workflow_phase: :planning
+           } = updated_state.retry_attempts[issue.id]
+
+    assert MapSet.member?(updated_state.claimed, issue.id)
+    assert Map.has_key?(updated_state.running, other_issue.id)
+  end
+
   test "orchestrator snapshot includes poll countdown and checking status" do
     orchestrator_name = Module.concat(__MODULE__, :PollingSnapshotOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -1305,6 +1374,164 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
     assert remaining_ms >= 9_500
     assert remaining_ms <= 10_500
+  end
+
+  test "workflow phase blocks after repeated stalls without required artifact" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      codex_stall_timeout_ms: 1_000
+    )
+
+    issue_id = "issue-workflow-repeat-stall"
+    orchestrator_name = Module.concat(__MODULE__, :WorkflowRepeatStallOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    worker_ref = Process.monitor(worker_pid)
+    stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: worker_ref,
+      identifier: "MT-WF-STALL",
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-WF-STALL",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-WF-STALL"
+      },
+      agent_id: "mimocode",
+      agent_kind: "acp_stdio",
+      agent_stall_timeout_ms: 1_000,
+      retry_attempt: 3,
+      worker_host: "local",
+      workspace_path: "/workspaces/MT-WF-STALL",
+      session_id: "thread-workflow-stall",
+      workflow_phase: :planning,
+      workflow_root_issue_id: "MT-WF-STALL",
+      workflow_context: %{},
+      max_turns: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: stale_activity_at,
+      last_codex_event: :notification,
+      started_at: stale_activity_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, :tick)
+    Process.sleep(100)
+    state = :sys.get_state(pid)
+
+    wait_until_dead!(worker_pid)
+    refute Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
+
+    assert blocked = Map.fetch!(state.blocked, issue_id)
+    assert blocked.workflow_phase == :planning
+    assert blocked.workflow_root_issue_id == "MT-WF-STALL"
+    assert blocked.agent_id == "mimocode"
+    assert blocked.agent_kind == "acp_stdio"
+    assert blocked.session_id == "thread-workflow-stall"
+    assert blocked.error =~ "planning phase stalled before producing required artifact"
+    assert blocked.error =~ ".symphony/workflow_plan.json"
+    assert blocked.error =~ "agent_id=mimocode"
+    assert blocked.error =~ "agent_kind=acp_stdio"
+    assert blocked.error =~ "session_id=thread-workflow-stall"
+    assert blocked.error =~ "attempt=4"
+  end
+
+  test "stalled workflow review retries keep the issue claimed during backoff" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: nil,
+      codex_stall_timeout_ms: 1_000
+    )
+
+    issue_id = "issue-review-stall"
+    orchestrator_name = Module.concat(__MODULE__, :WorkflowReviewStallOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    worker_ref = Process.monitor(worker_pid)
+    stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: worker_ref,
+      identifier: "MT-REVIEW-STALL",
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-REVIEW-STALL",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-REVIEW-STALL"
+      },
+      agent_id: "mimocode",
+      agent_kind: "acp_stdio",
+      agent_stall_timeout_ms: 1_000,
+      worker_host: "local",
+      workspace_path: "/workspaces/MT-REVIEW-STALL",
+      session_id: "thread-review-turn-review",
+      workflow_phase: :review,
+      workflow_root_issue_id: "MT-ROOT",
+      workflow_context: %{"issue_id" => issue_id},
+      max_turns: 3,
+      last_codex_message: nil,
+      last_codex_timestamp: stale_activity_at,
+      last_codex_event: :notification,
+      started_at: stale_activity_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, :tick)
+    Process.sleep(100)
+    state = :sys.get_state(pid)
+
+    wait_until_dead!(worker_pid)
+    refute Map.has_key?(state.running, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
+
+    assert %{
+             workflow_phase: :review,
+             workflow_root_issue_id: "MT-ROOT",
+             workflow_context: %{"issue_id" => ^issue_id},
+             max_turns: 3
+           } = state.retry_attempts[issue_id]
   end
 
   test "orchestrator honors disabled stall timeout for a specific agent" do
@@ -1915,26 +2142,31 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "status dashboard renders last codex message in EVENT column" do
-    row =
-      StatusDashboard.format_running_summary_for_test(%{
-        identifier: "MT-233",
-        state: "running",
-        agent_id: "mimocode",
-        session_id: "thread-1234567890",
-        codex_app_server_pid: "4242",
-        codex_total_tokens: 12,
-        runtime_seconds: 15,
-        last_codex_event: :notification,
-        last_codex_message: %{
-          event: :notification,
-          message: %{
-            "method" => "turn/completed",
-            "params" => %{"turn" => %{"status" => "completed"}}
-          }
-        }
-      })
+    terminal_columns = 140
 
-    plain = Regex.replace(~r/\e\[[\\d;]*m/, row, "")
+    row =
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-233",
+          state: "running",
+          agent_id: "mimocode",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_message: %{
+            event: :notification,
+            message: %{
+              "method" => "turn/completed",
+              "params" => %{"turn" => %{"status" => "completed"}}
+            }
+          }
+        },
+        terminal_columns
+      )
+
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
 
     assert plain =~ "turn completed (completed)"
     assert plain =~ "mimocode"
@@ -1943,6 +2175,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   end
 
   test "status dashboard strips ANSI and control bytes from last codex message" do
+    terminal_columns = 140
+
     payload =
       "cmd: " <>
         <<27>> <>
@@ -1953,16 +2187,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         " after\nline"
 
     row =
-      StatusDashboard.format_running_summary_for_test(%{
-        identifier: "MT-898",
-        state: "running",
-        session_id: "thread-1234567890",
-        codex_app_server_pid: "4242",
-        codex_total_tokens: 12,
-        runtime_seconds: 15,
-        last_codex_event: :notification,
-        last_codex_message: payload
-      })
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-898",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_message: payload
+        },
+        terminal_columns
+      )
 
     plain = Regex.replace(~r/\e\[[0-9;]*m/, row, "")
 
@@ -2266,9 +2503,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     rendered =
-      ExUnit.CaptureIO.capture_io(fn ->
-        assert :ok = SymphonyElixir.Application.stop(:normal)
-      end)
+      try do
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert :ok = SymphonyElixir.Application.stop(:normal)
+        end)
+      after
+        {:ok, _apps} = Application.ensure_all_started(:symphony_elixir)
+      end
 
     assert rendered =~ "app_status=offline"
     refute rendered =~ "Timestamp:"

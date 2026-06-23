@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @max_workflow_stall_attempts 3
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -443,6 +444,22 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_agent_down(state, issue_id, running_entry, session_id, reason) do
+    case workflow_agent_timeout_without_artifact(reason, running_entry) do
+      {:ok, phase, artifact_path, timeout_reason} ->
+        error =
+          "#{phase_label(phase)} phase timed out before producing required artifact: expected #{artifact_path}; " <>
+            "#{agent_diagnostics(running_entry)} reason=#{inspect(timeout_reason)}"
+
+        Logger.warning("Agent task blocked for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}")
+
+        block_issue_from_entry(state, issue_id, running_entry, error)
+
+      :error ->
+        retry_or_block_agent_down_after_artifact_repair_check(state, issue_id, running_entry, session_id, reason)
+    end
+  end
+
+  defp retry_or_block_agent_down_after_artifact_repair_check(state, issue_id, running_entry, session_id, reason) do
     case workflow_artifact_repair_failure(reason) do
       {:ok, phase, artifact_path, repair_reason} ->
         error =
@@ -474,6 +491,19 @@ defmodule SymphonyElixir.Orchestrator do
         )
     end
   end
+
+  defp workflow_agent_timeout_without_artifact(reason, running_entry) do
+    with phase when phase in [:planning, :execution, :review] <- Map.get(running_entry, :workflow_phase),
+         :acp_timeout <- agent_runner_error_reason(reason) do
+      {:ok, phase, artifact_path_for_phase(phase, running_entry), :acp_timeout}
+    else
+      _ -> :error
+    end
+  end
+
+  defp agent_runner_error_reason({%AgentRunner.Error{reason: reason}, _stacktrace}), do: reason
+  defp agent_runner_error_reason(%AgentRunner.Error{reason: reason}), do: reason
+  defp agent_runner_error_reason(_reason), do: nil
 
   defp workflow_artifact_repair_failure({%AgentRunner.Error{reason: {:workflow_artifact_repair_failed, phase, artifact_path, repair_reason}}, _stacktrace}) do
     {:ok, phase, artifact_path, repair_reason}
@@ -963,25 +993,50 @@ defmodule SymphonyElixir.Orchestrator do
 
         next_attempt = next_retry_attempt_from_running(running_entry)
 
-        state
-        |> terminate_running_issue(issue_id, false)
-        |> schedule_issue_retry(
-          issue_id,
-          next_attempt,
-          Map.merge(workflow_retry_metadata(running_entry), %{
-            identifier: identifier,
-            issue_url: running_entry.issue.url,
-            error: "stalled for #{elapsed_ms}ms without codex activity",
-            agent_id: Map.get(running_entry, :agent_id),
-            agent_kind: Map.get(running_entry, :agent_kind),
-            worker_host: Map.get(running_entry, :worker_host),
-            workspace_path: Map.get(running_entry, :workspace_path)
-          })
-        )
+        if workflow_stall_retry_exhausted?(running_entry, next_attempt) do
+          error = workflow_stall_block_error(running_entry, elapsed_ms, next_attempt)
+
+          Logger.warning("Issue blocked: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; #{error}")
+
+          state
+          |> record_session_completion_totals(running_entry)
+          |> stop_and_block_issue(issue_id, running_entry, error)
+        else
+          state
+          |> terminate_running_issue(issue_id, false)
+          |> schedule_issue_retry(
+            issue_id,
+            next_attempt,
+            Map.merge(workflow_retry_metadata(running_entry), %{
+              identifier: identifier,
+              issue_url: running_entry.issue.url,
+              error: "stalled for #{elapsed_ms}ms without codex activity",
+              agent_id: Map.get(running_entry, :agent_id),
+              agent_kind: Map.get(running_entry, :agent_kind),
+              worker_host: Map.get(running_entry, :worker_host),
+              workspace_path: Map.get(running_entry, :workspace_path)
+            })
+          )
+        end
       end
     else
       state
     end
+  end
+
+  defp workflow_stall_retry_exhausted?(running_entry, next_attempt)
+       when is_map(running_entry) and is_integer(next_attempt) do
+    Map.get(running_entry, :workflow_phase) in [:planning, :execution, :review] and
+      next_attempt > @max_workflow_stall_attempts
+  end
+
+  defp workflow_stall_retry_exhausted?(_running_entry, _next_attempt), do: false
+
+  defp workflow_stall_block_error(running_entry, elapsed_ms, next_attempt) do
+    phase = Map.get(running_entry, :workflow_phase)
+
+    "#{phase_label(phase)} phase stalled before producing required artifact: expected #{artifact_path_for_phase(phase, running_entry)}; " <>
+      "#{agent_diagnostics(running_entry)} attempt=#{next_attempt} elapsed_ms=#{elapsed_ms}"
   end
 
   defp stall_elapsed_ms(running_entry, now) do
@@ -1687,7 +1742,8 @@ defmodule SymphonyElixir.Orchestrator do
             workflow_context: workflow_context,
             workflow_root_issue_id: workflow_root_issue_id,
             max_turns: max_turns
-          })
+          }),
+        claimed: MapSet.put(state.claimed, issue_id)
     }
   end
 
@@ -1811,10 +1867,10 @@ defmodule SymphonyElixir.Orchestrator do
        schedule_issue_retry(
          state,
          issue.id,
-         attempt + 1,
+         attempt,
          Map.merge(metadata, %{
            identifier: issue.identifier,
-           error: "no available orchestrator slots"
+           issue_url: issue.url
          })
        )}
     end

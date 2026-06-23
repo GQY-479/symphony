@@ -365,6 +365,63 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     refute Map.has_key?(updated_state.retry_attempts, root_issue.id)
   end
 
+  test "workflow phase ACP timeout without artifact blocks instead of retrying" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-timeout-missing-plan-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{mimocode: %{kind: "acp_stdio", command: "mimo"}},
+      routing: %{default_agent: "mimocode"},
+      orchestration: %{enabled: true, planner_agent: "mimocode", reviewer_agent: "mimocode", artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{
+      id: "root-timeout-missing-plan",
+      identifier: "YQE-760",
+      title: "规划超时没有 artifact",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(workspace)
+
+    state = %{workflow_state() | claimed: MapSet.new([root_issue.id])}
+
+    running_entry =
+      root_issue
+      |> running_entry(workspace, :planning)
+      |> Map.merge(%{
+        agent_id: "mimocode",
+        agent_kind: "acp_stdio",
+        session_id: "session-timeout-missing-plan"
+      })
+
+    reason =
+      {%AgentRunner.Error{
+         message: "Agent run failed for issue_id=#{root_issue.id} issue_identifier=#{root_issue.identifier}: :acp_timeout",
+         reason: :acp_timeout
+       }, []}
+
+    updated_state =
+      Orchestrator.handle_agent_down_for_test(reason, state, root_issue.id, running_entry)
+
+    refute Map.has_key?(updated_state.retry_attempts, root_issue.id)
+    assert MapSet.member?(updated_state.claimed, root_issue.id)
+    assert blocked = Map.fetch!(updated_state.blocked, root_issue.id)
+    assert blocked.workflow_phase == :planning
+    assert blocked.agent_id == "mimocode"
+    assert blocked.agent_kind == "acp_stdio"
+    assert blocked.session_id == "session-timeout-missing-plan"
+    assert blocked.error =~ "planning phase timed out before producing required artifact"
+    assert blocked.error =~ ".symphony/workflow_plan.json"
+    assert blocked.error =~ "agent_id=mimocode"
+    assert blocked.error =~ "agent_kind=acp_stdio"
+    assert blocked.error =~ "session_id=session-timeout-missing-plan"
+    assert blocked.error =~ "reason=:acp_timeout"
+  end
+
   test "workflow artifact repair failed 时阻塞 issue 而不是继续重试" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
@@ -722,7 +779,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
 
     assert MapSet.member?(updated_state.completed, reviewed_issue.id)
     refute MapSet.member?(updated_state.claimed, reviewed_issue.id)
-    refute MapSet.member?(updated_state.claimed, root_issue.id)
+    assert MapSet.member?(updated_state.claimed, root_issue.id)
     refute Map.has_key?(updated_state.blocked, root_issue.id)
 
     refute Map.has_key?(updated_state.retry_attempts, reviewed_issue.id)
