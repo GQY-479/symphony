@@ -139,7 +139,17 @@ defmodule SymphonyElixir.Workflow.Registry do
   end
 
   defp registry_dir do
-    Path.join([Config.settings!().workspace.root, ".symphony", "workflows"])
+    Config.settings!().workspace.root
+    |> canonical_workspace_root()
+    |> Path.join(".symphony")
+    |> Path.join("workflows")
+  end
+
+  defp canonical_workspace_root(workspace_root) when is_binary(workspace_root) do
+    case PathSafety.canonicalize(workspace_root) do
+      {:ok, path} -> path
+      {:error, _reason} -> Path.expand(workspace_root)
+    end
   end
 
   defp load_registry_path(path) do

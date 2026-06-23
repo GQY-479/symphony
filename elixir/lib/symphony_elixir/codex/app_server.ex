@@ -128,7 +128,10 @@ defmodule SymphonyElixir.Codex.AppServer do
              }}
 
           {:error, reason} ->
-            Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
+            Logger.warning(
+              "Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: " <>
+                inspect(redact_log_value(reason))
+            )
 
             emit_message(
               on_message,
@@ -512,28 +515,44 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:approval_required, payload}}
 
       :unhandled ->
-        if needs_input?(method, payload) do
-          emit_message(
-            on_message,
-            :turn_input_required,
-            %{payload: payload, raw: payload_string},
-            metadata
-          )
+        cond do
+          terminal_error_notification?(method, payload) ->
+            emit_message(
+              on_message,
+              :notification,
+              %{
+                payload: payload,
+                raw: payload_string
+              },
+              metadata
+            )
 
-          {:error, {:turn_input_required, payload}}
-        else
-          emit_message(
-            on_message,
-            :notification,
-            %{
-              payload: payload,
-              raw: payload_string
-            },
-            metadata
-          )
+            log_notification(method, payload)
+            {:error, {:turn_error_notification, payload}}
 
-          log_notification(method, payload)
-          receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+          needs_input?(method, payload) ->
+            emit_message(
+              on_message,
+              :turn_input_required,
+              %{payload: payload, raw: payload_string},
+              metadata
+            )
+
+            {:error, {:turn_input_required, payload}}
+
+          true ->
+            emit_message(
+              on_message,
+              :notification,
+              %{
+                payload: payload,
+                raw: payload_string
+              },
+              metadata
+            )
+
+            log_notification(method, payload)
+            receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
         end
     end
   end
@@ -1019,6 +1038,13 @@ defmodule SymphonyElixir.Codex.AppServer do
     end)
   end
 
+  defp redact_log_value(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&redact_log_value/1)
+    |> List.to_tuple()
+  end
+
   defp redact_log_value(values) when is_list(values), do: Enum.map(values, &redact_log_value/1)
   defp redact_log_value(value), do: value
 
@@ -1183,6 +1209,10 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp needs_input?(_method, _payload), do: false
+
+  defp terminal_error_notification?("error", %{"params" => %{"willRetry" => false}}), do: true
+  defp terminal_error_notification?("error", %{"params" => %{"willRetry" => "false"}}), do: true
+  defp terminal_error_notification?(_method, _payload), do: false
 
   defp input_required_method?(method, payload) when is_binary(method) do
     method in [

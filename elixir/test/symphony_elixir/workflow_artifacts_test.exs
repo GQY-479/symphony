@@ -284,6 +284,28 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
     assert Registry.node(loaded, "research-1")["status"] == "ready"
   end
 
+  test "registry paths expand tilde workspace roots before joining workflow directory" do
+    workspace_root = "~/workflow-registry-expanded-#{System.unique_integer([:positive])}"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    path = Registry.registry_path("YQE-TILDE")
+
+    assert path ==
+             Path.join([
+               Path.expand(workspace_root),
+               ".symphony",
+               "workflows",
+               "YQE-TILDE.json"
+             ])
+
+    assert Path.type(path) == :absolute
+    refute String.contains?(path, "/~/")
+  end
+
   test "registry save writes atomically and does not leave temp files" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-registry-atomic-#{System.unique_integer([:positive])}")

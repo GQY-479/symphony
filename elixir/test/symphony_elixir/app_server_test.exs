@@ -1357,7 +1357,7 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
-  test "app server logs error notification payloads with redaction" do
+  test "app server treats non-retryable error notifications as turn errors and logs with redaction" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -1387,7 +1387,7 @@ defmodule SymphonyElixir.AppServerTest do
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-94"}}}'
             ;;
           4)
-            printf '%s\\n' '{"method":"error","params":{"message":"model stream failed","authorization":"Bearer secret-token","nested":{"api_key":"linear-secret"}}}'
+            printf '%s\\n' '{"method":"error","params":{"message":"model stream failed","authorization":"Bearer secret-token","nested":{"api_key":"linear-secret"},"willRetry":false}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             exit 0
             ;;
@@ -1415,12 +1415,19 @@ defmodule SymphonyElixir.AppServerTest do
         labels: ["backend"]
       }
 
+      test_pid = self()
+      on_message = fn message -> send(test_pid, {:app_server_message, message}) end
+
       log =
         capture_log(fn ->
-          assert {:ok, _result} =
-                   AppServer.run(workspace, "Log error notification payload", issue)
+          assert {:error, {:turn_error_notification, payload}} =
+                   AppServer.run(workspace, "Log error notification payload", issue, on_message: on_message)
+
+          assert get_in(payload, ["params", "willRetry"]) == false
         end)
 
+      assert_received {:app_server_message, %{event: :notification, payload: %{"method" => "error"}}}
+      refute_received {:app_server_message, %{event: :turn_completed}}
       assert log =~ ~s(Codex notification: "error" payload=)
       assert log =~ "model stream failed"
       assert log =~ ~s("authorization" => "[REDACTED]")
