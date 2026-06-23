@@ -48,6 +48,170 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
              })
   end
 
+  test "validate_plan accepts issue_graph with dependencies" do
+    assert :ok ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "需要调研后实现",
+               "confidence" => "high",
+               "nodes" => [
+                 %{
+                   "node_key" => "research-1",
+                   "task_type" => "research",
+                   "title" => "调研依赖方案",
+                   "goal" => "收集设计证据",
+                   "agent_id" => "codex"
+                 },
+                 %{
+                   "node_key" => "implement-1",
+                   "task_type" => "implementation",
+                   "title" => "实现功能",
+                   "goal" => "根据调研结果实现",
+                   "agent_id" => "codex"
+                 }
+               ],
+               "edges" => [%{"from" => "research-1", "to" => "implement-1"}]
+             })
+  end
+
+  test "validate_plan accepts issue_graph with multiple dependencies" do
+    assert :ok ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "多步依赖工作流",
+               "confidence" => "high",
+               "nodes" => [
+                 %{
+                   "node_key" => "design",
+                   "task_type" => "research",
+                   "title" => "设计",
+                   "goal" => "设计方案",
+                   "agent_id" => "codex"
+                 },
+                 %{
+                   "node_key" => "impl-a",
+                   "task_type" => "implementation",
+                   "title" => "实现 A",
+                   "goal" => "实现组件 A",
+                   "agent_id" => "codex"
+                 },
+                 %{
+                   "node_key" => "impl-b",
+                   "task_type" => "implementation",
+                   "title" => "实现 B",
+                   "goal" => "实现组件 B",
+                   "agent_id" => "codex"
+                 },
+                 %{
+                   "node_key" => "integration",
+                   "task_type" => "implementation",
+                   "title" => "集成测试",
+                   "goal" => "集成 A 和 B",
+                   "agent_id" => "codex"
+                 }
+               ],
+               "edges" => [
+                 %{"from" => "design", "to" => "impl-a"},
+                 %{"from" => "design", "to" => "impl-b"},
+                 %{"from" => "impl-a", "to" => "integration"},
+                 %{"from" => "impl-b", "to" => "integration"}
+               ]
+             })
+  end
+
+  test "validate_plan rejects issue_graph with unknown edge references" do
+    assert {:error, :invalid_workflow_plan} ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "依赖图",
+               "confidence" => "medium",
+               "nodes" => [
+                 %{
+                   "node_key" => "a",
+                   "task_type" => "research",
+                   "title" => "A",
+                   "goal" => "目标 A",
+                   "agent_id" => "codex"
+                 },
+                 %{
+                   "node_key" => "b",
+                   "task_type" => "implementation",
+                   "title" => "B",
+                   "goal" => "目标 B",
+                   "agent_id" => "codex"
+                 }
+               ],
+               "edges" => [%{"from" => "a", "to" => "b"}, %{"from" => "b", "to" => "c"}]
+             })
+  end
+
+  test "validate_plan accepts nodes with completion_conditions" do
+    assert :ok ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "带完成条件的工作流",
+               "confidence" => "high",
+               "nodes" => [
+                 %{
+                   "node_key" => "research",
+                   "task_type" => "research",
+                   "title" => "调研",
+                   "goal" => "收集设计证据",
+                   "agent_id" => "codex",
+                   "completion_conditions" => ["调研文档已创建", "风险已识别"]
+                 },
+                 %{
+                   "node_key" => "implementation",
+                   "task_type" => "implementation",
+                   "title" => "实现",
+                   "goal" => "根据调研结果实现",
+                   "agent_id" => "codex",
+                   "completion_conditions" => ["测试通过", "文档更新"]
+                 }
+               ],
+               "edges" => [%{"from" => "research", "to" => "implementation"}]
+             })
+  end
+
+  test "validate_plan rejects nodes with invalid completion_conditions" do
+    assert {:error, :invalid_workflow_plan} ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "无效完成条件",
+               "confidence" => "medium",
+               "nodes" => [
+                 %{
+                   "node_key" => "a",
+                   "task_type" => "research",
+                   "title" => "A",
+                   "goal" => "目标 A",
+                   "agent_id" => "codex",
+                   "completion_conditions" => [123, "valid condition"]
+                 }
+               ],
+               "edges" => []
+             })
+  end
+
+  test "validate_plan accepts issue_graph without completion_conditions" do
+    assert :ok ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "无完成条件的工作流",
+               "confidence" => "high",
+               "nodes" => [
+                 %{
+                   "node_key" => "a",
+                   "task_type" => "research",
+                   "title" => "A",
+                   "goal" => "目标 A",
+                   "agent_id" => "codex"
+                 }
+               ],
+               "edges" => []
+             })
+  end
+
   test "validate_plan accepts needs_human_input" do
     assert :ok ==
              Artifacts.validate_plan(%{

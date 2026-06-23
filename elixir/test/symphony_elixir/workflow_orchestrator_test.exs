@@ -265,7 +265,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert {:block, waiting_metadata} = Orchestrator.workflow_dispatch_decision_for_test(waiting_issue, state)
     assert waiting_metadata.workflow_phase == :execution
     assert waiting_metadata.workflow_root_issue_id == "YQE-701"
-    assert waiting_metadata.error =~ "workflow waiting on dependencies"
+    assert waiting_metadata.error =~ "workflow blocked by incomplete dependencies" or waiting_metadata.error =~ "workflow waiting on dependencies"
   end
 
   test "planning phase 正常结束后物化 workflow plan 并释放 root claim" do

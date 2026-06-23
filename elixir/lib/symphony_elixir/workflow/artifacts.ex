@@ -222,15 +222,22 @@ defmodule SymphonyElixir.Workflow.Artifacts do
 
   defp valid_edge_references?(_edge, _node_keys), do: false
 
-  defp valid_node?(%{
-         "node_key" => node_key,
-         "task_type" => task_type,
-         "title" => title,
-         "goal" => goal,
-         "agent_id" => agent_id
-       })
-       when is_binary(task_type) and is_binary(title) and is_binary(goal) and is_binary(agent_id),
-       do: non_blank?(node_key)
+  defp valid_node?(
+         %{
+           "node_key" => node_key,
+           "task_type" => task_type,
+           "title" => title,
+           "goal" => goal,
+           "agent_id" => agent_id
+         } = node
+       )
+       when is_binary(task_type) and is_binary(title) and is_binary(goal) and is_binary(agent_id) do
+    case Map.get(node, "completion_conditions") do
+      nil -> non_blank?(node_key)
+      conditions when is_list(conditions) -> non_blank?(node_key) and Enum.all?(conditions, &is_binary/1)
+      _ -> false
+    end
+  end
 
   defp valid_node?(_node), do: false
 

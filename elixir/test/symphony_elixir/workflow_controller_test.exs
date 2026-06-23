@@ -187,6 +187,67 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert implementation_issue.description =~ "调研结论供实现任务消费"
   end
 
+  test "issue_graph plan comment shows dependency relationships and completion conditions" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-deps-comment-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{
+      id: "root-deps-comment",
+      identifier: "YQE-DEPS-COMMENT",
+      title: "依赖关系测试 root issue",
+      state: "In Progress",
+      assignee_id: "worker-deps"
+    }
+
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.workflow_plan_path(workspace),
+      Jason.encode!(%{
+        "kind" => "issue_graph",
+        "summary" => "验证依赖关系和完成条件在注释中显示",
+        "confidence" => "high",
+        "nodes" => [
+          %{
+            "node_key" => "research",
+            "task_type" => "research",
+            "title" => "调研",
+            "goal" => "收集设计证据",
+            "agent_id" => "codex",
+            "completion_conditions" => ["调研文档已创建", "风险已识别"]
+          },
+          %{
+            "node_key" => "implementation",
+            "task_type" => "implementation",
+            "title" => "实现",
+            "goal" => "根据调研结果实现",
+            "agent_id" => "codex",
+            "completion_conditions" => ["测试通过", "文档更新"]
+          }
+        ],
+        "edges" => [%{"from" => "research", "to" => "implementation"}]
+      })
+    )
+
+    assert {:ok, _registry} = Controller.handle_planning_completion(root_issue, workspace)
+
+    assert_receive {:memory_tracker_comment, "root-deps-comment", comment_body}
+    assert comment_body =~ "Dependencies (edges):"
+    assert comment_body =~ "research -> implementation"
+    assert comment_body =~ "(depends on: research)"
+    assert comment_body =~ "(completion: 测试通过; 文档更新)"
+  end
+
   test "issue_graph 派生 issue 会继承 root labels 以满足 required_labels 调度" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-labels-#{System.unique_integer([:positive])}")
@@ -232,11 +293,14 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     )
 
     assert {:ok, _registry} = Controller.handle_planning_completion(root_issue, workspace)
+
     assert_receive {:memory_tracker_issue_created, %Issue{} = derived_issue}
 
     assert "symphony-local-test" in derived_issue.labels
     assert "agent:mimo" in derived_issue.labels
     assert Issue.routable?(derived_issue, Config.settings!().tracker.required_labels)
+
+    assert_receive {:memory_tracker_comment, "root-labels", _comment}
   end
 
   test "issue_graph 派生 issue 会继承 root 的 Linear project/team 上下文" do
