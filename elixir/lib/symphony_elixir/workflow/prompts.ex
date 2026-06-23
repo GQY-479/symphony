@@ -36,9 +36,14 @@ defmodule SymphonyElixir.Workflow.Prompts do
     - 这是工作流控制层规划；输出会被控制层消费，不是普通进度记录。
     - `workflow_plan.json` 是控制信号，不是 progress note。
     - Linear comment/workpad 只用于 visibility，不是 authoritative source of truth。
+    - 规划阶段只允许创建或更新 planning artifact：`workflow_plan.json`。
+    - 不要修改源码、测试、文档或其他业务文件；这些只能在后续 execution phase 中处理。
+    - 不要执行 direct_execution 的实现内容；`direct_execution` 只是 planner 给控制层的决策。
+    - 不要修改当前 Linear issue 状态；Symphony 控制层会根据 artifact 推进当前 workflow issue。
     - 必须创建 artifact 目录：`mkdir -p #{artifact_dir}`。
     - 必须把规划结果写入：`#{plan_path}`。
     - 最终回复不能替代 artifact 文件；完成前必须读回该文件，确认它是合法 JSON，且符合下面三种结构之一。
+    - 写入并读回 `workflow_plan.json` 后立即结束，等待控制层进入 execution、创建派生 issue 或请求人工输入。
     - 只允许输出一种规划形态：`direct_execution`、`issue_graph` 或 `needs_human_input`。
     - 若任务足够简单，可写入 `direct_execution`:
 
@@ -132,6 +137,7 @@ defmodule SymphonyElixir.Workflow.Prompts do
     - Root workflow issue: #{value_or_dash(root_issue_identifier)}
     - Root workflow workspace: #{workspace_text(root_workspace)}
     - 如果任务说明要求在 root workflow workspace 中读取或写入文件，可以在那里操作目标业务文件；但当前 phase 的 artifact 仍然必须写在当前派生 issue workspace 的 `.symphony` 目录中。
+    - 写入并读回 `completion_packet.json` 后立即结束，等待控制层进入 review 或推进下游阶段。
     - 上游摘要:
     #{upstream_summaries}
     """
@@ -147,14 +153,40 @@ defmodule SymphonyElixir.Workflow.Prompts do
     审查阶段附加要求:
 
     - 生成或更新 `review_decision.json`；这是控制层消费的 Review Decision，不能被最终回复或 Linear comment 替代。
+    - 审查阶段只允许读取相关文件、运行验证命令、判断结果，并创建或更新当前 phase 的 `review_decision.json`。
+    - 不要修改源码、测试、文档或业务文件；不要把审查阶段变成返工实现阶段。
     - 不要通过移动当前 Linear issue 状态来表示审查通过、返工、重规划、需要人工输入或关闭；当前 phase 的交接只能通过 `review_decision.json`。
+    - 不要执行 `git add`，不要 stage，不要 commit，不要 push，不要创建 PR，不要创建或切换分支，不要加载提交、发布或 PR 相关 skill。
     - 允许的 decision 集合: #{Enum.join(@review_decisions, ", ")}。
+    - `review_decision.json` 必须包含非空 `decision`、`summary` 和 `confidence`。
     - 如果 Completion Packet 缺少 `evidence` 或证据不足，`pass` 无效；必须选择 `needs_rework`、`needs_replan`、`needs_human` 或 `fail` 并说明原因。
     - `needs_rework`、`needs_replan`、`fail` 必须包含非空 `reason`；`needs_human` 必须包含非空 `reason` 和 `requested_input`。
+    - `pass` 示例:
+
+      ```json
+      {
+        "decision": "pass",
+        "summary": "审查通过的原因和证据摘要",
+        "confidence": "high"
+      }
+      ```
+
+    - `needs_rework` 示例:
+
+      ```json
+      {
+        "decision": "needs_rework",
+        "summary": "需要返工的摘要",
+        "confidence": "medium",
+        "reason": "具体返工原因"
+      }
+      ```
+
     - 当前派生 issue workspace: #{workspace_text(workspace)}
     - Root workflow issue: #{value_or_dash(root_issue_identifier)}
     - Root workflow workspace: #{workspace_text(root_workspace)}
     - 如果需要验收 root workflow workspace 中的业务文件，可以直接读取那里；但当前 phase 的 `review_decision.json` 仍然必须写在当前派生 issue workspace 的 `.symphony` 目录中。
+    - 写入并读回 `review_decision.json` 后立即结束，等待控制层根据 Review Decision 推进。
     """
   end
 

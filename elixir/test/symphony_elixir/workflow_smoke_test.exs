@@ -768,7 +768,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       "import json, os, sys; " <>
         "p=sys.argv[1]; os.makedirs('.symphony', exist_ok=True); " <>
         "phase='plan' if 'workflow_plan.json' in p else ('completion' if 'completion_packet.json' in p else ('review' if 'review_decision.json' in p else '')); " <>
-        "decision='pass' if '返工' in p else 'needs_rework'; " <>
+        "decision='pass' if '返工：' in p else 'needs_rework'; " <>
         "payloads={" <>
         "'plan': {'kind':'issue_graph','summary':'smoke planning created rework candidate','confidence':'high','nodes':[{'node_key':'implementation','task_type':'implementation','title':'Smoke rework implementation','goal':'Produce a packet that first review rejects','agent_id':'codex','instructions':'Write completion packet for rework smoke.','evidence_expectations':['completion packet exists']}],'edges':[]}, " <>
         "'completion': {'outcome':'completed','summary':'smoke execution completed for '+p[:80],'evidence':['fake cli wrote completion_packet.json'],'decisions':['use artifact handoff'],'open_questions':[],'next_handoff':'review the smoke completion'}, " <>

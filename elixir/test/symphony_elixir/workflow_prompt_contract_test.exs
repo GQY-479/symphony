@@ -44,6 +44,18 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
     assert local_workflow =~ "  mimocode:"
   end
 
+  test "in-repo workflow files start MiMo ACP with the supported command shape" do
+    for path <- ["../../WORKFLOW.md", "../../WORKFLOW.local.md"] do
+      workflow = File.read!(Path.expand(path, __DIR__))
+      front_matter = workflow_front_matter(workflow)
+      args = get_in(front_matter, ["agents", "mimocode", "args"])
+
+      assert args == ["acp", "--cwd", "{{workspace}}", "--pure"]
+      refute "--agent" in args
+      refute Enum.chunk_every(args, 2, 1, :discard) |> Enum.any?(&(&1 == ["--agent", "compose"]))
+    end
+  end
+
   test "local workflow shares the canonical prompt body" do
     workflow = File.read!(Path.expand("../../WORKFLOW.md", __DIR__))
     local_workflow = File.read!(Path.expand("../../WORKFLOW.local.md", __DIR__))
@@ -67,7 +79,12 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "direct_execution",
           "issue_graph",
           "needs_human_input",
-          "控制层"
+          "控制层",
+          "只允许创建或更新 planning artifact",
+          "不要修改源码、测试、文档或其他业务文件",
+          "不要执行 direct_execution 的实现内容",
+          "不要修改当前 Linear issue 状态",
+          "写入并读回 `workflow_plan.json` 后立即结束"
         ] do
       assert planning =~ text
     end
@@ -83,7 +100,8 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "decisions",
           "open_questions",
           "next_handoff",
-          "不要通过移动当前 Linear issue 状态"
+          "不要通过移动当前 Linear issue 状态",
+          "写入并读回 `completion_packet.json` 后立即结束"
         ] do
       assert execution =~ text
     end
@@ -96,9 +114,17 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "needs_human",
           "fail",
           "evidence",
+          "summary",
+          "confidence",
           "reason",
           "requested_input",
-          "不要通过移动当前 Linear issue 状态"
+          "不要通过移动当前 Linear issue 状态",
+          "不要执行 `git add`",
+          "不要 stage",
+          "不要 commit",
+          "不要 push",
+          "不要创建 PR",
+          "写入并读回 `review_decision.json` 后立即结束"
         ] do
       assert review =~ text
     end
@@ -107,6 +133,13 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
   defp workflow_body(contents) do
     case String.split(contents, "---", parts: 3) do
       [_prefix, _front_matter, body] -> String.trim_leading(body)
+      _other -> flunk("workflow file must contain YAML front matter")
+    end
+  end
+
+  defp workflow_front_matter(contents) do
+    case String.split(contents, "---", parts: 3) do
+      [_prefix, front_matter, _body] -> YamlElixir.read_from_string!(front_matter)
       _other -> flunk("workflow file must contain YAML front matter")
     end
   end
