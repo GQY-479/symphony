@@ -207,53 +207,89 @@ defmodule SymphonyElixir.AgentRunner do
          max_turns
        ) do
     prompt = build_turn_prompt(issue, workspace, opts, turn_number, max_turns, resolved_agent)
-    turn_opts = Keyword.put(opts, :on_message, codex_message_handler(codex_update_recipient, issue))
 
-    with {:ok, turn_session} <-
-           run_turn.(
+    turn_opts =
+      Keyword.put(
+        opts,
+        :on_message,
+        workflow_artifact_message_handler(codex_update_recipient, issue, workspace, opts)
+      )
+
+    with {:ok, verified_turn_session} <-
+           verify_agent_turn_result(
+             run_turn,
+             workspace,
              issue,
-             prompt,
-             turn_opts
-           ),
-         {:ok, verified_turn_session} <-
-           ensure_workflow_artifact(run_turn, workspace, issue, opts, turn_opts, turn_session) do
+             opts,
+             turn_opts,
+             run_workflow_artifact_aware_turn(run_turn, issue, prompt, turn_opts, opts)
+           ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{session_id(verified_turn_session)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, resolved_agent, issue_state_fetcher, Keyword.get(opts, :enforce_continuation_route?, true)) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          send_worker_issue_state(codex_update_recipient, refreshed_issue)
+      if workflow_artifact_accepted?(verified_turn_session) do
+        :ok
+      else
+        case continue_with_issue?(issue, resolved_agent, issue_state_fetcher, Keyword.get(opts, :enforce_continuation_route?, true)) do
+          {:continue, refreshed_issue} when turn_number < max_turns ->
+            send_worker_issue_state(codex_update_recipient, refreshed_issue)
 
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+            Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_agent_turns(
-            run_turn,
-            workspace,
-            refreshed_issue,
-            resolved_agent,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+            do_run_agent_turns(
+              run_turn,
+              workspace,
+              refreshed_issue,
+              resolved_agent,
+              codex_update_recipient,
+              opts,
+              issue_state_fetcher,
+              turn_number + 1,
+              max_turns
+            )
 
-        {:continue, refreshed_issue} ->
-          send_worker_issue_state(codex_update_recipient, refreshed_issue)
+          {:continue, refreshed_issue} ->
+            send_worker_issue_state(codex_update_recipient, refreshed_issue)
 
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+            Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
 
-          :ok
+            :ok
 
-        {:done, refreshed_issue} ->
-          send_worker_issue_state(codex_update_recipient, refreshed_issue)
+          {:done, refreshed_issue} ->
+            send_worker_issue_state(codex_update_recipient, refreshed_issue)
 
-          :ok
+            :ok
 
-        {:error, reason} ->
-          {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     end
   end
+
+  defp run_workflow_artifact_aware_turn(run_turn, issue, prompt, turn_opts, opts) do
+    run_turn.(issue, prompt, turn_opts)
+  catch
+    {:workflow_artifact_ready, session_id} ->
+      workflow_phase = Keyword.get(opts, :workflow_phase)
+
+      Logger.info("Workflow artifact became valid during ACP turn for #{issue_context(issue)} phase=#{workflow_phase}; accepting artifact and returning control to orchestrator")
+
+      {:ok,
+       %{
+         session_id: session_id,
+         accepted_after_workflow_artifact: workflow_phase
+       }}
+  end
+
+  defp verify_agent_turn_result(run_turn, workspace, issue, opts, turn_opts, {:ok, turn_session}) do
+    ensure_workflow_artifact(run_turn, workspace, issue, opts, turn_opts, turn_session)
+  end
+
+  defp verify_agent_turn_result(_run_turn, workspace, issue, opts, _turn_opts, {:error, :acp_timeout}) do
+    accept_valid_workflow_artifact_after_timeout(workspace, issue, opts)
+  end
+
+  defp verify_agent_turn_result(_run_turn, _workspace, _issue, _opts, _turn_opts, other), do: other
 
   defp build_turn_prompt(issue, workspace, opts, 1, _max_turns, resolved_agent) do
     issue
@@ -286,7 +322,7 @@ defmodule SymphonyElixir.AgentRunner do
         {:ok, turn_session}
 
       {:ok, _artifact} ->
-        {:ok, turn_session}
+        {:ok, accept_workflow_artifact(turn_session, issue, workflow_phase, :post_turn_verification)}
 
       {:error, artifact_path, reason} ->
         repair_prompt = workflow_artifact_repair_prompt(workflow_phase, workspace, artifact_path, reason)
@@ -295,7 +331,7 @@ defmodule SymphonyElixir.AgentRunner do
 
         with {:ok, repair_session} <- run_turn.(issue, repair_prompt, turn_opts),
              {:ok, _artifact} <- expect_workflow_artifact(workflow_phase, workspace) do
-          {:ok, repair_session}
+          {:ok, accept_workflow_artifact(repair_session, issue, workflow_phase, :repair)}
         else
           {:error, repair_reason} ->
             {:error, {:workflow_artifact_repair_failed, workflow_phase, artifact_path, repair_reason}}
@@ -303,6 +339,28 @@ defmodule SymphonyElixir.AgentRunner do
           other ->
             {:error, {:workflow_artifact_repair_failed, workflow_phase, artifact_path, other}}
         end
+    end
+  end
+
+  defp accept_valid_workflow_artifact_after_timeout(workspace, issue, opts) do
+    workflow_phase = Keyword.get(opts, :workflow_phase)
+
+    case load_workflow_artifact(workflow_phase, workspace) do
+      {:ok, _artifact} ->
+        Logger.warning("ACP turn timed out after producing a valid workflow artifact for #{issue_context(issue)} phase=#{workflow_phase}; accepting artifact and returning control to orchestrator")
+
+        {:ok,
+         %{
+           session_id: nil,
+           accepted_after_turn_error: :acp_timeout,
+           accepted_after_workflow_artifact: workflow_phase
+         }}
+
+      :skip ->
+        {:error, :acp_timeout}
+
+      {:error, _artifact_path, _reason} ->
+        {:error, :acp_timeout}
     end
   end
 
@@ -333,6 +391,46 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp artifact_result(_path, {:ok, artifact}), do: {:ok, artifact}
   defp artifact_result(path, {:error, reason}), do: {:error, path, reason}
+
+  defp accept_workflow_artifact(turn_session, _issue, _workflow_phase, _source)
+       when is_map(turn_session) and is_map_key(turn_session, :accepted_after_workflow_artifact) do
+    turn_session
+  end
+
+  defp accept_workflow_artifact(turn_session, issue, workflow_phase, source) when is_map(turn_session) do
+    Logger.info("Workflow artifact valid after ACP turn for #{issue_context(issue)} phase=#{workflow_phase} source=#{source}; returning control to orchestrator")
+
+    turn_session
+    |> Map.put(:accepted_after_workflow_artifact, workflow_phase)
+    |> Map.put(:workflow_artifact_acceptance_source, source)
+  end
+
+  defp workflow_artifact_accepted?(%{accepted_after_workflow_artifact: workflow_phase})
+       when not is_nil(workflow_phase),
+       do: true
+
+  defp workflow_artifact_accepted?(_turn_session), do: false
+
+  defp workflow_artifact_message_handler(recipient, issue, workspace, opts) do
+    handler = codex_message_handler(recipient, issue)
+    workflow_phase = Keyword.get(opts, :workflow_phase)
+
+    fn message ->
+      result = handler.(message)
+      maybe_halt_on_valid_workflow_artifact(message, workflow_phase, workspace)
+      result
+    end
+  end
+
+  defp maybe_halt_on_valid_workflow_artifact(%{event: :notification} = message, workflow_phase, workspace) do
+    case load_workflow_artifact(workflow_phase, workspace) do
+      {:ok, _artifact} -> throw({:workflow_artifact_ready, Map.get(message, :session_id)})
+      :skip -> :ok
+      {:error, _artifact_path, _reason} -> :ok
+    end
+  end
+
+  defp maybe_halt_on_valid_workflow_artifact(_message, _workflow_phase, _workspace), do: :ok
 
   defp workflow_artifact_repair_prompt(:planning, workspace, artifact_path, reason) do
     """

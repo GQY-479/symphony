@@ -287,4 +287,330 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
       File.rm_rf(test_root)
     end
   end
+
+  test "AgentRunner accepts a valid workflow artifact when an ACP turn times out afterward" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-acp-runner-artifact-timeout-#{System.unique_integer([:positive])}")
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-918")
+      artifact_path = Path.join([workspace, ".symphony", "workflow_plan.json"])
+      File.mkdir_p!(workspace_root)
+
+      {executable, _env} =
+        SymphonyElixir.FakeAcpServer.write!(test_root, %{
+          "sessionId" => "fake-acp-session",
+          "writeFileOnPrompt" => %{
+            "path" => artifact_path,
+            "contents" =>
+              Jason.encode!(%{
+                kind: "direct_execution",
+                summary: "Use the existing dashboard presenter path",
+                confidence: "high"
+              })
+          },
+          "delayPromptMs" => 500
+        })
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        agents: %{
+          mimocode: %{
+            kind: "acp_stdio",
+            command: executable,
+            args: [],
+            permission_policy: "reject",
+            timeout_ms: 100,
+            read_timeout_ms: 5_000
+          }
+        },
+        routing: %{default_agent: "mimocode"},
+        orchestration: %{enabled: true, planner_agent: "mimocode", artifact_dir: ".symphony"}
+      )
+
+      issue = %Issue{
+        id: "issue-acp-runner-artifact-timeout",
+        identifier: "MT-918",
+        title: "ACP runner artifact timeout",
+        description: "Write plan and then time out",
+        state: "In Progress",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 self(),
+                 max_turns: 1,
+                 workflow_phase: :planning,
+                 issue_state_fetcher: fn ["issue-acp-runner-artifact-timeout"] ->
+                   {:ok, [%{issue | state: "Done"}]}
+                 end
+               )
+
+      assert {:ok, %{"kind" => "direct_execution"}} = SymphonyElixir.Workflow.Artifacts.load_workflow_plan(workspace)
+
+      assert_receive {:codex_worker_update, "issue-acp-runner-artifact-timeout",
+                      %{
+                        event: :turn_cancelled,
+                        agent_id: "mimocode",
+                        agent_kind: "acp_stdio",
+                        session_id: "fake-acp-session",
+                        payload: %{reason: :acp_timeout}
+                      }}
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "AgentRunner stops a workflow phase once a valid ACP artifact is observed" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-acp-runner-artifact-ready-#{System.unique_integer([:positive])}")
+    pid_file = Path.join(test_root, "fake-acp.pid")
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-919")
+      artifact_path = Path.join([workspace, ".symphony", "workflow_plan.json"])
+      File.mkdir_p!(workspace_root)
+
+      {executable, _env} =
+        SymphonyElixir.FakeAcpServer.write!(test_root, %{
+          "sessionId" => "fake-acp-session",
+          "pidFile" => pid_file,
+          "writeFileOnPrompt" => %{
+            "path" => artifact_path,
+            "contents" =>
+              Jason.encode!(%{
+                kind: "direct_execution",
+                summary: "Use the existing dashboard presenter path",
+                confidence: "high"
+              })
+          },
+          "streamUpdatesBeforePromptResponseMs" => 8_000,
+          "streamUpdateIntervalMs" => 50
+        })
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        agents: %{
+          mimocode: %{
+            kind: "acp_stdio",
+            command: executable,
+            args: [],
+            permission_policy: "reject",
+            timeout_ms: 10_000,
+            read_timeout_ms: 5_000
+          }
+        },
+        routing: %{default_agent: "mimocode"},
+        orchestration: %{enabled: true, planner_agent: "mimocode", artifact_dir: ".symphony"}
+      )
+
+      issue = %Issue{
+        id: "issue-acp-runner-artifact-ready",
+        identifier: "MT-919",
+        title: "ACP runner artifact ready",
+        description: "Write plan and keep streaming",
+        state: "In Progress",
+        labels: []
+      }
+
+      task =
+        Task.async(fn ->
+          AgentRunner.run(
+            issue,
+            self(),
+            max_turns: 1,
+            workflow_phase: :planning,
+            issue_state_fetcher: fn ["issue-acp-runner-artifact-ready"] ->
+              {:ok, [%{issue | state: "Done"}]}
+            end
+          )
+        end)
+
+      Process.put(:artifact_ready_task, task)
+      assert {:ok, :ok} = Task.yield(task, 2_000)
+      Process.delete(:artifact_ready_task)
+      assert {:ok, %{"kind" => "direct_execution"}} = SymphonyElixir.Workflow.Artifacts.load_workflow_plan(workspace)
+    after
+      if match?(%Task{}, Process.get(:artifact_ready_task)) do
+        Task.shutdown(Process.get(:artifact_ready_task), :brutal_kill)
+        Process.delete(:artifact_ready_task)
+      end
+
+      kill_fake_acp(pid_file)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "AgentRunner does not continue workflow phase turns after an execution artifact is accepted" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-acp-runner-execution-artifact-stop-#{System.unique_integer([:positive])}")
+    pid_file = Path.join(test_root, "fake-acp.pid")
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-920")
+      artifact_path = Path.join([workspace, ".symphony", "completion_packet.json"])
+      trace_file = Path.join(test_root, "acp.trace")
+      File.mkdir_p!(workspace_root)
+
+      {executable, _env} =
+        SymphonyElixir.FakeAcpServer.write!(test_root, %{
+          "sessionId" => "fake-acp-session",
+          "pidFile" => pid_file,
+          "traceFile" => trace_file,
+          "writeFileOnPrompt" => %{
+            "path" => artifact_path,
+            "contents" =>
+              Jason.encode!(%{
+                outcome: "completed",
+                summary: "Implemented the requested behavior",
+                evidence: ["mix test test/symphony_elixir/workflow_orchestrator_test.exs"],
+                decisions: [],
+                open_questions: [],
+                next_handoff: "Ready for review"
+              })
+          },
+          "streamUpdatesBeforePromptResponseMs" => 8_000,
+          "streamUpdateIntervalMs" => 50
+        })
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        agents: %{
+          mimocode: %{
+            kind: "acp_stdio",
+            command: executable,
+            args: [],
+            permission_policy: "reject",
+            timeout_ms: 10_000,
+            read_timeout_ms: 5_000
+          }
+        },
+        routing: %{default_agent: "mimocode"},
+        orchestration: %{enabled: true, planner_agent: "mimocode", artifact_dir: ".symphony"}
+      )
+
+      issue = %Issue{
+        id: "issue-acp-runner-execution-artifact-stop",
+        identifier: "MT-920",
+        title: "ACP runner execution artifact stop",
+        description: "Write completion packet and keep streaming",
+        state: "In Progress",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 self(),
+                 max_turns: 3,
+                 workflow_phase: :execution,
+                 issue_state_fetcher: fn ["issue-acp-runner-execution-artifact-stop"] ->
+                   {:ok, [%{issue | state: "In Progress"}]}
+                 end
+               )
+
+      assert {:ok, %{"outcome" => "completed"}} =
+               SymphonyElixir.Workflow.Artifacts.load_completion_packet(workspace)
+
+      trace_lines = trace_file |> File.read!() |> String.split("\n", trim: true)
+      assert Enum.count(trace_lines, &(&1 == "session/prompt")) == 1
+    after
+      kill_fake_acp(pid_file)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "AgentRunner does not continue workflow phase turns after post-turn artifact verification succeeds" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-acp-runner-post-turn-artifact-stop-#{System.unique_integer([:positive])}")
+    pid_file = Path.join(test_root, "fake-acp.pid")
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-921")
+      artifact_path = Path.join([workspace, ".symphony", "completion_packet.json"])
+      trace_file = Path.join(test_root, "acp.trace")
+      File.mkdir_p!(workspace_root)
+
+      {executable, _env} =
+        SymphonyElixir.FakeAcpServer.write!(test_root, %{
+          "sessionId" => "fake-acp-session",
+          "pidFile" => pid_file,
+          "traceFile" => trace_file,
+          "writeFileAfterPromptUpdate" => %{
+            "path" => artifact_path,
+            "contents" =>
+              Jason.encode!(%{
+                outcome: "completed",
+                summary: "Implemented the requested behavior",
+                evidence: ["mix test test/symphony_elixir/workflow_orchestrator_test.exs"],
+                decisions: [],
+                open_questions: [],
+                next_handoff: "Ready for review"
+              })
+          }
+        })
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        agents: %{
+          mimocode: %{
+            kind: "acp_stdio",
+            command: executable,
+            args: [],
+            permission_policy: "reject",
+            timeout_ms: 10_000,
+            read_timeout_ms: 5_000
+          }
+        },
+        routing: %{default_agent: "mimocode"},
+        orchestration: %{enabled: true, planner_agent: "mimocode", artifact_dir: ".symphony"}
+      )
+
+      issue = %Issue{
+        id: "issue-acp-runner-post-turn-artifact-stop",
+        identifier: "MT-921",
+        title: "ACP runner post-turn artifact stop",
+        description: "Write completion packet after the final update",
+        state: "In Progress",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 self(),
+                 max_turns: 3,
+                 workflow_phase: :execution,
+                 issue_state_fetcher: fn ["issue-acp-runner-post-turn-artifact-stop"] ->
+                   {:ok, [%{issue | state: "In Progress"}]}
+                 end
+               )
+
+      assert {:ok, %{"outcome" => "completed"}} =
+               SymphonyElixir.Workflow.Artifacts.load_completion_packet(workspace)
+
+      trace_lines = trace_file |> File.read!() |> String.split("\n", trim: true)
+      assert Enum.count(trace_lines, &(&1 == "session/prompt")) == 1
+    after
+      kill_fake_acp(pid_file)
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp kill_fake_acp(pid_file) when is_binary(pid_file) do
+    if File.exists?(pid_file) do
+      pid_file
+      |> File.read!()
+      |> String.trim()
+      |> then(fn pid -> System.cmd("kill", ["-KILL", pid], stderr_to_stdout: true) end)
+    end
+
+    :ok
+  end
 end
