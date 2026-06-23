@@ -34,11 +34,10 @@ agents:
     kind: acp_stdio
     command: mimo-code
     args:
-      - --agent
-      - compose
       - acp
       - --cwd
       - "{{workspace}}"
+      - --pure
     permission_policy: allow
     config_options:
       model: "mimo/mimo-auto"
@@ -101,7 +100,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 
 ## Agent configuration
 
-The default workflow agent is `mimocode`. This workflow pins `agents.mimocode` explicitly so MiMo starts in compose mode and ACP permission requests are auto-approved. If `agents:` is omitted, Symphony supplies the built-in `mimocode` and `codex` agent defaults from the config schema; user overrides belong under `agents.<id>`. When declaring `agents:`, include every agent that routing or orchestration may reference.
+The default workflow agent is `mimocode`. This workflow pins `agents.mimocode` explicitly so MiMo starts its ACP runtime and ACP permission requests are auto-approved. If `agents:` is omitted, Symphony supplies the built-in `mimocode` and `codex` agent defaults from the config schema; user overrides belong under `agents.<id>`. When declaring `agents:`, include every agent that routing or orchestration may reference.
 
 To opt specific tickets into Codex, configure an `agents.codex` override and route only those tickets to it:
 

@@ -30,7 +30,7 @@ hooks:
   before_remove: |
     echo "local smoke cleanup"
 agent:
-  max_concurrent_agents: 3
+  max_concurrent_agents: 2
   max_turns: 3
 orchestration:
   enabled: true
@@ -51,8 +51,6 @@ agents:
     kind: acp_stdio
     command: /home/gqy47/.npm-global/bin/mimo
     args:
-      - --agent
-      - compose
       - acp
       - --cwd
       - "{{workspace}}"
@@ -62,7 +60,7 @@ agents:
       model: "mimo/mimo-auto"
     mcp:
       linear_tools: true
-    timeout_ms: 600000
+    timeout_ms: 3600000
     read_timeout_ms: 15000
     close_timeout_ms: 1000
   omnigent:
@@ -128,7 +126,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 
 ## Agent configuration
 
-The default workflow agent is `mimocode`. This workflow pins `agents.mimocode` explicitly so MiMo starts in compose mode and ACP permission requests are auto-approved. If `agents:` is omitted, Symphony supplies the built-in `mimocode` and `codex` agent defaults from the config schema; user overrides belong under `agents.<id>`. When declaring `agents:`, include every agent that routing or orchestration may reference.
+The default workflow agent is `mimocode`. This workflow pins `agents.mimocode` explicitly so MiMo starts its ACP runtime and ACP permission requests are auto-approved. If `agents:` is omitted, Symphony supplies the built-in `mimocode` and `codex` agent defaults from the config schema; user overrides belong under `agents.<id>`. When declaring `agents:`, include every agent that routing or orchestration may reference.
 
 To opt specific tickets into Codex, configure an `agents.codex` override and route only those tickets to it:
 

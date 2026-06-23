@@ -4,7 +4,7 @@
 
 **Goal:** Create and monitor 10 real Symphony Linear issues under the local Symphony workflow, fixing real defects discovered during the run.
 
-**Architecture:** This is an operational implementation plan, not a planned product-code change. It uses the existing `elixir/WORKFLOW.local.md` profile, creates normal real issues in the configured project, stages them in `Backlog`, promotes a small number to `Todo`, and monitors Symphony through Linear, local logs, the dashboard, workspaces, and workflow artifacts. Code changes are made only when the live run exposes a diagnosed Symphony-side defect.
+**Architecture:** This is an operational implementation plan, not a planned product-code change. It starts from the existing `elixir/WORKFLOW.local.md` profile, creates normal real issues in the configured project, stages them in `Backlog`, promotes a small number to `Todo`, and monitors Symphony through Linear, local logs, the dashboard, workspaces, and workflow artifacts. Because the project can already contain active assigned issues, the monitored run uses a temporary workflow copy with `tracker.required_labels: ["Improvement"]`; the 10 new issues receive the normal `Improvement` label so Symphony does not mix unrelated active issues into the batch. The local profile currently allows 3 concurrent agents, so the controller must treat batches of up to 3 active issues as expected. Code changes are made only when the live run exposes a diagnosed Symphony-side defect.
 
 **Tech Stack:** Elixir/Mix, Symphony Elixir, Linear GraphQL via `SymphonyElixir.Linear.Client`, PowerShell start scripts, WSL, MiMo ACP stdio, Codex app-server tooling where configured.
 
@@ -16,6 +16,7 @@
 - Reference: `elixir/WORKFLOW.local.md`
 - Reference: `elixir/start-local.ps1`
 - Reference: `elixir/stop-local.ps1`
+- Create during execution: `%TEMP%\symphony-live-regression-WORKFLOW.local.md`
 - Create during execution: `docs/superpowers/runs/2026-06-22-live-issue-monitoring-regression.md`
 - Modify only if a live defect requires a fix: relevant `elixir/lib/**` and `elixir/test/**` files identified during diagnosis.
 
@@ -99,7 +100,7 @@ tracker:
     - Merging
     - Rework
 agent:
-  max_concurrent_agents: 1
+  max_concurrent_agents: 3
 orchestration:
   enabled: true
   planner_agent: mimocode
@@ -217,7 +218,8 @@ Use `apply_patch` to create `docs/superpowers/runs/2026-06-22-live-issue-monitor
 - Workspace root: `~/code/symphony-workspaces-local`
 - Project slug: `96f5ac7500e2`
 - Default agent: `mimocode`
-- Max concurrent agents: `1`
+- Max concurrent agents: `3`
+- Candidate filter: temporary workflow copy requires normal Linear label `Improvement`
 
 ## Created Issues
 
@@ -225,6 +227,12 @@ Use `apply_patch` to create `docs/superpowers/runs/2026-06-22-live-issue-monitor
 | --- | --- | --- | --- | --- | --- | --- | --- |
 
 ## Observations
+
+### OBS-1: Existing active candidates were present before the batch
+
+Before creating the 10 new issues, the project already had active assigned
+issues. The monitored batch uses a temporary workflow copy requiring the normal
+`Improvement` label so these older issues do not mix into the new batch.
 
 ## Defects
 
@@ -263,6 +271,7 @@ query SymphonyLiveRegressionContext($slug: String!) {
           key
           name
           states { nodes { id name type } }
+          labels(first: 100) { nodes { id name } }
         }
       }
     }
@@ -469,12 +478,16 @@ team =
 if is_nil(team), do: raise("Project #{project["slugId"]} has no team")
 
 states = get_in(team, ["states", "nodes"]) || []
+labels = get_in(team, ["labels", "nodes"]) || []
 
 backlog_state =
   Enum.find(states, &(&1["name"] == "Backlog")) ||
     Enum.find(states, &(&1["type"] == "backlog"))
 
 if is_nil(backlog_state), do: raise("Team #{team["key"]} has no Backlog state")
+
+improvement_label = Enum.find(labels, &(&1["name"] == "Improvement"))
+if is_nil(improvement_label), do: raise("Team #{team["key"]} has no Improvement label")
 
 created =
   Enum.map(issues, fn issue ->
@@ -485,6 +498,7 @@ created =
       "assigneeId" => viewer["id"],
       "title" => issue.title,
       "description" => String.trim(issue.description),
+      "labelIds" => [improvement_label["id"]],
       "priority" => 0
     }
 
@@ -509,6 +523,7 @@ Expected:
 - 10 Linear issues are created.
 - Every issue starts in `Backlog`.
 - Every issue is assigned to the Linear viewer account used by `LINEAR_API_KEY`.
+- Every issue has the normal `Improvement` label.
 - No issue title or description contains monitoring run metadata.
 
 - [ ] **Step 2: Add the created issue keys to the manifest**
@@ -521,9 +536,27 @@ Expected: each row uses an actual identifier from `docs/superpowers/runs/2026-06
 
 **Files:**
 - Read: `elixir/start-local.ps1`
+- Create: `%TEMP%\symphony-live-regression-WORKFLOW.local.md`
 - Update during execution: `docs/superpowers/runs/2026-06-22-live-issue-monitoring-regression.md`
 
-- [ ] **Step 1: Stop any existing local Symphony process on port 4000**
+- [ ] **Step 1: Create the temporary workflow copy with the controlled candidate label**
+
+Run:
+
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "\
+  $src = (Resolve-Path './elixir/WORKFLOW.local.md').Path; \
+  $dst = Join-Path $env:TEMP 'symphony-live-regression-WORKFLOW.local.md'; \
+  $text = Get-Content -Raw -LiteralPath $src; \
+  if (-not $text.Contains('  required_labels: []')) { throw 'Expected required_labels: [] in WORKFLOW.local.md' }; \
+  $text = $text.Replace('  required_labels: []', \"  required_labels:`n    - Improvement\"); \
+  Set-Content -LiteralPath $dst -Value $text -NoNewline -Encoding utf8; \
+  Write-Host $dst"
+```
+
+Expected: `%TEMP%\symphony-live-regression-WORKFLOW.local.md` exists and differs from `elixir/WORKFLOW.local.md` only by requiring `Improvement`.
+
+- [ ] **Step 2: Stop any existing local Symphony process on port 4000**
 
 Run:
 
@@ -533,12 +566,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./elixir/stop-local.ps1
 
 Expected: no local Symphony process remains on port `4000`.
 
-- [ ] **Step 2: Start Symphony**
+- [ ] **Step 3: Start Symphony with the temporary workflow**
 
 Run:
 
 ```bash
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./elixir/start-local.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "\
+  $workflow = Join-Path $env:TEMP 'symphony-live-regression-WORKFLOW.local.md'; \
+  & ./elixir/start-local.ps1 -Workflow $workflow"
 ```
 
 Expected output includes:
@@ -548,7 +583,7 @@ Symphony started on http://127.0.0.1:4000/
 Log: wsl.exe -e bash -lc 'tail -f /tmp/symphony-local-4000.log'
 ```
 
-- [ ] **Step 3: Verify the process is alive and dashboard responds**
+- [ ] **Step 4: Verify the process is alive and dashboard responds**
 
 Run:
 
@@ -564,7 +599,7 @@ Expected:
 - `curl` exits `0`.
 - `wc -c` prints a positive byte count.
 
-- [ ] **Step 4: Start log monitoring**
+- [ ] **Step 5: Start log monitoring**
 
 Run in a long-lived terminal:
 
@@ -574,14 +609,14 @@ wsl.exe -e bash -lc 'tail -f /tmp/symphony-local-4000.log'
 
 Expected: logs stream without printing secrets.
 
-## Task 6: Promote And Monitor The First Two Issues
+## Task 6: Promote And Monitor The First Three Issues
 
 **Files:**
 - Update during execution: `docs/superpowers/runs/2026-06-22-live-issue-monitoring-regression.md`
 
-- [ ] **Step 1: Move the first two created issues from Backlog to Todo**
+- [ ] **Step 1: Move the first three created issues from Backlog to Todo**
 
-Run from `elixir/`. The script reads the first two actual identifiers from the JSON file written in Task 4:
+Run from `elixir/`. The script reads the first three actual identifiers from the JSON file written in Task 4:
 
 ```bash
 cd elixir
@@ -596,7 +631,7 @@ issue_ids =
   |> File.read!()
   |> Jason.decode!()
   |> Map.fetch!("created")
-  |> Enum.take(2)
+  |> Enum.take(3)
   |> Enum.map(&Map.fetch!(&1, "identifier"))
 
 state_query = """
@@ -641,8 +676,8 @@ IO.puts(Jason.encode!(%{"moved" => results}, pretty: true))
 
 Expected:
 
-- Two issues move to `Todo`.
-- Symphony picks at most one active issue at a time because `max_concurrent_agents` is `1`.
+- Three issues move to `Todo`.
+- Symphony may run up to three active issues at a time because `max_concurrent_agents` is `3`.
 
 - [ ] **Step 2: Watch for dispatch and routing**
 
