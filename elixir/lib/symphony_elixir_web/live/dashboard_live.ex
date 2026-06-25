@@ -139,19 +139,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <colgroup>
                   <col style="width: 12rem;" />
                   <col style="width: 8rem;" />
+                  <col style="width: 7rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
                   <col />
+                  <col style="width: 6rem;" />
                   <col style="width: 10rem;" />
                 </colgroup>
                 <thead>
                   <tr>
                     <th>Issue</th>
                     <th>State</th>
+                    <th>Phase</th>
+                    <th>Agent</th>
                     <th>Session</th>
-                    <th>Runtime / turns</th>
                     <th>Codex update</th>
+                    <th>Turns</th>
                     <th>Tokens</th>
+                    <th>Artifact</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -166,6 +171,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <span class={state_badge_class(entry.state)}>
                         <%= entry.state %>
                       </span>
+                    </td>
+                    <td>
+                      <%= if entry.workflow_phase do %>
+                        <span class="phase-label"><%= format_phase(entry.workflow_phase) %></span>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
+                    </td>
+                    <td>
+                      <%= if entry.agent_id do %>
+                        <span class="agent-label"><%= entry.agent_id %></span>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
                     </td>
                     <td>
                       <div class="session-stack">
@@ -184,7 +203,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <% end %>
                       </div>
                     </td>
-                    <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
                     <td>
                       <div class="detail-stack">
                         <span
@@ -199,6 +217,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                       </div>
                     </td>
+                    <td class="numeric"><%= entry.turn_count || 0 %></td>
                     <td>
                       <div class="token-stack numeric">
                         <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
@@ -224,11 +243,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="empty-state">No blocked sessions.</p>
           <% else %>
             <div class="table-wrap">
-              <table class="data-table" style="min-width: 760px;">
+              <table class="data-table" style="min-width: 860px;">
                 <thead>
                   <tr>
                     <th>Issue</th>
                     <th>State</th>
+                    <th>Phase</th>
+                    <th>Agent</th>
                     <th>Session</th>
                     <th>Blocked at</th>
                     <th>Last update</th>
@@ -247,6 +268,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <span class={state_badge_class(entry.state || "Blocked")}>
                         <%= entry.state || "Blocked" %>
                       </span>
+                    </td>
+                    <td>
+                      <%= if entry.workflow_phase do %>
+                        <span class="phase-label"><%= format_phase(entry.workflow_phase) %></span>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
+                    </td>
+                    <td>
+                      <%= if entry.agent_id do %>
+                        <span class="agent-label"><%= entry.agent_id %></span>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
                     </td>
                     <td>
                       <%= if entry.session_id do %>
@@ -298,10 +333,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="empty-state">No issues are currently backing off.</p>
           <% else %>
             <div class="table-wrap">
-              <table class="data-table" style="min-width: 680px;">
+              <table class="data-table" style="min-width: 780px;">
                 <thead>
                   <tr>
                     <th>Issue</th>
+                    <th>Phase</th>
+                    <th>Agent</th>
                     <th>Attempt</th>
                     <th>Due at</th>
                     <th>Error</th>
@@ -314,6 +351,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         <.issue_identifier identifier={entry.issue_identifier} url={entry.issue_url} />
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
                       </div>
+                    </td>
+                    <td>
+                      <%= if entry.workflow_phase do %>
+                        <span class="phase-label"><%= format_phase(entry.workflow_phase) %></span>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
+                    </td>
+                    <td>
+                      <%= if entry.agent_id do %>
+                        <span class="agent-label"><%= entry.agent_id %></span>
+                      <% else %>
+                        <span class="muted">n/a</span>
+                      <% end %>
                     </td>
                     <td><%= entry.attempt %></td>
                     <td class="mono"><%= entry.due_at || "n/a" %></td>
@@ -388,13 +439,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
       end)
   end
 
-  defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
-    "#{format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))} / #{turn_count}"
-  end
-
-  defp format_runtime_and_turns(started_at, _turn_count, now),
-    do: format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))
-
   defp format_runtime_seconds(seconds) when is_number(seconds) do
     whole_seconds = max(trunc(seconds), 0)
     mins = div(whole_seconds, 60)
@@ -436,6 +480,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
       true -> base
     end
   end
+
+  defp format_phase(nil), do: "n/a"
+  defp format_phase(phase) when is_atom(phase), do: Atom.to_string(phase)
+  defp format_phase(phase), do: to_string(phase)
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)

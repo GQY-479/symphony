@@ -1,0 +1,20 @@
+{
+  "outcome": "completed",
+  "summary": "Dashboard now shows each issue's current workflow phase with responsible agent, turn status, and artifact path",
+  "evidence": [
+    "mix test: 510 tests, 1 pre-existing failure, 3 skipped - all new tests pass",
+    "presenter_test.exs: 13 focused tests verifying workflow_phase in running/retrying/blocked payloads",
+    "extensions_test.exs: updated to include workflow_artifact_path in API response assertions",
+    "dashboard_live.ex: running/blocked/retrying tables show Phase, Agent, and Artifact columns",
+    "presenter.ex: running_entry_payload, retry_entry_payload, blocked_entry_payload include workflow_phase and workflow_artifact_path",
+    "workflow_artifact_path resolves to correct artifact based on phase: planning->workflow_plan.json, execution->completion_packet.json, review->review_decision.json"
+  ],
+  "decisions": [
+    "Added workflow_artifact_path to presenter payloads for each entry type (running, retry, blocked)",
+    "Dashboard tables include Phase, Agent, and Artifact columns alongside existing fields",
+    "Tests focus on presenter state transformation rather than orchestrator internals",
+    "Fixed extensions_test.exs to match new API response shape with workflow_artifact_path"
+  ],
+  "open_questions": [],
+  "next_handoff": "Ready for human review. All acceptance criteria met: active issues show phase, completed/blocked issues expose last known phase, implementation is phase-agnostic, and focused presenter tests are added."
+}
