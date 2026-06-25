@@ -29,6 +29,11 @@ defmodule SymphonyElixir.Config do
           turn_sandbox_policy: map()
         }
 
+  @type tracker_project_entry :: %{
+          project_key: String.t(),
+          project_slug: String.t()
+        }
+
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     case Workflow.current() do
@@ -72,6 +77,14 @@ defmodule SymphonyElixir.Config do
 
       {:error, reason} ->
         raise ArgumentError, message: "Invalid codex turn sandbox policy: #{inspect(reason)}"
+    end
+  end
+
+  @spec tracker_project_entries(Schema.t()) :: [tracker_project_entry()]
+  def tracker_project_entries(%Schema{} = settings) do
+    case configured_tracker_project_entries(settings.tracker.projects) do
+      [] -> legacy_tracker_project_entries(settings.tracker.project_slug)
+      entries -> entries
     end
   end
 
@@ -120,7 +133,8 @@ defmodule SymphonyElixir.Config do
   defp validate_semantics(settings) do
     with :ok <- validate_agents(settings),
          :ok <- validate_routing(settings),
-         :ok <- validate_orchestration(settings) do
+         :ok <- validate_orchestration(settings),
+         :ok <- validate_tracker_projects(settings.tracker.projects) do
       cond do
         is_nil(settings.tracker.kind) ->
           {:error, :missing_tracker_kind}
@@ -131,7 +145,7 @@ defmodule SymphonyElixir.Config do
         settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
           {:error, :missing_linear_api_token}
 
-        settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
+        settings.tracker.kind == "linear" and tracker_project_entries(settings) == [] ->
           {:error, :missing_linear_project_slug}
 
         true ->
@@ -143,35 +157,76 @@ defmodule SymphonyElixir.Config do
   defp validate_orchestration(settings) do
     orchestration = settings.orchestration
 
-    with :ok <- validate_inclusion("orchestration.mode", orchestration.mode, ["workflow", "legacy"]) do
-      if orchestration.mode == "legacy" or orchestration.enabled != true do
-        :ok
-      else
-        agent_ids = MapSet.new(Map.keys(settings.agents || %{}))
+    if orchestration.enabled != true do
+      :ok
+    else
+      agent_ids = MapSet.new(Map.keys(settings.agents || %{}))
 
-        with :ok <-
-               validate_orchestration_agent(
-                 agent_ids,
-                 "orchestration.planner_agent",
-                 orchestration.planner_agent
-               ),
-             :ok <-
-               validate_orchestration_agent(
-                 agent_ids,
-                 "orchestration.reviewer_agent",
-                 orchestration.reviewer_agent
-               ) do
-          validate_non_blank_string("orchestration.artifact_dir", orchestration.artifact_dir)
-        end
+      with :ok <-
+             validate_orchestration_agent(
+               agent_ids,
+               "orchestration.planner_agent",
+               orchestration.planner_agent
+             ),
+           :ok <-
+             validate_orchestration_agent(
+               agent_ids,
+               "orchestration.reviewer_agent",
+               orchestration.reviewer_agent
+             ) do
+        validate_non_blank_string("orchestration.artifact_dir", orchestration.artifact_dir)
       end
     end
   end
 
-  defp validate_inclusion(field, value, allowed) do
-    if value in allowed do
-      :ok
-    else
-      invalid_config("#{field} must be one of #{Enum.join(allowed, ", ")}, got #{inspect(value)}")
+  defp validate_tracker_projects(projects) when projects in [nil, %{}], do: :ok
+
+  defp validate_tracker_projects(projects) when is_map(projects) do
+    with :ok <- validate_tracker_project_entries(projects) do
+      validate_unique_tracker_project_slugs(projects)
+    end
+  end
+
+  defp validate_tracker_projects(projects) do
+    invalid_config("tracker.projects must be a map, got #{inspect(projects)}")
+  end
+
+  defp validate_tracker_project_entries(projects) do
+    Enum.reduce_while(projects, :ok, fn {project_key, project}, :ok ->
+      normalized_key = normalize_config_project_key(project_key)
+
+      cond do
+        normalized_key == nil ->
+          {:halt, invalid_config("tracker.projects contains a blank project key")}
+
+        not is_map(project) ->
+          {:halt, invalid_config("tracker.projects[#{normalized_key}] must be a map")}
+
+        not non_blank_string?(Map.get(project, "project_slug")) ->
+          {:halt, invalid_config("tracker.projects[#{normalized_key}].project_slug must be a non-empty string")}
+
+        true ->
+          {:cont, :ok}
+      end
+    end)
+  end
+
+  defp validate_unique_tracker_project_slugs(projects) do
+    projects
+    |> Enum.reduce_while(%{}, fn {project_key, project}, slugs ->
+      slug = normalize_config_project_slug(Map.get(project, "project_slug"))
+
+      case Map.fetch(slugs, slug) do
+        {:ok, existing_key} ->
+          {:halt, invalid_config("tracker.projects contains duplicate Linear project slug #{inspect(slug)} for #{existing_key} and #{normalize_config_project_key(project_key)}")}
+
+        :error ->
+          {:cont, Map.put(slugs, slug, normalize_config_project_key(project_key))}
+      end
+    end)
+    |> case do
+      %{} -> :ok
+      {:error, _reason} = error -> error
     end
   end
 
@@ -618,6 +673,52 @@ defmodule SymphonyElixir.Config do
   end
 
   defp invalid_config(message), do: {:error, {:invalid_workflow_config, message}}
+
+  defp configured_tracker_project_entries(projects) when is_map(projects) do
+    projects
+    |> Enum.map(fn {project_key, project} ->
+      %{
+        project_key: normalize_config_project_key(project_key),
+        project_slug: normalize_config_project_slug(Map.get(project, "project_slug"))
+      }
+    end)
+    |> Enum.reject(fn entry -> blank_string?(entry.project_key) or blank_string?(entry.project_slug) end)
+    |> Enum.sort_by(& &1.project_key)
+  end
+
+  defp configured_tracker_project_entries(_projects), do: []
+
+  defp legacy_tracker_project_entries(project_slug) do
+    case normalize_config_project_slug(project_slug) do
+      nil -> []
+      slug -> [%{project_key: slug, project_slug: slug}]
+    end
+  end
+
+  defp normalize_config_project_key(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      key -> key
+    end
+  end
+
+  defp normalize_config_project_key(value), do: normalize_config_project_key(to_string(value))
+
+  defp normalize_config_project_slug(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      slug -> slug
+    end
+  end
+
+  defp normalize_config_project_slug(_value), do: nil
+
+  defp blank_string?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_string?(nil), do: true
+  defp blank_string?(_value), do: false
+
+  defp non_blank_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_blank_string?(_value), do: false
 
   defp format_config_error(reason) do
     case reason do
