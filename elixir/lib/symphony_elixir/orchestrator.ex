@@ -1604,7 +1604,7 @@ defmodule SymphonyElixir.Orchestrator do
         ref = Process.monitor(pid)
 
         Logger.info(
-          "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"} agent_id=#{resolved_agent.id} agent_kind=#{resolved_agent.kind}"
+          "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"} agent_id=#{resolved_agent.id} agent_kind=#{resolved_agent.kind} routing_reason=#{routing_reason_log(resolved_agent)}"
         )
 
         running =
@@ -1703,6 +1703,17 @@ defmodule SymphonyElixir.Orchestrator do
   defp metadata_agent_id(metadata) when is_map(metadata) do
     Map.get(metadata, :agent_id) || Map.get(metadata, "agent_id")
   end
+
+  defp routing_reason_log(%{routing_reason: %{source: source, matched: matched}}) do
+    source_str = Atom.to_string(source)
+
+    case matched do
+      nil -> source_str
+      _ -> "#{source_str}=#{matched}"
+    end
+  end
+
+  defp routing_reason_log(_), do: "unknown"
 
   defp agent_runner_opts(attempt, worker_host, resolved_agent, metadata) when is_map(metadata) do
     [
