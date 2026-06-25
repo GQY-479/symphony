@@ -71,7 +71,8 @@ defmodule SymphonyElixir.Workflow.Prompts do
             "goal": "该派生 issue 要达成的目标",
             "agent_id": "codex",
             "instructions": "可选的执行说明",
-            "evidence_expectations": ["可选的验收证据"]
+            "evidence_expectations": ["可选的验收证据"],
+            "completion_conditions": ["可选的完成条件，描述该步骤必须满足的条件"]
           }
         ],
         "edges": [

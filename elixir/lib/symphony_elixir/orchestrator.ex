@@ -1240,7 +1240,7 @@ defmodule SymphonyElixir.Orchestrator do
             if Controller.issue_ready?(issue.id) do
               {:dispatch, metadata}
             else
-              {:block, Map.put(metadata, :error, "workflow waiting on dependencies")}
+              {:block, Map.put(metadata, :error, describe_blocking_dependencies(issue.id, metadata))}
             end
 
           {:error, :not_found} ->
@@ -1314,6 +1314,75 @@ defmodule SymphonyElixir.Orchestrator do
            workflow_phase: :planning,
            error: "workflow registry lookup failed: #{inspect(reason)}"
          })}
+    end
+  end
+
+  defp describe_blocking_dependencies(issue_id, _metadata) do
+    case Registry.load_by_issue_id(issue_id) do
+      {:ok, registry, _node_key, node} ->
+        deps = Map.get(node, "dependencies") || []
+        conditions = Map.get(node, "completion_conditions") || []
+
+        cond_info =
+          case conditions do
+            [] -> ""
+            _ -> " (expected: #{Enum.join(conditions, "; ")})"
+          end
+
+        case deps do
+          [] ->
+            "workflow waiting on dependencies"
+
+          _ ->
+            incomplete =
+              deps
+              |> Enum.filter(fn dep ->
+                case Registry.node(registry, dep) do
+                  %{"status" => status} ->
+                    status_str = String.downcase(String.trim(status))
+                    status_str not in ["completed", "done", "passed"]
+
+                  _ ->
+                    true
+                end
+              end)
+
+            case incomplete do
+              [] ->
+                "workflow waiting on dependencies"
+
+              _ ->
+                dep_details =
+                  incomplete
+                  |> Enum.map(fn dep ->
+                    case Registry.node(registry, dep) do
+                      %{"issue_identifier" => identifier, "status" => status} ->
+                        dep_conditions =
+                          case Registry.node(registry, dep) do
+                            %{"completion_conditions" => c} when is_list(c) and c != [] ->
+                              " (conditions: #{Enum.join(c, "; ")})"
+
+                            _ ->
+                              ""
+                          end
+
+                        "#{dep} (#{identifier}): #{status}#{dep_conditions}"
+
+                      %{"status" => status} ->
+                        "#{dep}: #{status}"
+
+                      _ ->
+                        "#{dep}: unknown"
+                    end
+                  end)
+                  |> Enum.join("; ")
+
+                "workflow blocked by incomplete dependencies#{cond_info}: #{dep_details}"
+            end
+        end
+
+      _ ->
+        "workflow waiting on dependencies"
     end
   end
 

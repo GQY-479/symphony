@@ -297,6 +297,7 @@ defmodule SymphonyElixir.Workflow.Controller do
       "handoff" => handoffs,
       "handoff_summary" => handoffs,
       "evidence_expectations" => node["evidence_expectations"] || [],
+      "completion_conditions" => node["completion_conditions"] || [],
       "workflow_semantics" => "executable",
       "status" => readiness_for(dependencies),
       "title" => node["title"]
@@ -836,6 +837,8 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp node_description(root_issue, node, dependencies, handoffs, plan) do
+    completion_conditions = node["completion_conditions"] || []
+
     """
     Root issue: #{root_issue.identifier}
     Root issue id: #{root_issue.id}
@@ -849,6 +852,9 @@ defmodule SymphonyElixir.Workflow.Controller do
     Dependencies:
     #{format_list(dependencies)}
 
+    Completion conditions:
+    #{format_list(completion_conditions)}
+
     Handoff:
     #{format_list(handoffs)}
 
@@ -859,13 +865,50 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp render_plan_comment(root_issue, plan, registry) do
+    edges = registry["edges"] || []
+    dependency_map = dependency_map(edges)
+
     derived_lines =
       registry["nodes"]
       |> Enum.reject(fn {node_key, _node} -> node_key == "root" end)
       |> Enum.map(fn {node_key, node} ->
-        "- #{node_key}: #{node["issue_identifier"]} #{node["task_type"]} #{node["status"]}"
+        deps = Map.get(dependency_map, node_key, [])
+
+        dep_info =
+          case deps do
+            [] -> " (no dependencies)"
+            _ -> " (depends on: #{Enum.join(deps, ", ")})"
+          end
+
+        conditions = node["completion_conditions"] || []
+
+        cond_info =
+          case conditions do
+            [] -> ""
+            _ -> " (completion: #{Enum.join(conditions, "; ")})"
+          end
+
+        "- #{node_key}: #{node["issue_identifier"]} #{node["task_type"]} #{node["status"]}#{dep_info}#{cond_info}"
       end)
       |> Enum.join("\n")
+
+    edge_lines =
+      case edges do
+        [] ->
+          ""
+
+        _ ->
+          formatted_edges =
+            edges
+            |> Enum.map(fn edge ->
+              from = edge["from"] || edge[:from]
+              to = edge["to"] || edge[:to]
+              "- #{from} -> #{to}"
+            end)
+            |> Enum.join("\n")
+
+          "\n\nDependencies (edges):\n#{formatted_edges}"
+      end
 
     """
     ## 规划摘要
@@ -876,7 +919,7 @@ defmodule SymphonyElixir.Workflow.Controller do
     Summary: #{plan["summary"]}
 
     Derived issues:
-    #{derived_lines}
+    #{derived_lines}#{edge_lines}
     """
     |> String.trim()
   end
