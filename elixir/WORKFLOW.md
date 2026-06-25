@@ -1,7 +1,15 @@
 ---
 tracker:
   kind: linear
-  project_slug: "symphony-0c79b11b75ea"
+  projects:
+    symphony:
+      slug: "symphony-0c79b11b75ea"
+      repository: "https://github.com/openai/symphony"
+    deepquest:
+      slug: "04b9404aad35"
+      repository:
+        - "/mnt/c/Users/GQY47/coding/DeepQuest"
+        - "https://github.com/GQY-479/DeepQuest"
   required_labels: []
   active_states:
     - Todo
@@ -20,12 +28,29 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
+    if [ -n "$SYMP_PROJECT_REPOSITORY" ]; then
+      IFS=',' read -ra REPOS <<< "$SYMP_PROJECT_REPOSITORY"
+      for repo in "${REPOS[@]}"; do
+        repo=$(echo "$repo" | xargs)
+        if [[ -d "$repo" ]]; then
+          cp -r "$repo"/* . 2>/dev/null || true
+          cp -r "$repo"/.[!.]* . 2>/dev/null || true
+          break
+        fi
+      done
+      for repo in "${REPOS[@]}"; do
+        repo=$(echo "$repo" | xargs)
+        if [[ "$repo" == http* ]] && [ ! -d ".git" ]; then
+          git clone --depth 1 "$repo" .
+          break
+        fi
+      done
+    fi
     if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
+      cd elixir && mise trust && mise exec -- mix deps.get 2>/dev/null || true
     fi
   before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
+    cd elixir && mise exec -- mix workspace.before_remove 2>/dev/null || true
 agent:
   max_concurrent_agents: 10
   max_turns: 20
