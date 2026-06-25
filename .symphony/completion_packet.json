@@ -1,0 +1,19 @@
+{
+  "outcome": "completed",
+  "summary": "Added regression tests for missing and invalid workflow artifact paths. The core repair behavior (logging, repair turn, repair success resume, repair failure blocking) was already implemented. Added 19 regression tests covering missing artifacts, invalid JSON, invalid schema, and repair turn execution across all three artifact types (plan, completion, review).",
+  "evidence": [
+    "Added 12 tests to workflow_artifacts_test.exs covering missing file (:enoent), invalid JSON (Jason.DecodeError), and invalid schema (:invalid_workflow_plan/:invalid_completion_packet/:invalid_review_decision) for all artifact types",
+    "Added 7 tests to workflow_orchestrator_test.exs covering missing/invalid plan, completion packet, and review decision blocking at orchestrator level",
+    "Added 1 review artifact repair test to core_test.exs verifying AgentRunner sends repair prompt and agent creates review_decision.json",
+    "All 49 artifact-related tests pass (0 failures)",
+    "Full test suite shows 516 tests, 2 pre-existing failures unrelated to this change (smoke test timing, status test timing)",
+    "BLOCKER: No GitHub remote configured (gh auth login required). Cannot create PR. Blocked for human intervention."
+  ],
+  "decisions": [
+    "Existing repair behavior in agent_runner.ex and orchestrator.ex was sufficient; only test coverage was needed",
+    "Added tests to existing test files following established patterns rather than creating new test modules",
+    "Orchestrator error messages distinguish between :enoent (missing file) and other errors (invalid JSON/schema) for diagnostic clarity"
+  ],
+  "open_questions": [],
+  "next_handoff": "BLOCKED: GitHub remote not configured. Human must run `gh auth login` and set up remote to create PR. Then the workflow can continue."
+}

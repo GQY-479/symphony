@@ -1,0 +1,64 @@
+{
+  "kind": "direct_execution",
+  "summary": "Added regression tests for missing and invalid workflow artifact paths. The core repair behavior was already implemented in agent_runner.ex (repair prompts and turn execution), orchestrator.ex (repair failure blocking), and artifacts.ex (validation). Missing piece was comprehensive test coverage covering: (1) missing artifact file scenarios for plan, completion, and review at both artifact-loader and orchestrator levels, (2) invalid JSON parsing scenarios for all three artifact types, (3) invalid schema/structure validation failure scenarios, (4) review artifact repair turn execution via AgentRunner.",
+  "confidence": "high",
+  "agent_id": "mimocode",
+  "acceptance_criteria": [
+    {
+      "criterion": "Missing plan, completion, or review artifacts are logged with issue id, phase, path, and validation reason",
+      "status": "verified",
+      "evidence": "orchestrator.ex:298-303 formats error with phase, artifact_path, agent_diagnostics, and reason. Tests verify blocked.error contains path and reason."
+    },
+    {
+      "criterion": "A repair turn is attempted when the phase allows repair",
+      "status": "verified",
+      "evidence": "agent_runner.ex:281-306 runs repair_prompt via run_turn when load_workflow_artifact returns error. Tests in core_test.exs verify repair turn is sent."
+    },
+    {
+      "criterion": "Repair success resumes the workflow",
+      "status": "verified",
+      "evidence": "agent_runner.ex:296-298 returns {:ok, repair_session} on success. Tests verify workflow_plan.json is created after repair."
+    },
+    {
+      "criterion": "Repair failure moves the issue into an explicit failed or blocked path with an actionable reason",
+      "status": "verified",
+      "evidence": "orchestrator.ex:446-454 detects workflow_artifact_repair_failed and blocks issue. Test workflow_orchestrator_test.exs:368-419 verifies blocking behavior."
+    },
+    {
+      "criterion": "Add regression tests for missing artifact and invalid artifact paths",
+      "status": "completed",
+      "evidence": "Added 11 tests to workflow_artifacts_test.exs, 7 tests to workflow_orchestrator_test.exs, and 1 test to core_test.exs."
+    }
+  ],
+  "test_coverage_summary": {
+    "workflow_artifacts_test.exs": [
+      "Missing plan artifact returns :enoent",
+      "Missing completion packet returns :enoent",
+      "Missing review decision returns :enoent",
+      "Invalid JSON in plan returns decode error",
+      "Invalid JSON in completion packet returns decode error",
+      "Invalid JSON in review decision returns decode error",
+      "Plan with missing required fields rejected",
+      "Completion packet with missing required fields rejected",
+      "Review decision with missing required fields rejected",
+      "Structurally invalid plan rejected",
+      "Structurally invalid completion packet rejected",
+      "Structurally invalid review decision rejected"
+    ],
+    "workflow_orchestrator_test.exs": [
+      "Missing plan artifact blocks with diagnostic reason",
+      "Invalid JSON plan blocks with diagnostic reason",
+      "Invalid schema plan blocks with diagnostic reason",
+      "Missing completion packet blocks with diagnostic reason",
+      "Invalid JSON completion packet blocks with diagnostic reason",
+      "Missing review decision blocks with diagnostic reason",
+      "Invalid JSON review decision blocks with diagnostic reason",
+      "Artifact repair failure blocks instead of retry"
+    ],
+    "core_test.exs": [
+      "Planning artifact repair creates workflow_plan.json",
+      "Execution artifact repair prompt includes full schema",
+      "Review artifact repair creates review_decision.json"
+    ]
+  }
+}

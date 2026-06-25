@@ -309,6 +309,177 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
     refute Enum.any?(files, &String.contains?(&1, ".tmp"))
   end
 
+  test "load helpers return :enoent for missing plan artifact" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace =
+      Path.join(System.tmp_dir!(), "workflow-artifacts-missing-plan-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    assert {:error, :enoent} = Artifacts.load_plan(workspace)
+
+    File.rm_rf!(workspace)
+  end
+
+  test "load helpers return :enoent for missing completion packet" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace =
+      Path.join(System.tmp_dir!(), "workflow-artifacts-missing-completion-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    assert {:error, :enoent} = Artifacts.load_completion_packet(workspace)
+
+    File.rm_rf!(workspace)
+  end
+
+  test "load helpers return :enoent for missing review decision" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace =
+      Path.join(System.tmp_dir!(), "workflow-artifacts-missing-review-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    assert {:error, :enoent} = Artifacts.load_review_decision(workspace)
+
+    File.rm_rf!(workspace)
+  end
+
+  test "load helpers return decode error for invalid JSON in plan" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace =
+      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-json-plan-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.write!(Artifacts.workflow_plan_path(workspace), "{invalid json")
+
+    assert match?({:error, %Jason.DecodeError{}}, Artifacts.load_plan(workspace))
+
+    File.rm_rf!(workspace)
+  end
+
+  test "load helpers return decode error for invalid JSON in completion packet" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace =
+      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-json-completion-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.write!(Artifacts.completion_packet_path(workspace), "{invalid json")
+
+    assert match?({:error, %Jason.DecodeError{}}, Artifacts.load_completion_packet(workspace))
+
+    File.rm_rf!(workspace)
+  end
+
+  test "load helpers return decode error for invalid JSON in review decision" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace =
+      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-json-review-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.write!(Artifacts.review_decision_path(workspace), "{invalid json")
+
+    assert match?({:error, %Jason.DecodeError{}}, Artifacts.load_review_decision(workspace))
+
+    File.rm_rf!(workspace)
+  end
+
+  test "validate_plan rejects plan with missing required fields" do
+    assert {:error, :invalid_workflow_plan} = Artifacts.validate_plan(%{})
+    assert {:error, :invalid_workflow_plan} = Artifacts.validate_plan(%{"kind" => "direct_execution"})
+    assert {:error, :invalid_workflow_plan} = Artifacts.validate_plan(%{"summary" => "test"})
+  end
+
+  test "validate_completion_packet rejects packet with missing required fields" do
+    assert {:error, :invalid_completion_packet} = Artifacts.validate_completion_packet(%{})
+    assert {:error, :invalid_completion_packet} = Artifacts.validate_completion_packet(%{"outcome" => "completed"})
+    assert {:error, :invalid_completion_packet} = Artifacts.validate_completion_packet(%{"outcome" => "completed", "summary" => "test"})
+  end
+
+  test "validate_review_decision rejects decision with missing required fields" do
+    assert {:error, :invalid_review_decision} = Artifacts.validate_review_decision(%{})
+    assert {:error, :invalid_review_decision} = Artifacts.validate_review_decision(%{"decision" => "pass"})
+    assert {:error, :invalid_review_decision} = Artifacts.validate_review_decision(%{"decision" => "pass", "summary" => "test"})
+  end
+
+  test "load helpers return validation error for structurally invalid plan" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace =
+      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-struct-plan-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.workflow_plan_path(workspace),
+      Jason.encode!(%{"kind" => "unknown_kind", "summary" => "test", "confidence" => "high"})
+    )
+
+    assert {:error, :invalid_workflow_plan} = Artifacts.load_plan(workspace)
+
+    File.rm_rf!(workspace)
+  end
+
+  test "load helpers return validation error for structurally invalid completion packet" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace =
+      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-struct-completion-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.completion_packet_path(workspace),
+      Jason.encode!(%{"outcome" => "completed", "summary" => "test"})
+    )
+
+    assert {:error, :invalid_completion_packet} = Artifacts.load_completion_packet(workspace)
+
+    File.rm_rf!(workspace)
+  end
+
+  test "load helpers return validation error for structurally invalid review decision" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace =
+      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-struct-review-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.review_decision_path(workspace),
+      Jason.encode!(%{"decision" => "unknown", "summary" => "test", "confidence" => "high"})
+    )
+
+    assert {:error, :invalid_review_decision} = Artifacts.load_review_decision(workspace)
+
+    File.rm_rf!(workspace)
+  end
+
   test "registry load_by_root_identifier rejects invalid registry structure" do
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: Path.join(System.tmp_dir!(), "workflow-registry-root"),
