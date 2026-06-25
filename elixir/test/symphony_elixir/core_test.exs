@@ -2744,6 +2744,141 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "AgentRunner review artifact repair prompt includes valid review decision schema" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-artifact-repair-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      codex_script = Path.join(test_root, "fake_codex.py")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_script, """
+      import json
+      import os
+      import sys
+
+      trace_file = os.environ["SYMP_TEST_CODEx_TRACE"]
+      turn_count = 0
+
+      def send(message):
+          print(json.dumps(message), flush=True)
+
+      def prompt_text(message):
+          return "\\n".join(
+              part.get("text", "")
+              for part in message.get("params", {}).get("input", [])
+              if isinstance(part, dict)
+          )
+
+      for line in sys.stdin:
+          message = json.loads(line)
+          method = message.get("method")
+          request_id = message.get("id")
+
+          if method == "initialize":
+              send({"id": request_id, "result": {}})
+          elif method == "initialized":
+              pass
+          elif method == "thread/start":
+              send({"id": request_id, "result": {"thread": {"id": "thread-review-repair"}}})
+          elif method == "turn/start":
+              turn_count += 1
+              text = prompt_text(message)
+              with open(trace_file, "a", encoding="utf-8") as handle:
+                  handle.write(f"TURN:{turn_count}\\n{text}\\n")
+
+              if turn_count == 2:
+                  os.makedirs(".symphony", exist_ok=True)
+                  with open(".symphony/review_decision.json", "w", encoding="utf-8") as handle:
+                      json.dump({
+                          "decision": "pass",
+                          "summary": "review repair produced valid decision",
+                          "confidence": "medium"
+                      }, handle)
+
+              send({"id": request_id, "result": {"turn": {"id": f"turn-{turn_count}"}}})
+              send({"method": "turn/completed"})
+          elif request_id is not None:
+              send({"id": request_id, "result": {}})
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      exec python3 -u "#{codex_script}"
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        agents: %{
+          codex: %{
+            kind: "codex_app_server",
+            command: "#{codex_binary} app-server",
+            timeout_ms: 10_000,
+            read_timeout_ms: 5_000
+          }
+        },
+        routing: %{default_agent: "codex"},
+        orchestration: %{
+          enabled: true,
+          planner_agent: "codex",
+          reviewer_agent: "codex",
+          artifact_dir: ".symphony",
+          planning_max_turns: 1,
+          review_max_turns: 1
+        },
+        max_turns: 1
+      )
+
+      issue = %Issue{
+        id: "issue-review-repair",
+        identifier: "MT-907",
+        title: "审查产物修复",
+        description: "第一轮完成但没有写 review_decision.json",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-907",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 workflow_phase: :review,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      workspace = Path.join(workspace_root, issue.identifier)
+      assert File.exists?(Path.join([workspace, ".symphony", "review_decision.json"]))
+
+      trace = File.read!(trace_file)
+      assert trace =~ "上一轮 review 已正常结束，但缺少必需 artifact"
+      assert trace =~ "decision"
+      assert trace =~ "summary"
+      assert trace =~ "confidence"
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
   test "prompt builder adds continuation guidance for retries" do
     workflow_prompt = "{% if attempt %}Retry #" <> "{{ attempt }}" <> "{% endif %}"
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)

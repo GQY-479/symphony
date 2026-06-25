@@ -1,5 +1,1 @@
-{
-  "decision": "pass",
-  "summary": "All acceptance criteria met. Presenter includes workflow_phase and workflow_artifact_path for running, retry, and blocked entries. Dashboard tables show Phase, Agent, and Artifact columns. 13 focused tests pass covering all entry types and phase-agnostic behavior. Extensions test updated for new API shape. Implementation does not assume a fixed phase sequence.",
-  "confidence": "high"
-}
+{}

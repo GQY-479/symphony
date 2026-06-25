@@ -365,27 +365,29 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     refute Map.has_key?(updated_state.retry_attempts, root_issue.id)
   end
 
-  test "workflow phase ACP timeout without artifact blocks instead of retrying" do
+  test "planning phase 产出 invalid JSON plan 时阻塞并保留可诊断原因" do
     workspace_root =
-      Path.join(System.tmp_dir!(), "workflow-orchestrator-timeout-missing-plan-#{System.unique_integer([:positive])}")
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-invalid-plan-#{System.unique_integer([:positive])}")
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
       workspace_root: workspace_root,
-      agents: %{mimocode: %{kind: "acp_stdio", command: "mimo"}},
-      routing: %{default_agent: "mimocode"},
-      orchestration: %{enabled: true, planner_agent: "mimocode", reviewer_agent: "mimocode", artifact_dir: ".symphony"}
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
     )
 
     root_issue = %Issue{
-      id: "root-timeout-missing-plan",
-      identifier: "YQE-760",
-      title: "规划超时没有 artifact",
+      id: "root-invalid-plan",
+      identifier: "YQE-INVALID-PLAN",
+      title: "规划产物格式无效",
       state: "In Progress"
     }
 
     workspace = Path.join(workspace_root, root_issue.identifier)
-    File.mkdir_p!(workspace)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(Artifacts.workflow_plan_path(workspace), "{invalid json")
 
     state = %{workflow_state() | claimed: MapSet.new([root_issue.id])}
 
@@ -393,33 +395,252 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
       root_issue
       |> running_entry(workspace, :planning)
       |> Map.merge(%{
-        agent_id: "mimocode",
-        agent_kind: "acp_stdio",
-        session_id: "session-timeout-missing-plan"
+        agent_id: "codex",
+        agent_kind: "codex_app_server",
+        session_id: "session-invalid-plan"
       })
 
-    reason =
-      {%AgentRunner.Error{
-         message: "Agent run failed for issue_id=#{root_issue.id} issue_identifier=#{root_issue.identifier}: :acp_timeout",
-         reason: :acp_timeout
-       }, []}
-
     updated_state =
-      Orchestrator.handle_agent_down_for_test(reason, state, root_issue.id, running_entry)
+      Orchestrator.handle_agent_down_for_test(:normal, state, root_issue.id, running_entry)
 
-    refute Map.has_key?(updated_state.retry_attempts, root_issue.id)
-    assert MapSet.member?(updated_state.claimed, root_issue.id)
+    refute MapSet.member?(updated_state.completed, root_issue.id)
     assert blocked = Map.fetch!(updated_state.blocked, root_issue.id)
     assert blocked.workflow_phase == :planning
-    assert blocked.agent_id == "mimocode"
-    assert blocked.agent_kind == "acp_stdio"
-    assert blocked.session_id == "session-timeout-missing-plan"
-    assert blocked.error =~ "planning phase timed out before producing required artifact"
+    assert blocked.error =~ "planning artifact invalid"
     assert blocked.error =~ ".symphony/workflow_plan.json"
-    assert blocked.error =~ "agent_id=mimocode"
-    assert blocked.error =~ "agent_kind=acp_stdio"
-    assert blocked.error =~ "session_id=session-timeout-missing-plan"
-    assert blocked.error =~ "reason=:acp_timeout"
+    assert blocked.error =~ "session_id=session-invalid-plan"
+    refute Map.has_key?(updated_state.retry_attempts, root_issue.id)
+  end
+
+  test "planning phase 产出 invalid schema plan 时阻塞并保留可诊断原因" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-invalid-schema-plan-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{
+      id: "root-invalid-schema-plan",
+      identifier: "YQE-INVALID-SCHEMA",
+      title: "规划产物结构无效",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.workflow_plan_path(workspace),
+      Jason.encode!(%{"kind" => "unknown_kind", "summary" => "test", "confidence" => "high"})
+    )
+
+    state = %{workflow_state() | claimed: MapSet.new([root_issue.id])}
+
+    running_entry =
+      root_issue
+      |> running_entry(workspace, :planning)
+      |> Map.merge(%{
+        agent_id: "codex",
+        agent_kind: "codex_app_server",
+        session_id: "session-invalid-schema-plan"
+      })
+
+    updated_state =
+      Orchestrator.handle_agent_down_for_test(:normal, state, root_issue.id, running_entry)
+
+    refute MapSet.member?(updated_state.completed, root_issue.id)
+    assert blocked = Map.fetch!(updated_state.blocked, root_issue.id)
+    assert blocked.workflow_phase == :planning
+    assert blocked.error =~ "planning artifact invalid"
+    assert blocked.error =~ ".symphony/workflow_plan.json"
+    refute Map.has_key?(updated_state.retry_attempts, root_issue.id)
+  end
+
+  test "execution phase 正常结束但缺少 completion packet 时阻塞并保留可诊断原因" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-missing-completion-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    issue = %Issue{
+      id: "derived-missing-completion",
+      identifier: "YQE-MISSING-COMPLETION",
+      title: "执行没有产出 completion packet",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    state = %{workflow_state() | claimed: MapSet.new([issue.id])}
+
+    running_entry =
+      issue
+      |> running_entry(workspace, :execution)
+      |> Map.merge(%{
+        agent_id: "codex",
+        agent_kind: "codex_app_server",
+        session_id: "session-missing-completion"
+      })
+
+    updated_state =
+      Orchestrator.handle_agent_down_for_test(:normal, state, issue.id, running_entry)
+
+    refute MapSet.member?(updated_state.completed, issue.id)
+    assert blocked = Map.fetch!(updated_state.blocked, issue.id)
+    assert blocked.workflow_phase == :execution
+    assert blocked.error =~ "execution phase completed without required artifact"
+    assert blocked.error =~ ".symphony/completion_packet.json"
+    assert blocked.error =~ "session_id=session-missing-completion"
+    assert blocked.error =~ "reason=:enoent"
+    refute Map.has_key?(updated_state.retry_attempts, issue.id)
+  end
+
+  test "execution phase 结束但 completion packet 是 invalid JSON 时阻塞" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-invalid-completion-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    issue = %Issue{
+      id: "derived-invalid-completion",
+      identifier: "YQE-INVALID-COMPLETION",
+      title: "执行产出无效 completion packet",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.write!(Artifacts.completion_packet_path(workspace), "{invalid json")
+
+    state = %{workflow_state() | claimed: MapSet.new([issue.id])}
+
+    running_entry =
+      issue
+      |> running_entry(workspace, :execution)
+      |> Map.merge(%{
+        agent_id: "codex",
+        agent_kind: "codex_app_server",
+        session_id: "session-invalid-completion"
+      })
+
+    updated_state =
+      Orchestrator.handle_agent_down_for_test(:normal, state, issue.id, running_entry)
+
+    refute MapSet.member?(updated_state.completed, issue.id)
+    assert blocked = Map.fetch!(updated_state.blocked, issue.id)
+    assert blocked.workflow_phase == :execution
+    assert blocked.error =~ "execution artifact invalid"
+    assert blocked.error =~ ".symphony/completion_packet.json"
+    refute Map.has_key?(updated_state.retry_attempts, issue.id)
+  end
+
+  test "review phase 正常结束但缺少 review decision 时阻塞并保留可诊断原因" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-missing-review-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    issue = %Issue{
+      id: "derived-missing-review",
+      identifier: "YQE-MISSING-REVIEW",
+      title: "审查没有产出 review decision",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    state = %{workflow_state() | claimed: MapSet.new([issue.id])}
+
+    running_entry =
+      issue
+      |> running_entry(workspace, :review)
+      |> Map.merge(%{
+        agent_id: "codex",
+        agent_kind: "codex_app_server",
+        session_id: "session-missing-review"
+      })
+
+    updated_state =
+      Orchestrator.handle_agent_down_for_test(:normal, state, issue.id, running_entry)
+
+    refute MapSet.member?(updated_state.completed, issue.id)
+    assert blocked = Map.fetch!(updated_state.blocked, issue.id)
+    assert blocked.workflow_phase == :review
+    assert blocked.error =~ "review phase completed without required artifact"
+    assert blocked.error =~ ".symphony/review_decision.json"
+    assert blocked.error =~ "session_id=session-missing-review"
+    assert blocked.error =~ "reason=:enoent"
+    refute Map.has_key?(updated_state.retry_attempts, issue.id)
+  end
+
+  test "review phase 结束但 review decision 是 invalid JSON 时阻塞" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-orchestrator-invalid-review-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
+      routing: %{default_agent: "codex"},
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    issue = %Issue{
+      id: "derived-invalid-review",
+      identifier: "YQE-INVALID-REVIEW",
+      title: "审查产出无效 review decision",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+    File.write!(Artifacts.review_decision_path(workspace), "{invalid json")
+
+    state = %{workflow_state() | claimed: MapSet.new([issue.id])}
+
+    running_entry =
+      issue
+      |> running_entry(workspace, :review)
+      |> Map.merge(%{
+        agent_id: "codex",
+        agent_kind: "codex_app_server",
+        session_id: "session-invalid-review"
+      })
+
+    updated_state =
+      Orchestrator.handle_agent_down_for_test(:normal, state, issue.id, running_entry)
+
+    refute MapSet.member?(updated_state.completed, issue.id)
+    assert blocked = Map.fetch!(updated_state.blocked, issue.id)
+    assert blocked.workflow_phase == :review
+    assert blocked.error =~ "review artifact invalid"
+    assert blocked.error =~ ".symphony/review_decision.json"
+    refute Map.has_key?(updated_state.retry_attempts, issue.id)
   end
 
   test "workflow artifact repair failed 时阻塞 issue 而不是继续重试" do
@@ -779,7 +1000,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
 
     assert MapSet.member?(updated_state.completed, reviewed_issue.id)
     refute MapSet.member?(updated_state.claimed, reviewed_issue.id)
-    assert MapSet.member?(updated_state.claimed, root_issue.id)
+    refute MapSet.member?(updated_state.claimed, root_issue.id)
     refute Map.has_key?(updated_state.blocked, root_issue.id)
 
     refute Map.has_key?(updated_state.retry_attempts, reviewed_issue.id)
