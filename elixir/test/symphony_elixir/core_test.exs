@@ -751,7 +751,7 @@ defmodule SymphonyElixir.CoreTest do
       assignee_id: "codex-user"
     }
 
-    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+    assert {:ok, %{id: "mimocode", kind: "cli_run", routing_reason: %{source: :label, matched: "agent:mimo"}}} =
              Router.resolve(issue, Config.settings!())
   end
 
@@ -769,10 +769,10 @@ defmodule SymphonyElixir.CoreTest do
 
     settings = Config.settings!()
 
-    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+    assert {:ok, %{id: "mimocode", kind: "cli_run", routing_reason: %{source: :assignee, matched: "mimo-user"}}} =
              Router.resolve(%Issue{assignee_id: "mimo-user"}, settings)
 
-    assert {:ok, %{id: "codex", kind: "codex_app_server"}} =
+    assert {:ok, %{id: "codex", kind: "codex_app_server", routing_reason: %{source: :default}}} =
              Router.resolve(%Issue{assignee_id: "someone-else"}, settings)
   end
 
@@ -791,10 +791,10 @@ defmodule SymphonyElixir.CoreTest do
         }
       })
 
-    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+    assert {:ok, %{id: "mimocode", kind: "cli_run", routing_reason: %{source: :label}}} =
              Router.resolve(%Issue{labels: ["agent:mimo"]}, settings)
 
-    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+    assert {:ok, %{id: "mimocode", kind: "cli_run", routing_reason: %{source: :assignee, matched: "mimo-user"}}} =
              Router.resolve(%Issue{labels: nil, assignee_id: "mimo-user"}, settings)
   end
 

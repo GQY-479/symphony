@@ -1,0 +1,5 @@
+{
+  "kind": "direct_execution",
+  "summary": "Add routing reason diagnostics to agent dispatch logs. The Router.resolve function currently returns only {:ok, resolved_agent} or {:error, reason}, with no routing trace. We will extend it to return a third tuple element containing the routing reason (label/assignee/default_agent), the matched label or assignee when applicable, then log this in the orchestrator dispatch path. Existing routing behavior is preserved by keeping the first two tuple elements unchanged. Tests will cover label route, assignee route, and default route diagnostics.",
+  "confidence": "high"
+}

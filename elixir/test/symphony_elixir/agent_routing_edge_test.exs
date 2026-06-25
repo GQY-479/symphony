@@ -52,7 +52,7 @@ defmodule SymphonyElixir.AgentRoutingEdgeTest do
       routing: %Routing{default_agent: "codex", by_label: nil, by_assignee: nil}
     }
 
-    assert {:ok, %{id: "codex"}} =
+    assert {:ok, %{id: "codex", routing_reason: %{source: :default, matched: nil}}} =
              Router.resolve(%Issue{labels: ["whatever"], assignee_id: "nobody"}, settings)
   end
 
@@ -66,7 +66,7 @@ defmodule SymphonyElixir.AgentRoutingEdgeTest do
         routing: %{default_agent: "codex", by_label: %{"123" => "mimocode"}}
       })
 
-    assert {:ok, %{id: "mimocode"}} =
+    assert {:ok, %{id: "mimocode", routing_reason: %{source: :label, matched: "123"}}} =
              Router.resolve(%Issue{labels: [123]}, settings)
   end
 
@@ -124,5 +124,45 @@ defmodule SymphonyElixir.AgentRoutingEdgeTest do
 
     assert settings.routing.by_assignee == %{}
     assert settings.routing.by_label == %{}
+  end
+
+  test "assignee route diagnostics reports source and matched assignee" do
+    settings =
+      parse!(%{
+        agents: %{
+          mimocode: %{kind: "acp_stdio", command: "mimo-code", args: ["acp"]}
+        },
+        routing: %{default_agent: "mimocode", by_assignee: %{"user-123" => "mimocode"}}
+      })
+
+    assert {:ok, %{id: "mimocode", routing_reason: %{source: :assignee, matched: "user-123"}}} =
+             Router.resolve(%Issue{labels: [], assignee_id: "user-123"}, settings)
+  end
+
+  test "label route diagnostics reports source and matched label" do
+    settings =
+      parse!(%{
+        agents: %{
+          mimocode: %{kind: "acp_stdio", command: "mimo-code", args: ["acp"]},
+          codex: %{kind: "codex_app_server", command: "codex app-server"}
+        },
+        routing: %{default_agent: "codex", by_label: %{"agent:mimo" => "mimocode"}}
+      })
+
+    assert {:ok, %{id: "mimocode", routing_reason: %{source: :label, matched: "agent:mimo"}}} =
+             Router.resolve(%Issue{labels: ["agent:mimo"], assignee_id: nil}, settings)
+  end
+
+  test "default route diagnostics reports source with nil matched" do
+    settings =
+      parse!(%{
+        agents: %{
+          mimocode: %{kind: "acp_stdio", command: "mimo-code", args: ["acp"]}
+        },
+        routing: %{default_agent: "mimocode"}
+      })
+
+    assert {:ok, %{id: "mimocode", routing_reason: %{source: :default, matched: nil}}} =
+             Router.resolve(%Issue{labels: [], assignee_id: nil}, settings)
   end
 end

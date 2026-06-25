@@ -1,0 +1,5 @@
+{
+  "decision": "pass",
+  "summary": "All acceptance criteria are satisfied. Router.resolve returns routing_reason with source (label/assignee/default) and matched fields. Orchestrator dispatch logs include routing_reason via routing_reason_log/1 at orchestrator.ex:1483. Three dedicated tests cover label route, assignee route, and default route diagnostics. Existing routing behavior is unchanged (routing_reason is additive metadata). mix test and mix specs.check both pass cleanly.",
+  "confidence": "high"
+}
