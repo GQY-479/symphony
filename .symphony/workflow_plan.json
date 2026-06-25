@@ -1,0 +1,17 @@
+{
+  "kind": "direct_execution",
+  "summary": "Dashboard shows each issue current workflow phase, responsible agent, and workflow artifact path",
+  "confidence": "high",
+  "agent_id": "mimocode",
+  "acceptance_criteria": [
+    "Active issues show a current workflow phase or a clear unavailable value",
+    "Completed, failed, or blocked issues still expose the last known phase in the runtime state or dashboard detail",
+    "The implementation does not assume every issue follows the same fixed phase sequence",
+    "Add focused tests for the presenter or dashboard state transformation"
+  ],
+  "validation": [
+    "Dashboard running table includes workflow phase column",
+    "Presenter includes workflow_phase and agent_id in entry payloads",
+    "Tests verify presenter state transformation includes workflow fields"
+  ]
+}
