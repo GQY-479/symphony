@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, Workflow.Artifacts}
+  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -100,9 +100,6 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_status(nil, nil, _blocked), do: "blocked"
 
   defp running_entry_payload(entry) do
-    phase = Map.get(entry, :workflow_phase)
-    workspace = Map.get(entry, :workspace_path)
-
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
@@ -111,11 +108,10 @@ defmodule SymphonyElixirWeb.Presenter do
       agent_id: Map.get(entry, :agent_id),
       agent_kind: Map.get(entry, :agent_kind),
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: workspace,
+      workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
-      workflow_phase: phase,
-      workflow_artifact_path: workflow_artifact_path(phase, workspace),
+      workflow_phase: Map.get(entry, :workflow_phase),
       workflow_root_issue_id: Map.get(entry, :workflow_root_issue_id),
       workflow_blocked_reason: workflow_blocked_reason(entry),
       last_event: entry.last_codex_event,
@@ -131,9 +127,6 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp retry_entry_payload(entry) do
-    phase = Map.get(entry, :workflow_phase)
-    workspace = Map.get(entry, :workspace_path)
-
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
@@ -144,32 +137,29 @@ defmodule SymphonyElixirWeb.Presenter do
       agent_id: Map.get(entry, :agent_id),
       agent_kind: Map.get(entry, :agent_kind),
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: workspace,
-      workflow_phase: phase,
-      workflow_artifact_path: workflow_artifact_path(phase, workspace),
+      workspace_path: Map.get(entry, :workspace_path),
+      workflow_phase: Map.get(entry, :workflow_phase),
       workflow_root_issue_id: Map.get(entry, :workflow_root_issue_id),
       workflow_blocked_reason: workflow_blocked_reason(entry)
     }
   end
 
   defp blocked_entry_payload(entry) do
-    phase = Map.get(entry, :workflow_phase)
-    workspace = Map.get(entry, :workspace_path)
-
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       issue_url: Map.get(entry, :issue_url),
       state: entry.state,
       error: entry.error,
+      reason_category: Map.get(entry, :reason_category),
+      reason: Map.get(entry, :reason),
       agent_id: Map.get(entry, :agent_id),
       agent_kind: Map.get(entry, :agent_kind),
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: workspace,
+      workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
       blocked_at: iso8601(entry.blocked_at),
-      workflow_phase: phase,
-      workflow_artifact_path: workflow_artifact_path(phase, workspace),
+      workflow_phase: Map.get(entry, :workflow_phase),
       workflow_root_issue_id: Map.get(entry, :workflow_root_issue_id),
       workflow_blocked_reason: workflow_blocked_reason(entry),
       last_event: entry.last_codex_event,
@@ -224,6 +214,8 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: blocked.session_id,
       state: blocked.state,
       error: blocked.error,
+      reason_category: Map.get(blocked, :reason_category),
+      reason: Map.get(blocked, :reason),
       agent_id: Map.get(blocked, :agent_id),
       agent_kind: Map.get(blocked, :agent_kind),
       workflow_phase: Map.get(blocked, :workflow_phase),
@@ -242,19 +234,6 @@ defmodule SymphonyElixirWeb.Presenter do
       (blocked && Map.get(blocked, :workspace_path)) ||
       Path.join(Config.settings!().workspace.root, issue_identifier)
   end
-
-  defp workflow_artifact_path(nil, _workspace), do: nil
-
-  defp workflow_artifact_path(phase, workspace) when is_binary(workspace) do
-    case phase do
-      :planning -> Artifacts.workflow_plan_path(workspace)
-      :execution -> Artifacts.completion_packet_path(workspace)
-      :review -> Artifacts.review_decision_path(workspace)
-      _ -> nil
-    end
-  end
-
-  defp workflow_artifact_path(_phase, _workspace), do: nil
 
   defp workspace_host(running, retry, blocked) do
     (running && Map.get(running, :worker_host)) ||

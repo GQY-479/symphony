@@ -594,8 +594,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive {:graphql_called, _state_lookup_query, %{teamId: "team-with-label", stateName: "Todo"}}
     assert_receive {:graphql_called, _label_lookup_query, %{labelNames: ["symphony-local-test"]}}
 
-    assert_receive {:graphql_called, create_issue_query,
-                    %{teamId: "team-with-label", stateId: "state-right-team", labelIds: ["label-1"]}}
+    assert_receive {:graphql_called, create_issue_query, %{teamId: "team-with-label", stateId: "state-right-team", labelIds: ["label-1"]}}
 
     assert create_issue_query =~ "issueCreate"
   end
@@ -724,17 +723,16 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "workspace_path" => nil,
                  "session_id" => "thread-http",
                  "turn_count" => 7,
-                  "workflow_phase" => "review",
-                  "workflow_artifact_path" => nil,
-                  "workflow_root_issue_id" => "MT-ROOT",
-                  "workflow_blocked_reason" => nil,
-                  "last_event" => "notification",
-                  "last_message" => "rendered",
-                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
-                  "last_event_at" => nil,
-                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
-                }
-              ],
+                 "workflow_phase" => "review",
+                 "workflow_root_issue_id" => "MT-ROOT",
+                 "workflow_blocked_reason" => nil,
+                 "last_event" => "notification",
+                 "last_message" => "rendered",
+                 "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
+                 "last_event_at" => nil,
+                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+               }
+             ],
              "retrying" => [
                %{
                  "issue_id" => "issue-retry",
@@ -747,12 +745,11 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "agent_kind" => "cli_run",
                  "worker_host" => nil,
                  "workspace_path" => nil,
-                  "workflow_phase" => "planning",
-                  "workflow_artifact_path" => nil,
-                  "workflow_root_issue_id" => "MT-ROOT",
-                  "workflow_blocked_reason" => "boom"
-                }
-              ],
+                 "workflow_phase" => "planning",
+                 "workflow_root_issue_id" => "MT-ROOT",
+                 "workflow_blocked_reason" => "boom"
+               }
+             ],
              "blocked" => [
                %{
                  "issue_id" => "issue-blocked",
@@ -760,21 +757,22 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_url" => "https://example.org/issues/MT-BLOCKED",
                  "state" => "In Progress",
                  "error" => "codex turn requires operator input",
+                 "reason_category" => "operator_input_needed",
+                 "reason" => "codex turn requires operator input",
                  "agent_id" => "mimocode",
                  "agent_kind" => "cli_run",
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
                  "session_id" => "thread-blocked",
                  "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
-                  "workflow_phase" => "execution",
-                  "workflow_artifact_path" => "/workspaces/MT-BLOCKED/.symphony/completion_packet.json",
-                  "workflow_root_issue_id" => "MT-ROOT",
-                  "workflow_blocked_reason" => "codex turn requires operator input",
-                  "last_event" => "turn_input_required",
-                  "last_message" => "turn blocked: waiting for user input",
-                  "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
-                }
-              ],
+                 "workflow_phase" => "execution",
+                 "workflow_root_issue_id" => "MT-ROOT",
+                 "workflow_blocked_reason" => "codex turn requires operator input",
+                 "last_event" => "turn_input_required",
+                 "last_message" => "turn blocked: waiting for user input",
+                 "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
+               }
+             ],
              "codex_totals" => %{
                "input_tokens" => 4,
                "output_tokens" => 8,
@@ -1267,6 +1265,8 @@ defmodule SymphonyElixir.ExtensionsTest do
           issue_url: "https://example.org/issues/MT-BLOCKED",
           state: "In Progress",
           error: "codex turn requires operator input",
+          reason_category: :operator_input_needed,
+          reason: "codex turn requires operator input",
           agent_id: "mimocode",
           agent_kind: "cli_run",
           worker_host: "dm-dev2",

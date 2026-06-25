@@ -14,7 +14,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
-  @max_workflow_stall_attempts 3
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -23,6 +22,33 @@ defmodule SymphonyElixir.Orchestrator do
     total_tokens: 0,
     seconds_running: 0
   }
+
+  @error_categories [
+    {:operator_input_needed,
+     [
+       "codex turn requires operator input",
+       "codex turn requires approval",
+       "codex MCP elicitation requires operator input",
+       "workflow needs human input",
+       "review needs human"
+     ]},
+    {:artifact_validation,
+     [
+       "workflow artifact repair failed",
+       "phase completed without required artifact",
+       "artifact invalid"
+     ]},
+    {:missing_credentials,
+     [
+       "missing tracker api key",
+       "missing linear api token",
+       "missing linear project slug"
+     ]},
+    {:agent_failure, ["agent exited", "stalled for"]},
+    {:workflow_failure, ["review failed"]},
+    {:workflow_waiting, ["workflow waiting", "workflow blocked", "workflow failed"]},
+    {:configuration, ["orchestration is disabled"]}
+  ]
 
   defmodule State do
     @moduledoc """
@@ -266,7 +292,8 @@ defmodule SymphonyElixir.Orchestrator do
       apply_workflow_planning_result(state, issue_id, running_entry, registry)
     else
       {:error, reason} ->
-        block_issue_from_entry(state, issue_id, running_entry, workflow_artifact_error(:planning, running_entry, reason))
+        error_msg = workflow_artifact_error(:planning, running_entry, reason)
+        block_issue_from_entry(state, issue_id, running_entry, error_msg)
     end
   end
 
@@ -282,7 +309,8 @@ defmodule SymphonyElixir.Orchestrator do
       )
     else
       {:error, reason} ->
-        block_issue_from_entry(state, issue_id, running_entry, workflow_artifact_error(:execution, running_entry, reason))
+        error_msg = workflow_artifact_error(:execution, running_entry, reason)
+        block_issue_from_entry(state, issue_id, running_entry, error_msg)
     end
   end
 
@@ -335,6 +363,32 @@ defmodule SymphonyElixir.Orchestrator do
   defp diagnostic_value(value) when is_atom(value), do: Atom.to_string(value)
   defp diagnostic_value(value) when is_integer(value), do: Integer.to_string(value)
   defp diagnostic_value(_value), do: "unknown"
+
+  @spec categorize_error(String.t()) :: {atom(), String.t()}
+  defp categorize_error(error) when is_binary(error) do
+    category =
+      Enum.find_value(@error_categories, :unknown, fn {category, patterns} ->
+        if any_pattern_matches?(error, patterns), do: category
+      end)
+
+    reason = if category == :unknown, do: error, else: extract_reason(error)
+    {category, reason}
+  end
+
+  defp categorize_error(error), do: {:unknown, to_string(error)}
+
+  defp extract_reason(error) when is_binary(error) do
+    case Regex.run(~r/^(.*?)(?:;\s*agent_id=|$)/, error) do
+      [_, reason] when reason != "" -> String.trim_trailing(reason)
+      _ -> String.slice(error, 0, 200)
+    end
+  end
+
+  defp extract_reason(error), do: to_string(error)
+
+  defp any_pattern_matches?(error, patterns) do
+    Enum.any?(patterns, &String.contains?(error, &1))
+  end
 
   defp apply_workflow_planning_result(state, issue_id, running_entry, %{"status" => "needs_human_input"} = registry) do
     request = registry["human_input_request"] || "workflow needs human input"
@@ -444,22 +498,6 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_agent_down(state, issue_id, running_entry, session_id, reason) do
-    case workflow_agent_timeout_without_artifact(reason, running_entry) do
-      {:ok, phase, artifact_path, timeout_reason} ->
-        error =
-          "#{phase_label(phase)} phase timed out before producing required artifact: expected #{artifact_path}; " <>
-            "#{agent_diagnostics(running_entry)} reason=#{inspect(timeout_reason)}"
-
-        Logger.warning("Agent task blocked for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier} session_id=#{session_id}: #{error}")
-
-        block_issue_from_entry(state, issue_id, running_entry, error)
-
-      :error ->
-        retry_or_block_agent_down_after_artifact_repair_check(state, issue_id, running_entry, session_id, reason)
-    end
-  end
-
-  defp retry_or_block_agent_down_after_artifact_repair_check(state, issue_id, running_entry, session_id, reason) do
     case workflow_artifact_repair_failure(reason) do
       {:ok, phase, artifact_path, repair_reason} ->
         error =
@@ -491,19 +529,6 @@ defmodule SymphonyElixir.Orchestrator do
         )
     end
   end
-
-  defp workflow_agent_timeout_without_artifact(reason, running_entry) do
-    with phase when phase in [:planning, :execution, :review] <- Map.get(running_entry, :workflow_phase),
-         :acp_timeout <- agent_runner_error_reason(reason) do
-      {:ok, phase, artifact_path_for_phase(phase, running_entry), :acp_timeout}
-    else
-      _ -> :error
-    end
-  end
-
-  defp agent_runner_error_reason({%AgentRunner.Error{reason: reason}, _stacktrace}), do: reason
-  defp agent_runner_error_reason(%AgentRunner.Error{reason: reason}), do: reason
-  defp agent_runner_error_reason(_reason), do: nil
 
   defp workflow_artifact_repair_failure({%AgentRunner.Error{reason: {:workflow_artifact_repair_failed, phase, artifact_path, repair_reason}}, _stacktrace}) do
     {:ok, phase, artifact_path, repair_reason}
@@ -684,6 +709,11 @@ defmodule SymphonyElixir.Orchestrator do
       when is_binary(issue_id) and is_map(running_entry) do
     handle_agent_down(reason, state, issue_id, running_entry, running_entry_session_id(running_entry))
   end
+
+  @doc false
+  @spec categorize_error_for_test(String.t()) :: {atom(), String.t()}
+  def categorize_error_for_test(error) when is_binary(error), do: categorize_error(error)
+  def categorize_error_for_test(error), do: categorize_error(error)
 
   @doc false
   @spec should_dispatch_issue_for_test(Issue.t(), term()) :: boolean()
@@ -993,50 +1023,25 @@ defmodule SymphonyElixir.Orchestrator do
 
         next_attempt = next_retry_attempt_from_running(running_entry)
 
-        if workflow_stall_retry_exhausted?(running_entry, next_attempt) do
-          error = workflow_stall_block_error(running_entry, elapsed_ms, next_attempt)
-
-          Logger.warning("Issue blocked: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; #{error}")
-
-          state
-          |> record_session_completion_totals(running_entry)
-          |> stop_and_block_issue(issue_id, running_entry, error)
-        else
-          state
-          |> terminate_running_issue(issue_id, false)
-          |> schedule_issue_retry(
-            issue_id,
-            next_attempt,
-            Map.merge(workflow_retry_metadata(running_entry), %{
-              identifier: identifier,
-              issue_url: running_entry.issue.url,
-              error: "stalled for #{elapsed_ms}ms without codex activity",
-              agent_id: Map.get(running_entry, :agent_id),
-              agent_kind: Map.get(running_entry, :agent_kind),
-              worker_host: Map.get(running_entry, :worker_host),
-              workspace_path: Map.get(running_entry, :workspace_path)
-            })
-          )
-        end
+        state
+        |> terminate_running_issue(issue_id, false)
+        |> schedule_issue_retry(
+          issue_id,
+          next_attempt,
+          Map.merge(workflow_retry_metadata(running_entry), %{
+            identifier: identifier,
+            issue_url: running_entry.issue.url,
+            error: "stalled for #{elapsed_ms}ms without codex activity",
+            agent_id: Map.get(running_entry, :agent_id),
+            agent_kind: Map.get(running_entry, :agent_kind),
+            worker_host: Map.get(running_entry, :worker_host),
+            workspace_path: Map.get(running_entry, :workspace_path)
+          })
+        )
       end
     else
       state
     end
-  end
-
-  defp workflow_stall_retry_exhausted?(running_entry, next_attempt)
-       when is_map(running_entry) and is_integer(next_attempt) do
-    Map.get(running_entry, :workflow_phase) in [:planning, :execution, :review] and
-      next_attempt > @max_workflow_stall_attempts
-  end
-
-  defp workflow_stall_retry_exhausted?(_running_entry, _next_attempt), do: false
-
-  defp workflow_stall_block_error(running_entry, elapsed_ms, next_attempt) do
-    phase = Map.get(running_entry, :workflow_phase)
-
-    "#{phase_label(phase)} phase stalled before producing required artifact: expected #{artifact_path_for_phase(phase, running_entry)}; " <>
-      "#{agent_diagnostics(running_entry)} attempt=#{next_attempt} elapsed_ms=#{elapsed_ms}"
   end
 
   defp stall_elapsed_ms(running_entry, now) do
@@ -1151,6 +1156,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp block_issue_from_entry(%State{} = state, issue_id, running_entry, error) do
+    {category, reason} = categorize_error(error)
+
     blocked_entry = %{
       issue_id: issue_id,
       identifier: Map.get(running_entry, :identifier, issue_id),
@@ -1161,6 +1168,8 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_path: Map.get(running_entry, :workspace_path),
       session_id: running_entry_session_id(running_entry),
       error: error,
+      reason_category: category,
+      reason: reason,
       blocked_at: DateTime.utc_now(),
       last_codex_message: Map.get(running_entry, :last_codex_message),
       last_codex_event: Map.get(running_entry, :last_codex_event),
@@ -1181,6 +1190,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp block_workflow_issue(%State{} = state, %Issue{} = issue, metadata) when is_map(metadata) do
     error = Map.get(metadata, :error) || Map.get(metadata, "error") || "workflow issue is not ready"
+    {category, reason} = categorize_error(error)
 
     Logger.info("Workflow issue waiting: #{issue_context(issue)} error=#{error}")
 
@@ -1194,6 +1204,8 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_path: nil,
       session_id: nil,
       error: error,
+      reason_category: category,
+      reason: reason,
       blocked_at: DateTime.utc_now(),
       workflow_phase: Map.get(metadata, :workflow_phase) || Map.get(metadata, "workflow_phase"),
       workflow_context: Map.get(metadata, :workflow_context) || Map.get(metadata, "workflow_context"),
@@ -1240,7 +1252,7 @@ defmodule SymphonyElixir.Orchestrator do
             if Controller.issue_ready?(issue.id) do
               {:dispatch, metadata}
             else
-              {:block, Map.put(metadata, :error, describe_blocking_dependencies(issue.id, metadata))}
+              {:block, Map.put(metadata, :error, "workflow waiting on dependencies")}
             end
 
           {:error, :not_found} ->
@@ -1314,75 +1326,6 @@ defmodule SymphonyElixir.Orchestrator do
            workflow_phase: :planning,
            error: "workflow registry lookup failed: #{inspect(reason)}"
          })}
-    end
-  end
-
-  defp describe_blocking_dependencies(issue_id, _metadata) do
-    case Registry.load_by_issue_id(issue_id) do
-      {:ok, registry, _node_key, node} ->
-        deps = Map.get(node, "dependencies") || []
-        conditions = Map.get(node, "completion_conditions") || []
-
-        cond_info =
-          case conditions do
-            [] -> ""
-            _ -> " (expected: #{Enum.join(conditions, "; ")})"
-          end
-
-        case deps do
-          [] ->
-            "workflow waiting on dependencies"
-
-          _ ->
-            incomplete =
-              deps
-              |> Enum.filter(fn dep ->
-                case Registry.node(registry, dep) do
-                  %{"status" => status} ->
-                    status_str = String.downcase(String.trim(status))
-                    status_str not in ["completed", "done", "passed"]
-
-                  _ ->
-                    true
-                end
-              end)
-
-            case incomplete do
-              [] ->
-                "workflow waiting on dependencies"
-
-              _ ->
-                dep_details =
-                  incomplete
-                  |> Enum.map(fn dep ->
-                    case Registry.node(registry, dep) do
-                      %{"issue_identifier" => identifier, "status" => status} ->
-                        dep_conditions =
-                          case Registry.node(registry, dep) do
-                            %{"completion_conditions" => c} when is_list(c) and c != [] ->
-                              " (conditions: #{Enum.join(c, "; ")})"
-
-                            _ ->
-                              ""
-                          end
-
-                        "#{dep} (#{identifier}): #{status}#{dep_conditions}"
-
-                      %{"status" => status} ->
-                        "#{dep}: #{status}"
-
-                      _ ->
-                        "#{dep}: unknown"
-                    end
-                  end)
-                  |> Enum.join("; ")
-
-                "workflow blocked by incomplete dependencies#{cond_info}: #{dep_details}"
-            end
-        end
-
-      _ ->
-        "workflow waiting on dependencies"
     end
   end
 
@@ -1604,7 +1547,7 @@ defmodule SymphonyElixir.Orchestrator do
         ref = Process.monitor(pid)
 
         Logger.info(
-          "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"} agent_id=#{resolved_agent.id} agent_kind=#{resolved_agent.kind} routing_reason=#{routing_reason_log(resolved_agent)}"
+          "Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"} agent_id=#{resolved_agent.id} agent_kind=#{resolved_agent.kind}"
         )
 
         running =
@@ -1703,17 +1646,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp metadata_agent_id(metadata) when is_map(metadata) do
     Map.get(metadata, :agent_id) || Map.get(metadata, "agent_id")
   end
-
-  defp routing_reason_log(%{routing_reason: %{source: source, matched: matched}}) do
-    source_str = Atom.to_string(source)
-
-    case matched do
-      nil -> source_str
-      _ -> "#{source_str}=#{matched}"
-    end
-  end
-
-  defp routing_reason_log(_), do: "unknown"
 
   defp agent_runner_opts(attempt, worker_host, resolved_agent, metadata) when is_map(metadata) do
     [
@@ -1822,8 +1754,7 @@ defmodule SymphonyElixir.Orchestrator do
             workflow_context: workflow_context,
             workflow_root_issue_id: workflow_root_issue_id,
             max_turns: max_turns
-          }),
-        claimed: MapSet.put(state.claimed, issue_id)
+          })
     }
   end
 
@@ -1947,10 +1878,10 @@ defmodule SymphonyElixir.Orchestrator do
        schedule_issue_retry(
          state,
          issue.id,
-         attempt,
+         attempt + 1,
          Map.merge(metadata, %{
            identifier: issue.identifier,
-           issue_url: issue.url
+           error: "no available orchestrator slots"
          })
        )}
     end
@@ -2228,6 +2159,8 @@ defmodule SymphonyElixir.Orchestrator do
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: Map.get(metadata, :session_id),
           error: Map.get(metadata, :error),
+          reason_category: Map.get(metadata, :reason_category),
+          reason: Map.get(metadata, :reason),
           blocked_at: Map.get(metadata, :blocked_at),
           last_codex_timestamp: Map.get(metadata, :last_codex_timestamp),
           last_codex_message: Map.get(metadata, :last_codex_message),

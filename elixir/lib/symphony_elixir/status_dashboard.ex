@@ -665,12 +665,21 @@ defmodule SymphonyElixir.StatusDashboard do
     identifier = Map.get(blocked_entry, :identifier) || Map.get(blocked_entry, :issue_id) || "unknown"
     phase = workflow_phase_label(Map.get(blocked_entry, :workflow_phase))
     reason = Map.get(blocked_entry, :workflow_blocked_reason) || Map.get(blocked_entry, :error) || "blocked"
+    category = Map.get(blocked_entry, :reason_category)
+
+    category_label =
+      case category do
+        nil -> ""
+        atom when is_atom(atom) -> " category=#{Atom.to_string(atom)}"
+        other -> " category=#{other}"
+      end
 
     "│ " <>
       colorize("!", @ansi_red) <>
       " " <>
       colorize(identifier, @ansi_red) <>
       colorize(" phase=#{phase}", @ansi_magenta) <>
+      colorize("#{category_label}", @ansi_magenta) <>
       colorize(" reason=#{truncate(reason, 96)}", @ansi_dim)
   end
 
