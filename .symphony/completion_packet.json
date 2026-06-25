@@ -1,0 +1,27 @@
+{
+  "outcome": "completed",
+  "summary": "Enhanced workflow plan output to describe step dependencies and completion conditions for multi-step issues. Updated controller.ex to show dependency relationships and completion conditions in plan comments, orchestrator.ex to include specific incomplete dependencies in blocking messages, and artifacts.ex to properly validate completion_conditions. Added comprehensive tests for dependency-bearing and dependency-free plans.",
+  "evidence": [
+    "All 61 related tests pass (workflow_artifacts_test.exs, workflow_controller_test.exs, workflow_orchestrator_test.exs) - 0 failures",
+    "Code formatting passes (mix format --check-formatted)",
+    "Spec requirements pass (mix specs.check)",
+    "Branch pushed: gqy4790/yqe-64-planner-output-explains-dependencies-for-multi-step-issues",
+    "Commits: c3442cd (feat), 7166a2c (docs)",
+    "Uncommitted whitespace-only changes in presenter.ex and extensions_test.exs discarded"
+  ],
+  "acceptance_criteria_validation": {
+    "workflow_plan_represents_dependencies": "PASS - edges between nodes supported, render_plan_comment shows dependency edges and per-node (depends on: ...) info",
+    "existing_simple_plans_valid": "PASS - completion_conditions is optional (nil accepted), valid_node? handles absent field",
+    "runner_explains_blocked_dependencies": "PASS - describe_blocking_dependencies lists specific incomplete deps with status and conditions",
+    "schema_parser_tests_coverage": "PASS - 6 new tests: dependency-bearing plans, dependency-free plans, multiple dependencies, invalid edge references, valid/invalid completion_conditions"
+  },
+  "decisions": [
+    "Consolidated valid_node? function to properly validate completion_conditions using Map.get",
+    "Added completion_conditions field to node description in node_description function",
+    "Updated render_plan_comment to show dependency relationships with depends on and completion conditions",
+    "Updated describe_blocking_dependencies to include specific incomplete dependencies with their status and conditions",
+    "Added completion_conditions example to planner prompt (prompts.ex)"
+  ],
+  "open_questions": [],
+  "next_handoff": "Ready for review. All acceptance criteria met: dependency representation in workflow plans, existing simple plans remain valid, blocking messages explain dependencies, and comprehensive tests added."
+}

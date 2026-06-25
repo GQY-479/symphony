@@ -1,0 +1,5 @@
+{
+  "decision": "pass",
+  "summary": "All acceptance criteria verified. 61 tests pass (0 failures), code formatting clean, specs valid. Changes: controller.ex shows dependency edges and completion conditions in plan comments, orchestrator.ex provides specific incomplete-dependency blocking messages, artifacts.ex validates optional completion_conditions, prompts.ex documents the new field. 6 new tests cover dependency-bearing and dependency-free plans. Branch pushed to gqy4790/yqe-64-planner-output-explains-dependencies-for-multi-step-issues.",
+  "confidence": "high"
+}

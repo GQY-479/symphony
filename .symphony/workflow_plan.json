@@ -1,0 +1,19 @@
+{
+  "kind": "direct_execution",
+  "summary": "Enhance workflow plan output to describe step dependencies and completion conditions for multi-step issues. The workflow plan artifact already supports dependency representation via edges (from/to), but the planner output (plan comment) doesn't surface dependencies, and blocked reasons don't explain which dependency is blocking. Changes: (1) Update render_plan_comment in controller.ex to show dependency relationships between derived nodes. (2) Update the blocked error message in orchestrator.ex to include specific incomplete dependencies. (3) Add tests in workflow_artifacts_test.exs covering dependency-bearing and dependency-free plan validation. (4) Fixed valid_node? in artifacts.ex to properly validate completion_conditions when present.",
+  "confidence": "high",
+  "acceptance_criteria": [
+    "The workflow plan artifact can represent dependencies between planned steps.",
+    "Existing simple plans remain valid.",
+    "Runner or monitoring output can explain which dependency blocked a later step.",
+    "Add schema or parser tests that cover dependency-bearing and dependency-free plans."
+  ],
+  "completed_items": [
+    "Updated render_plan_comment in controller.ex to show dependency relationships and completion conditions",
+    "Updated describe_blocking_dependencies in orchestrator.ex to include specific incomplete dependencies",
+    "Fixed valid_node? in artifacts.ex to properly validate completion_conditions",
+    "Added tests for completion_conditions validation in workflow_artifacts_test.exs",
+    "Added test for dependency relationships in plan comment in workflow_controller_test.exs",
+    "All related tests pass (61 tests, 0 failures)"
+  ]
+}
