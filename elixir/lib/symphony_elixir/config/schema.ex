@@ -8,6 +8,11 @@ defmodule SymphonyElixir.Config.Schema do
   alias SymphonyElixir.PathSafety
 
   @primary_key false
+  @default_agent_id "mimocode"
+  @default_mimocode_command "mimo-code"
+  @default_mimocode_model "mimo/mimo-auto"
+  @default_mimocode_args ["acp", "--cwd", "{{workspace}}"]
+  @default_mimocode_mcp %{"linear_tools" => true}
 
   @type t :: %__MODULE__{}
 
@@ -214,7 +219,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:default_agent, :string, default: "codex")
+      field(:default_agent, :string)
       field(:by_assignee, :map, default: %{})
       field(:by_label, :map, default: %{})
     end
@@ -233,9 +238,10 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:enabled, :boolean, default: false)
-      field(:planner_agent, :string, default: "codex")
-      field(:reviewer_agent, :string, default: "codex")
+      field(:enabled, :boolean, default: true)
+      field(:mode, :string, default: "workflow")
+      field(:planner_agent, :string)
+      field(:reviewer_agent, :string)
       field(:artifact_dir, :string, default: ".symphony")
       field(:planning_max_turns, :integer, default: 1)
       field(:review_max_turns, :integer, default: 1)
@@ -246,9 +252,10 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:enabled, :planner_agent, :reviewer_agent, :artifact_dir, :planning_max_turns, :review_max_turns],
+        [:enabled, :mode, :planner_agent, :reviewer_agent, :artifact_dir, :planning_max_turns, :review_max_turns],
         empty_values: []
       )
+      |> validate_inclusion(:mode, ["workflow", "legacy"])
       |> validate_number(:planning_max_turns, greater_than: 0)
       |> validate_number(:review_max_turns, greater_than: 0)
     end
@@ -382,6 +389,28 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   @doc false
+  @spec default_agent_id() :: String.t()
+  def default_agent_id, do: @default_agent_id
+
+  @doc false
+  @spec default_mimocode_agent_config() :: map()
+  def default_mimocode_agent_config do
+    %{
+      "kind" => "acp_stdio",
+      "command" => @default_mimocode_command,
+      "args" => @default_mimocode_args,
+      "permission_policy" => "reject",
+      "config_options" => %{"model" => @default_mimocode_model},
+      "mcp" => @default_mimocode_mcp,
+      "timeout_ms" => 3_600_000,
+      "read_timeout_ms" => 5_000,
+      "close_timeout_ms" => 1_000,
+      "stall_timeout_ms" => 300_000,
+      "enabled" => true
+    }
+  end
+
+  @doc false
   @spec normalize_state_limits(nil | map()) :: map()
   def normalize_state_limits(nil), do: %{}
 
@@ -451,12 +480,13 @@ defmodule SymphonyElixir.Config.Schema do
     %{
       settings
       | agents: normalize_agents(settings.agents, codex),
-        routing: normalize_routing(settings.routing)
+        routing: normalize_routing(settings.routing),
+        orchestration: normalize_orchestration(settings.orchestration)
     }
   end
 
-  defp normalize_agents(nil, codex), do: %{"codex" => default_codex_agent(codex)}
-  defp normalize_agents(agents, codex) when agents == %{}, do: %{"codex" => default_codex_agent(codex)}
+  defp normalize_agents(nil, codex), do: default_agents(codex)
+  defp normalize_agents(agents, codex) when agents == %{}, do: default_agents(codex)
 
   defp normalize_agents(agents, codex) when is_map(agents) do
     Enum.reduce(agents, %{}, fn {agent_id, agent_config}, normalized ->
@@ -479,6 +509,13 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_agent(agent_config, _codex), do: agent_config
 
+  defp default_agents(codex) do
+    %{
+      @default_agent_id => default_mimocode_agent_config(),
+      "codex" => default_codex_agent(codex)
+    }
+  end
+
   defp default_codex_agent(codex) do
     %{
       "kind" => "codex_app_server",
@@ -496,9 +533,17 @@ defmodule SymphonyElixir.Config.Schema do
   defp normalize_routing(%Routing{} = routing) do
     %{
       routing
-      | default_agent: normalize_key(routing.default_agent),
+      | default_agent: normalize_optional_agent_id(routing.default_agent),
         by_assignee: normalize_route_map(routing.by_assignee),
         by_label: normalize_label_route_map(routing.by_label)
+    }
+  end
+
+  defp normalize_orchestration(%Orchestration{} = orchestration) do
+    %{
+      orchestration
+      | planner_agent: normalize_optional_agent_id(orchestration.planner_agent),
+        reviewer_agent: normalize_optional_agent_id(orchestration.reviewer_agent)
     }
   end
 
@@ -534,6 +579,9 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
+
+  defp normalize_optional_agent_id(nil), do: @default_agent_id
+  defp normalize_optional_agent_id(value), do: normalize_key(value)
 
   defp drop_nil_values(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, nested}, acc ->

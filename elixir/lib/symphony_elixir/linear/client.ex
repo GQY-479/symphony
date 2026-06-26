@@ -784,6 +784,7 @@ defmodule SymphonyElixir.Linear.Client do
   defp normalize_issue(issue, assignee_filter, project_entry) when is_map(issue) do
     assignee = issue["assignee"]
     project = issue["project"]
+    team = issue["team"]
 
     %Issue{
       id: issue["id"],
@@ -800,6 +801,9 @@ defmodule SymphonyElixir.Linear.Client do
       project_slug: project_field(project, "slugId"),
       project_url: project_field(project, "url"),
       project_key: project_key(project, project_entry),
+      team_id: team_field(team, "id"),
+      team_key: team_field(team, "key"),
+      team_name: team_field(team, "name"),
       snapshot: issue_snapshot(issue),
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
@@ -816,6 +820,9 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp project_field(%{} = project, field) when is_binary(field), do: project[field]
   defp project_field(_project, _field), do: nil
+
+  defp team_field(%{} = team, field) when is_binary(field), do: team[field]
+  defp team_field(_team, _field), do: nil
 
   defp project_key(%{} = project, %{project_key: project_key, project_slug: configured_slug})
        when is_binary(project_key) and is_binary(configured_slug) do

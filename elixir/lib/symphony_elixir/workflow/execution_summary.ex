@@ -28,7 +28,10 @@ defmodule SymphonyElixir.Workflow.ExecutionSummary do
 
   @spec summary_path(Path.t()) :: Path.t()
   def summary_path(workspace) when is_binary(workspace) do
-    Path.join([workspace, Artifacts.artifact_dir(), @summary_filename])
+    workspace
+    |> Artifacts.workflow_plan_path()
+    |> Path.dirname()
+    |> Path.join(@summary_filename)
   end
 
   @spec generate(map()) :: {:ok, t()} | {:error, term()}

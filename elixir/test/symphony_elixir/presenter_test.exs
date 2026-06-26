@@ -290,6 +290,24 @@ defmodule SymphonyElixirWeb.PresenterTest do
       assert detail.status == "running"
     end
 
+    test "surfaces retry attempt while an issue is running from a retry dispatch" do
+      orchestrator = build_orchestrator!(PresenterTest.IssueRunningRetryAttemptOrch)
+      issue = base_issue("MT-RRA")
+      entry = base_running_entry(issue, workflow_phase: :execution, retry_attempt: 2)
+
+      replace_state!(orchestrator, fn state ->
+        state
+        |> Map.put(:running, %{issue.id => entry})
+        |> Map.put(:claimed, MapSet.put(state.claimed, issue.id))
+        |> Map.put(:retry_attempts, %{})
+      end)
+
+      assert {:ok, detail} = Presenter.issue_payload("MT-RRA", orchestrator, @snapshot_timeout_ms)
+      assert detail.status == "running"
+      assert detail.attempts.current_retry_attempt == 2
+      assert detail.attempts.restart_count == 1
+    end
+
     test "includes workflow_phase in retry issue detail" do
       orchestrator = build_orchestrator!(PresenterTest.IssueRetryDetailOrch)
       issue = base_issue("MT-IRD")

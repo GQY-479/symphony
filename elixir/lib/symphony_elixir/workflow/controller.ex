@@ -981,6 +981,7 @@ defmodule SymphonyElixir.Workflow.Controller do
       "dependencies" => node["dependencies"] || [],
       "handoff" => node["handoff"] || [],
       "upstream_packets" => upstream_packets(registry, node),
+      "upstream_workspaces" => upstream_workspaces(registry, node),
       "evidence_expectations" => node["evidence_expectations"] || [],
       "issue_identifier" => node["issue_identifier"],
       "rework_of" => node["rework_of"],
@@ -1010,6 +1011,40 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp upstream_packets(_registry, _node), do: []
+
+  defp upstream_workspaces(registry, node) when is_map(registry) and is_map(node) do
+    node
+    |> Map.get("dependencies", [])
+    |> Enum.flat_map(fn dependency ->
+      case Registry.node(registry, dependency) do
+        %{} = upstream_node ->
+          upstream_workspace(dependency, upstream_node)
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp upstream_workspaces(_registry, _node), do: []
+
+  defp upstream_workspace(dependency, upstream_node) do
+    issue_identifier = upstream_node["issue_identifier"]
+    workspace = Registry.issue_workspace_path(issue_identifier)
+
+    if is_binary(issue_identifier) and is_binary(workspace) do
+      [
+        %{
+          "node_key" => upstream_node["node_key"] || dependency,
+          "issue_id" => upstream_node["issue_id"],
+          "issue_identifier" => issue_identifier,
+          "workspace" => workspace
+        }
+      ]
+    else
+      []
+    end
+  end
 
   defp dependency_map(edges) do
     Enum.reduce(edges, %{}, fn edge, acc ->

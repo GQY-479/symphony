@@ -3,6 +3,7 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
 
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Workflow.Artifacts
+  alias SymphonyElixir.Workflow.ExecutionSummary
   alias SymphonyElixir.Workflow.Registry
 
   test "artifact helpers build planning, completion, and review paths" do
@@ -20,6 +21,17 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
 
     assert Artifacts.review_decision_path(workspace) ==
              Path.join([workspace, ".symphony", "review_decision.json"])
+  end
+
+  test "execution summary path uses the configured artifact directory" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace = Path.join(System.tmp_dir!(), "workflow-execution-summary-path")
+
+    assert ExecutionSummary.summary_path(workspace) ==
+             Path.join([workspace, ".symphony", "execution_summary.json"])
   end
 
   test "validate_plan accepts direct_execution and issue_graph" do

@@ -28,23 +28,27 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
-    if [ -n "$SYMP_PROJECT_REPOSITORY" ]; then
-      IFS=',' read -ra REPOS <<< "$SYMP_PROJECT_REPOSITORY"
-      for repo in "${REPOS[@]}"; do
-        repo=$(echo "$repo" | xargs)
-        if [[ -d "$repo" ]]; then
+    REPOS="${SYMPHONY_PROJECT_REPOSITORIES:-${SYMPHONY_PROJECT_REPOSITORY:-${SYMP_PROJECT_REPOSITORY:-}}}"
+    if [ -n "$REPOS" ]; then
+      OLD_IFS="$IFS"
+      IFS=','
+      for repo in $REPOS; do
+        repo=$(printf '%s' "$repo" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -d "$repo" ]; then
           cp -r "$repo"/* . 2>/dev/null || true
           cp -r "$repo"/.[!.]* . 2>/dev/null || true
           break
         fi
       done
-      for repo in "${REPOS[@]}"; do
-        repo=$(echo "$repo" | xargs)
-        if [[ "$repo" == http* ]] && [ ! -d ".git" ]; then
-          git clone --depth 1 "$repo" .
-          break
-        fi
-      done
+      if [ ! -d ".git" ]; then
+        for repo in $REPOS; do
+          repo=$(printf '%s' "$repo" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          case "$repo" in
+            http*) git clone --depth 1 "$repo" . && break ;;
+          esac
+        done
+      fi
+      IFS="$OLD_IFS"
     fi
     if command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise exec -- mix deps.get 2>/dev/null || true

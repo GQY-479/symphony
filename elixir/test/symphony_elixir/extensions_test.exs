@@ -724,6 +724,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "session_id" => "thread-http",
                  "turn_count" => 7,
                  "workflow_phase" => "review",
+                 "workflow_artifact_path" => nil,
                  "workflow_root_issue_id" => "MT-ROOT",
                  "workflow_blocked_reason" => nil,
                  "last_event" => "notification",

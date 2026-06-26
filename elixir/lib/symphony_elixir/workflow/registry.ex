@@ -117,14 +117,21 @@ defmodule SymphonyElixir.Workflow.Registry do
 
   @spec root_workspace_path(map()) :: Path.t() | nil
   def root_workspace_path(%{"root_issue_identifier" => root_issue_identifier}) when is_binary(root_issue_identifier) do
-    root_issue_identifier
-    |> safe_identifier()
-    |> root_workspace_path_for_safe_identifier()
+    issue_workspace_path(root_issue_identifier)
   end
 
   def root_workspace_path(_registry), do: nil
 
-  defp root_workspace_path_for_safe_identifier(safe_identifier) do
+  @spec issue_workspace_path(String.t()) :: Path.t() | nil
+  def issue_workspace_path(issue_identifier) when is_binary(issue_identifier) do
+    issue_identifier
+    |> safe_identifier()
+    |> workspace_path_for_safe_identifier()
+  end
+
+  def issue_workspace_path(_issue_identifier), do: nil
+
+  defp workspace_path_for_safe_identifier(safe_identifier) do
     Config.settings!().workspace.root
     |> Path.join(safe_identifier)
     |> PathSafety.canonicalize()

@@ -929,13 +929,20 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    projects = Map.get(tracker, "projects")
+    assert is_map(projects)
+    assert Map.get(projects, "symphony") |> Map.get("slug") |> is_binary()
+    assert Map.get(projects, "deepquest") |> Map.get("slug") |> is_binary()
+    assert Map.get(projects, "symphony") |> Map.get("repository") |> is_binary()
+    assert Map.get(projects, "deepquest") |> Map.get("repository") |> is_list()
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
+    assert Map.get(hooks, "after_create") =~ "SYMPHONY_PROJECT_REPOSITORIES"
+    assert Map.get(hooks, "after_create") =~ "SYMP_PROJECT_REPOSITORY"
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 \"$repo\" ."
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
@@ -2320,7 +2327,16 @@ defmodule SymphonyElixir.CoreTest do
     prompt =
       PromptBuilder.build_prompt(issue,
         workflow_phase: :execution,
-        workflow_context: %{upstream_packets: [%{"summary" => "上游摘要 A"}, %{"summary" => "上游摘要 B"}]},
+        workflow_context: %{
+          upstream_packets: [%{"summary" => "上游摘要 A"}, %{"summary" => "上游摘要 B"}],
+          upstream_workspaces: [
+            %{
+              "node_key" => "research",
+              "issue_identifier" => "MT-RESEARCH",
+              "workspace" => "/tmp/upstream-research"
+            }
+          ]
+        },
         workspace: "/tmp/workspace"
       )
 
@@ -2330,6 +2346,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "next_handoff"
     assert prompt =~ "上游摘要 A"
     assert prompt =~ "上游摘要 B"
+    assert prompt =~ "/tmp/upstream-research"
+    assert prompt =~ "先检查依赖节点 workspace"
   end
 
   test "提示词构建器在 execution 和 review 阶段附加 root workflow workspace 上下文" do

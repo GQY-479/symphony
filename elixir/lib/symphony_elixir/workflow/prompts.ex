@@ -112,6 +112,17 @@ defmodule SymphonyElixir.Workflow.Prompts do
         "- #{summary}"
       end)
 
+    upstream_workspace_lines =
+      context
+      |> upstream_workspaces()
+      |> Enum.map_join("\n", fn upstream ->
+        node_key = Map.get(upstream, "node_key") || Map.get(upstream, :node_key) || "-"
+        issue_identifier = Map.get(upstream, "issue_identifier") || Map.get(upstream, :issue_identifier) || "-"
+        workspace = Map.get(upstream, "workspace") || Map.get(upstream, :workspace) || "未提供"
+
+        "- #{node_key} (#{issue_identifier}): #{workspace}"
+      end)
+
     root_workspace = Map.get(context, :root_workspace) || Map.get(context, "root_workspace")
     root_issue_identifier = Map.get(context, :root_issue_identifier) || Map.get(context, "root_issue_identifier")
 
@@ -138,6 +149,9 @@ defmodule SymphonyElixir.Workflow.Prompts do
     - Root workflow issue: #{value_or_dash(root_issue_identifier)}
     - Root workflow workspace: #{workspace_text(root_workspace)}
     - 如果任务说明要求在 root workflow workspace 中读取或写入文件，可以在那里操作目标业务文件；但当前 phase 的 artifact 仍然必须写在当前派生 issue workspace 的 `.symphony` 目录中。
+    - 先检查依赖节点 workspace；如果当前节点依赖上游实现，必须在当前派生 issue workspace 中合入、cherry-pick 或移植必要代码后再继续，不要只依赖摘要。
+    - 依赖节点 workspaces:
+    #{value_or_dash(upstream_workspace_lines)}
     - 写入并读回 `completion_packet.json` 后立即结束，等待控制层进入 review 或推进下游阶段。
     - 上游摘要:
     #{upstream_summaries}
@@ -196,6 +210,10 @@ defmodule SymphonyElixir.Workflow.Prompts do
 
   defp upstream_packets(context) when is_map(context) do
     Map.get(context, :upstream_packets) || Map.get(context, "upstream_packets") || []
+  end
+
+  defp upstream_workspaces(context) when is_map(context) do
+    Map.get(context, :upstream_workspaces) || Map.get(context, "upstream_workspaces") || []
   end
 
   defp replan_context(context) when is_map(context) do

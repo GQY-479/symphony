@@ -1386,6 +1386,16 @@ defmodule SymphonyElixir.WorkflowControllerTest do
 
     assert {:ok, metadata} = Controller.issue_dispatch_metadata(implementation_issue.id)
     assert [%{"summary" => "上游调研完成", "evidence" => ["research.md"]}] = metadata.workflow_context["upstream_packets"]
+
+    assert [
+             %{
+               "node_key" => "research",
+               "issue_identifier" => "YQE-810",
+               "workspace" => upstream_workspace
+             }
+           ] = metadata.workflow_context["upstream_workspaces"]
+
+    assert upstream_workspace == Path.join(workspace_root, research_issue.identifier)
   end
 
   test "review pass 会关闭当前 issue，并在所有可执行节点完成后关闭 root issue" do

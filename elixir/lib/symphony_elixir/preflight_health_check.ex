@@ -291,13 +291,14 @@ defmodule SymphonyElixir.PreflightHealthCheck do
   @spec check_name(function()) :: String.t()
   defp check_name(check) when is_function(check, 0) do
     cond do
-      check == &check_linear_auth/0 -> "linear_auth"
-      check == &check_workflow_parsing/0 -> "workflow_parsing"
-      check == &check_tracker_project_lookup/0 -> "tracker_project_lookup"
-      check == &check_agent_commands/0 -> "agent_commands"
-      check == &check_workspace_root/0 -> "workspace_root"
+      check == (&check_linear_auth/0) -> "linear_auth"
+      check == (&check_workflow_parsing/0) -> "workflow_parsing"
+      check == (&check_tracker_project_lookup/0) -> "tracker_project_lookup"
+      check == (&check_agent_commands/0) -> "agent_commands"
+      check == (&check_workspace_root/0) -> "workspace_root"
       true -> "unknown"
     end
   end
+
   defp check_name(_), do: "unknown"
 end

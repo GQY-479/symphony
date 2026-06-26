@@ -14,6 +14,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @workflow_stall_retry_limit 3
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -36,6 +37,7 @@ defmodule SymphonyElixir.Orchestrator do
      [
        "workflow artifact repair failed",
        "phase completed without required artifact",
+       "stalled before producing required artifact",
        "artifact invalid"
      ]},
     {:missing_credentials,
@@ -1009,40 +1011,86 @@ defmodule SymphonyElixir.Orchestrator do
     if is_integer(elapsed_ms) and elapsed_ms > timeout_ms do
       identifier = Map.get(running_entry, :identifier, issue_id)
       session_id = running_entry_session_id(running_entry)
-
-      if input_required_blocker?(running_entry) do
-        error = blocker_error(running_entry, "stalled for #{elapsed_ms}ms after Codex requested operator input")
-
-        Logger.warning("Issue blocked: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; #{error}")
-
-        state
-        |> record_session_completion_totals(running_entry)
-        |> stop_and_block_issue(issue_id, running_entry, error)
-      else
-        Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
-
-        next_attempt = next_retry_attempt_from_running(running_entry)
-
-        state
-        |> terminate_running_issue(issue_id, false)
-        |> schedule_issue_retry(
-          issue_id,
-          next_attempt,
-          Map.merge(workflow_retry_metadata(running_entry), %{
-            identifier: identifier,
-            issue_url: running_entry.issue.url,
-            error: "stalled for #{elapsed_ms}ms without codex activity",
-            agent_id: Map.get(running_entry, :agent_id),
-            agent_kind: Map.get(running_entry, :agent_kind),
-            worker_host: Map.get(running_entry, :worker_host),
-            workspace_path: Map.get(running_entry, :workspace_path)
-          })
-        )
-      end
+      handle_stalled_issue(state, issue_id, running_entry, elapsed_ms, identifier, session_id)
     else
       state
     end
   end
+
+  defp handle_stalled_issue(state, issue_id, running_entry, elapsed_ms, identifier, session_id) do
+    if input_required_blocker?(running_entry) do
+      error = blocker_error(running_entry, "stalled for #{elapsed_ms}ms after Codex requested operator input")
+
+      Logger.warning("Issue blocked: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; #{error}")
+
+      state
+      |> record_session_completion_totals(running_entry)
+      |> stop_and_block_issue(issue_id, running_entry, error)
+    else
+      Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
+
+      retry_or_block_stalled_issue(state, issue_id, running_entry, elapsed_ms, identifier, session_id)
+    end
+  end
+
+  defp retry_or_block_stalled_issue(state, issue_id, running_entry, elapsed_ms, identifier, session_id) do
+    next_attempt = next_retry_attempt_from_running(running_entry)
+
+    if workflow_stall_retry_exhausted?(running_entry, next_attempt) do
+      error = workflow_stall_artifact_error(Map.get(running_entry, :workflow_phase), running_entry, next_attempt, elapsed_ms)
+
+      Logger.warning("Workflow issue stalled repeatedly: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; #{error}")
+
+      state
+      |> record_session_completion_totals(running_entry)
+      |> stop_and_block_issue(issue_id, running_entry, error)
+    else
+      state
+      |> terminate_running_issue(issue_id, false)
+      |> preserve_workflow_claim_for_retry(issue_id, running_entry)
+      |> schedule_stalled_issue_retry(issue_id, running_entry, next_attempt, identifier, elapsed_ms)
+    end
+  end
+
+  defp schedule_stalled_issue_retry(state, issue_id, running_entry, next_attempt, identifier, elapsed_ms) do
+    schedule_issue_retry(
+      state,
+      issue_id,
+      next_attempt,
+      Map.merge(workflow_retry_metadata(running_entry), %{
+        identifier: identifier,
+        issue_url: running_entry.issue.url,
+        error: "stalled for #{elapsed_ms}ms without codex activity",
+        agent_id: Map.get(running_entry, :agent_id),
+        agent_kind: Map.get(running_entry, :agent_kind),
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path)
+      })
+    )
+  end
+
+  defp workflow_stall_retry_exhausted?(running_entry, next_attempt) when is_integer(next_attempt) do
+    artifact_workflow_phase?(Map.get(running_entry, :workflow_phase)) and next_attempt > @workflow_stall_retry_limit
+  end
+
+  defp workflow_stall_retry_exhausted?(_running_entry, _next_attempt), do: false
+
+  defp workflow_stall_artifact_error(phase, running_entry, attempt, elapsed_ms) do
+    "#{phase_label(phase)} phase stalled before producing required artifact: expected #{artifact_path_for_phase(phase, running_entry)}; " <>
+      "#{agent_diagnostics(running_entry)} attempt=#{diagnostic_value(attempt)} elapsed_ms=#{diagnostic_value(elapsed_ms)}"
+  end
+
+  defp preserve_workflow_claim_for_retry(state, issue_id, running_entry) do
+    if artifact_workflow_phase?(Map.get(running_entry, :workflow_phase)) do
+      %{state | claimed: MapSet.put(state.claimed, issue_id)}
+    else
+      state
+    end
+  end
+
+  defp artifact_workflow_phase?(phase) when phase in [:planning, :execution, :review], do: true
+  defp artifact_workflow_phase?(phase) when phase in ["planning", "execution", "review"], do: true
+  defp artifact_workflow_phase?(_phase), do: false
 
   defp stall_elapsed_ms(running_entry, now) do
     running_entry
@@ -1874,16 +1922,12 @@ defmodule SymphonyElixir.Orchestrator do
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
-      {:noreply,
-       schedule_issue_retry(
-         state,
-         issue.id,
-         attempt + 1,
-         Map.merge(metadata, %{
-           identifier: issue.identifier,
-           error: "no available orchestrator slots"
-         })
-       )}
+      metadata =
+        metadata
+        |> Map.put(:identifier, issue.identifier)
+        |> Map.put_new(:issue_url, issue.url)
+
+      {:noreply, schedule_issue_retry(state, issue.id, attempt, metadata)}
     end
   end
 
@@ -2114,6 +2158,7 @@ defmodule SymphonyElixir.Orchestrator do
           codex_output_tokens: metadata.codex_output_tokens,
           codex_total_tokens: metadata.codex_total_tokens,
           turn_count: Map.get(metadata, :turn_count, 0),
+          retry_attempt: Map.get(metadata, :retry_attempt, 0),
           started_at: metadata.started_at,
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,

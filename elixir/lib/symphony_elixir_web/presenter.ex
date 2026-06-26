@@ -4,6 +4,7 @@ defmodule SymphonyElixirWeb.Presenter do
   """
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.Workflow.Artifacts
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -73,8 +74,8 @@ defmodule SymphonyElixirWeb.Presenter do
         host: workspace_host(running, retry, blocked)
       },
       attempts: %{
-        restart_count: restart_count(retry),
-        current_retry_attempt: retry_attempt(retry)
+        restart_count: restart_count(running, retry),
+        current_retry_attempt: current_retry_attempt(running, retry)
       },
       running: running && running_issue_payload(running),
       retry: retry && retry_issue_payload(retry),
@@ -91,7 +92,15 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_id_from_entries(running, retry, blocked),
     do: (running && running.issue_id) || (retry && retry.issue_id) || (blocked && blocked.issue_id)
 
-  defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
+  defp restart_count(running, retry), do: max(current_retry_attempt(running, retry) - 1, 0)
+
+  defp current_retry_attempt(running, retry) do
+    case running && Map.get(running, :retry_attempt) do
+      attempt when is_integer(attempt) and attempt > 0 -> attempt
+      _ -> retry_attempt(retry)
+    end
+  end
+
   defp retry_attempt(nil), do: 0
   defp retry_attempt(retry), do: retry.attempt || 0
 
@@ -112,6 +121,7 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
       workflow_phase: Map.get(entry, :workflow_phase),
+      workflow_artifact_path: workflow_artifact_path(entry),
       workflow_root_issue_id: Map.get(entry, :workflow_root_issue_id),
       workflow_blocked_reason: workflow_blocked_reason(entry),
       last_event: entry.last_codex_event,
@@ -240,6 +250,20 @@ defmodule SymphonyElixirWeb.Presenter do
       (retry && Map.get(retry, :worker_host)) ||
       (blocked && Map.get(blocked, :worker_host))
   end
+
+  defp workflow_artifact_path(%{workflow_phase: :planning, workspace_path: workspace})
+       when is_binary(workspace) and workspace != "",
+       do: Artifacts.workflow_plan_path(workspace)
+
+  defp workflow_artifact_path(%{workflow_phase: :execution, workspace_path: workspace})
+       when is_binary(workspace) and workspace != "",
+       do: Artifacts.completion_packet_path(workspace)
+
+  defp workflow_artifact_path(%{workflow_phase: :review, workspace_path: workspace})
+       when is_binary(workspace) and workspace != "",
+       do: Artifacts.review_decision_path(workspace)
+
+  defp workflow_artifact_path(_entry), do: nil
 
   defp recent_events_payload(nil), do: []
 
