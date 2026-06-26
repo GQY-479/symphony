@@ -31,7 +31,8 @@ defmodule SymphonyElixir.Config do
 
   @type tracker_project_entry :: %{
           project_key: String.t(),
-          project_slug: String.t()
+          project_slug: String.t(),
+          project_repository: String.t() | nil
         }
 
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
@@ -202,19 +203,44 @@ defmodule SymphonyElixir.Config do
         not is_map(project) ->
           {:halt, invalid_config("tracker.projects[#{normalized_key}] must be a map")}
 
-        not non_blank_string?(Map.get(project, "project_slug")) ->
-          {:halt, invalid_config("tracker.projects[#{normalized_key}].project_slug must be a non-empty string")}
+        not non_blank_string?(configured_project_slug(project)) ->
+          {:halt, invalid_config("tracker.projects[#{normalized_key}].slug must be a non-empty string")}
 
         true ->
-          {:cont, :ok}
+          case validate_tracker_project_repository(normalized_key, Map.get(project, "repository")) do
+            :ok -> {:cont, :ok}
+            {:error, _reason} = error -> {:halt, error}
+          end
       end
     end)
+  end
+
+  defp validate_tracker_project_repository(_project_key, nil), do: :ok
+
+  defp validate_tracker_project_repository(project_key, repository) when is_binary(repository) do
+    if String.trim(repository) == "" do
+      invalid_config("tracker.projects[#{project_key}].repository must not be blank")
+    else
+      :ok
+    end
+  end
+
+  defp validate_tracker_project_repository(project_key, repositories) when is_list(repositories) do
+    if Enum.all?(repositories, &(is_binary(&1) and String.trim(&1) != "")) do
+      :ok
+    else
+      invalid_config("tracker.projects[#{project_key}].repository must be a non-empty string or list of non-empty strings")
+    end
+  end
+
+  defp validate_tracker_project_repository(project_key, repository) do
+    invalid_config("tracker.projects[#{project_key}].repository must be a string or list of strings, got #{inspect(repository)}")
   end
 
   defp validate_unique_tracker_project_slugs(projects) do
     projects
     |> Enum.reduce_while(%{}, fn {project_key, project}, slugs ->
-      slug = normalize_config_project_slug(Map.get(project, "project_slug"))
+      slug = normalize_config_project_slug(configured_project_slug(project))
 
       case Map.fetch(slugs, slug) do
         {:ok, existing_key} ->
@@ -679,7 +705,8 @@ defmodule SymphonyElixir.Config do
     |> Enum.map(fn {project_key, project} ->
       %{
         project_key: normalize_config_project_key(project_key),
-        project_slug: normalize_config_project_slug(Map.get(project, "project_slug"))
+        project_slug: normalize_config_project_slug(configured_project_slug(project)),
+        project_repository: normalize_config_project_repository(Map.get(project, "repository"))
       }
     end)
     |> Enum.reject(fn entry -> blank_string?(entry.project_key) or blank_string?(entry.project_slug) end)
@@ -691,9 +718,15 @@ defmodule SymphonyElixir.Config do
   defp legacy_tracker_project_entries(project_slug) do
     case normalize_config_project_slug(project_slug) do
       nil -> []
-      slug -> [%{project_key: slug, project_slug: slug}]
+      slug -> [%{project_key: slug, project_slug: slug, project_repository: nil}]
     end
   end
+
+  defp configured_project_slug(%{} = project) do
+    Map.get(project, "slug") || Map.get(project, "project_slug")
+  end
+
+  defp configured_project_slug(_project), do: nil
 
   defp normalize_config_project_key(value) when is_binary(value) do
     case String.trim(value) do
@@ -712,6 +745,27 @@ defmodule SymphonyElixir.Config do
   end
 
   defp normalize_config_project_slug(_value), do: nil
+
+  defp normalize_config_project_repository(nil), do: nil
+
+  defp normalize_config_project_repository(repository) when is_binary(repository) do
+    case String.trim(repository) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_config_project_repository(repositories) when is_list(repositories) do
+    repositories
+    |> Enum.map(&normalize_config_project_repository/1)
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      normalized -> Enum.join(normalized, ", ")
+    end
+  end
+
+  defp normalize_config_project_repository(_repository), do: nil
 
   defp blank_string?(value) when is_binary(value), do: String.trim(value) == ""
   defp blank_string?(nil), do: true

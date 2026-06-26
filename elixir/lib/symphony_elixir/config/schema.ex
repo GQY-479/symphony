@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Config.Schema do
   alias SymphonyElixir.PathSafety
 
   @primary_key false
+  @default_agent_id "mimocode"
 
   @type t :: %__MODULE__{}
 
@@ -214,7 +215,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:default_agent, :string, default: "codex")
+      field(:default_agent, :string, default: "mimocode")
       field(:by_assignee, :map, default: %{})
       field(:by_label, :map, default: %{})
     end
@@ -234,8 +235,9 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:enabled, :boolean, default: false)
-      field(:planner_agent, :string, default: "codex")
-      field(:reviewer_agent, :string, default: "codex")
+      field(:mode, :string, default: "workflow")
+      field(:planner_agent, :string, default: "mimocode")
+      field(:reviewer_agent, :string, default: "mimocode")
       field(:artifact_dir, :string, default: ".symphony")
       field(:planning_max_turns, :integer, default: 1)
       field(:review_max_turns, :integer, default: 1)
@@ -246,9 +248,10 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:enabled, :planner_agent, :reviewer_agent, :artifact_dir, :planning_max_turns, :review_max_turns],
+        [:enabled, :mode, :planner_agent, :reviewer_agent, :artifact_dir, :planning_max_turns, :review_max_turns],
         empty_values: []
       )
+      |> validate_inclusion(:mode, ["workflow"])
       |> validate_number(:planning_max_turns, greater_than: 0)
       |> validate_number(:review_max_turns, greater_than: 0)
     end
@@ -347,6 +350,9 @@ defmodule SymphonyElixir.Config.Schema do
         {:error, {:invalid_workflow_config, format_errors(changeset)}}
     end
   end
+
+  @spec default_agent_id() :: String.t()
+  def default_agent_id, do: @default_agent_id
 
   @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
@@ -455,8 +461,8 @@ defmodule SymphonyElixir.Config.Schema do
     }
   end
 
-  defp normalize_agents(nil, codex), do: %{"codex" => default_codex_agent(codex)}
-  defp normalize_agents(agents, codex) when agents == %{}, do: %{"codex" => default_codex_agent(codex)}
+  defp normalize_agents(nil, codex), do: default_agents(codex)
+  defp normalize_agents(agents, codex) when agents == %{}, do: default_agents(codex)
 
   defp normalize_agents(agents, codex) when is_map(agents) do
     Enum.reduce(agents, %{}, fn {agent_id, agent_config}, normalized ->
@@ -490,6 +496,29 @@ defmodule SymphonyElixir.Config.Schema do
       "read_timeout_ms" => codex.read_timeout_ms,
       "stall_timeout_ms" => codex.stall_timeout_ms,
       "enabled" => true
+    }
+  end
+
+  defp default_mimocode_agent do
+    %{
+      "kind" => "acp_stdio",
+      "command" => "mimo-code",
+      "args" => ["acp", "--cwd", "{{workspace}}"],
+      "permission_policy" => "reject",
+      "config_options" => %{"model" => "mimo/mimo-auto"},
+      "mcp" => %{"linear_tools" => true},
+      "timeout_ms" => 3_600_000,
+      "read_timeout_ms" => 5_000,
+      "close_timeout_ms" => 1_000,
+      "stall_timeout_ms" => 300_000,
+      "enabled" => true
+    }
+  end
+
+  defp default_agents(codex) do
+    %{
+      @default_agent_id => default_mimocode_agent(),
+      "codex" => default_codex_agent(codex)
     }
   end
 

@@ -1,1 +1,97 @@
-{}
+{
+  "issue": "YQE-71",
+  "phase": "execution",
+  "status": "completed",
+  "acceptance_criteria": [
+    {
+      "criterion": "Config parses validated multi-project Linear settings while legacy tracker.project_slug remains supported.",
+      "status": "completed"
+    },
+    {
+      "criterion": "Candidate Linear polling fetches every configured active project slugId, with focused tests covering the behavior.",
+      "status": "completed"
+    },
+    {
+      "criterion": "Normalized Linear issues expose project id/name/slug/url/key and team id/key/name outside raw snapshots.",
+      "status": "completed"
+    },
+    {
+      "criterion": "Public lib functions added or changed retain adjacent @spec coverage per elixir/AGENTS.md.",
+      "status": "completed"
+    }
+  ],
+  "todo": [
+    {
+      "item": "Reproduce current issue signal before editing.",
+      "status": "completed",
+      "evidence": "mix test test/symphony_elixir/core_test.exs test/symphony_elixir/linear_adapter_test.exs failed at compile: KeyError key :team_id not found expanding SymphonyElixir.Linear.Issue in lib/symphony_elixir/tracker/memory.ex:82."
+    },
+    {
+      "item": "Pull latest origin/main before code edits.",
+      "status": "completed",
+      "evidence": "pull skill unavailable (.codex absent); ran git pull --ff-only origin main. Source origin/main; result clean/already up to date; HEAD 47801e4."
+    },
+    {
+      "item": "Add RED tests for legacy project_slug, multi-project fetching, and exposed issue project/team metadata.",
+      "status": "completed",
+      "evidence": "Added config tests for legacy tracker.project_slug fallback, tracker.projects slug/repository parsing, duplicate slug rejection, and Linear candidate fetch across two configured project slugs."
+    },
+    {
+      "item": "Implement minimal fixes in SymphonyElixir.Linear.Issue, Client normalization, and stale workflow/config tests.",
+      "status": "completed",
+      "evidence": "Updated Config/Schema project entry parsing; restored issue team/project repository fields; normalized Linear project/team metadata."
+    },
+    {
+      "item": "Run targeted mix test coverage for config and Linear adapter/client behavior.",
+      "status": "completed",
+      "evidence": "mix test test/symphony_elixir/core_test.exs test/symphony_elixir/workspace_and_config_test.exs test/symphony_elixir/linear_adapter_test.exs -> 139 tests, 0 failures."
+    },
+    {
+      "item": "Run mix specs.check for public @spec requirements.",
+      "status": "completed",
+      "evidence": "mix specs.check -> specs.check: all public functions have @spec or exemption."
+    },
+    {
+      "item": "Write and read back completion_packet.json.",
+      "status": "completed",
+      "evidence": "completion_packet.json written with completed outcome and read back before final response."
+    }
+  ],
+  "validation": [
+    {
+      "command": "mix test test/symphony_elixir/core_test.exs test/symphony_elixir/linear_adapter_test.exs",
+      "status": "failed_before_fix",
+      "evidence": "Compile failure due Issue struct missing :team_id while consumers expect team metadata."
+    },
+    {
+      "command": "mix test test/symphony_elixir/core_test.exs test/symphony_elixir/workspace_and_config_test.exs test/symphony_elixir/linear_adapter_test.exs",
+      "status": "passed",
+      "evidence": "Fresh run after verification skill: 139 tests, 0 failures. Warning remains: SymphonyElixir.Workflow.Artifacts.artifact_dir/0 undefined/private in workflow/execution_summary.ex:31."
+    },
+    {
+      "command": "mix specs.check",
+      "status": "passed",
+      "evidence": "Fresh run after verification skill: specs.check: all public functions have @spec or exemption. Same pre-existing workflow/execution_summary.ex warning observed."
+    },
+    {
+      "command": "mix test test/symphony_elixir/agent_routing_edge_test.exs",
+      "status": "passed",
+      "evidence": "13 tests, 0 failures after restoring built-in mimocode/codex defaults expected by existing config tests."
+    },
+    {
+      "command": "mix format --check-formatted touched files",
+      "status": "passed",
+      "evidence": "Fresh run after verification skill: touched files passed format check. Full mix format --check-formatted still reports unrelated pre-existing formatting drift in lib/symphony_elixir/preflight_health_check.ex."
+    }
+  ],
+  "decisions": [
+    "Treat the accepted SPEC.md/WORKFLOW.md contract as the unattended design approval input.",
+    "Implement full multi-project candidate fetching rather than documenting a staged limitation, because current client code already has the loop and the ticket expects proof.",
+    "Preserve tracker.project_slug as the legacy fallback when tracker.projects is absent or empty.",
+    "Accept tracker.projects.<key>.slug as the canonical project slugId field while retaining project_slug as a per-project alias.",
+    "Normalize a project repository list into a comma-separated string because the existing WORKFLOW.md hook splits SYMP_PROJECT_REPOSITORY on commas."
+  ],
+  "confusions": [
+    "The issue was Todo and artifacts were empty even though the working tree already contained partial multi-project implementation."
+  ]
+}

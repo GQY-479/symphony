@@ -64,6 +64,45 @@ defmodule SymphonyElixir.CoreTest do
 
     assert {:error, :missing_linear_project_slug} = Config.validate!()
 
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "legacy-slug")
+
+    assert :ok = Config.validate!()
+
+    assert Config.tracker_project_entries(Config.settings!()) == [
+             %{project_key: "legacy-slug", project_slug: "legacy-slug", project_repository: nil}
+           ]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_projects: %{
+        deepquest: %{slug: "deepquest-slug", repository: "/repos/deepquest"},
+        symphony: %{slug: "symphony-slug", repository: ["/repos/symphony", "https://github.com/openai/symphony"]}
+      }
+    )
+
+    assert :ok = Config.validate!()
+    settings = Config.settings!()
+
+    assert Config.tracker_project_entries(settings) == [
+             %{project_key: "deepquest", project_slug: "deepquest-slug", project_repository: "/repos/deepquest"},
+             %{
+               project_key: "symphony",
+               project_slug: "symphony-slug",
+               project_repository: "/repos/symphony, https://github.com/openai/symphony"
+             }
+           ]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_projects: %{
+        one: %{slug: "duplicate-slug"},
+        two: %{slug: "duplicate-slug"}
+      }
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "duplicate Linear project slug"
+
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_project_slug: "project",
       codex_command: ""
@@ -929,13 +968,15 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    assert is_map(Map.get(tracker, "projects"))
+    assert get_in(tracker, ["projects", "symphony", "slug"]) == "symphony-0c79b11b75ea"
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
+    assert Map.get(hooks, "after_create") =~ "SYMP_PROJECT_REPOSITORY"
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 \"$repo\" ."
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
