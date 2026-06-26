@@ -801,6 +801,7 @@ defmodule SymphonyElixir.Linear.Client do
       project_slug: project_field(project, "slugId"),
       project_url: project_field(project, "url"),
       project_key: project_key(project, project_entry),
+      project_repository: project_repository(project, project_entry),
       team_id: team_field(team, "id"),
       team_key: team_field(team, "key"),
       team_name: team_field(team, "name"),
@@ -848,6 +849,34 @@ defmodule SymphonyElixir.Linear.Client do
     |> Config.tracker_project_entries()
     |> Enum.find_value(fn
       %{project_key: project_key, project_slug: ^project_slug} -> project_key
+      _entry -> nil
+    end)
+  end
+
+  defp project_repository(%{} = project, %{project_repository: repository, project_slug: configured_slug})
+       when is_binary(repository) and is_binary(configured_slug) do
+    case project_field(project, "slugId") do
+      ^configured_slug -> repository
+      slug when is_binary(slug) and slug != "" -> configured_project_repository(slug)
+      _ -> repository
+    end
+  end
+
+  defp project_repository(%{} = project, _project_entry) do
+    case project_field(project, "slugId") do
+      slug when is_binary(slug) and slug != "" -> configured_project_repository(slug)
+      _ -> nil
+    end
+  end
+
+  defp project_repository(_project, %{project_repository: repository}) when is_binary(repository), do: repository
+  defp project_repository(_project, _project_entry), do: nil
+
+  defp configured_project_repository(project_slug) when is_binary(project_slug) do
+    Config.settings!()
+    |> Config.tracker_project_entries()
+    |> Enum.find_value(fn
+      %{project_repository: repository, project_slug: ^project_slug} -> repository
       _entry -> nil
     end)
   end

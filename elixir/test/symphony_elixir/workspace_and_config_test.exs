@@ -775,6 +775,181 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace hooks resolve configured repository sources from issue project context" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-project-repos-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      repo_a = Path.join(test_root, "repo-a")
+      repo_b = Path.join(test_root, "repo-b")
+
+      create_git_repo!(repo_a, "alpha")
+      create_git_repo!(repo_b, "beta")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_projects: %{
+          "alpha" => %{"project_slug" => "alpha-slug", "repository_url" => "file://#{repo_a}"},
+          "beta" => %{"project_slug" => "beta-slug", "repository_path" => repo_b}
+        },
+        hook_after_create: """
+        repo="${SYMPHONY_REPOSITORY_URL:-$SYMPHONY_REPOSITORY_PATH}"
+        git clone --depth 1 "$repo" .
+        printf 'slug=%s\\nkey=%s\\nrepos=%s\\nrepo_url=%s\\nrepo_path=%s\\nlegacy_slug=%s\\nlegacy_repos=%s\\n' \\
+          "$SYMPHONY_PROJECT_SLUG" "$SYMPHONY_PROJECT_KEY" "$SYMPHONY_PROJECT_REPOSITORIES" "$SYMPHONY_REPOSITORY_URL" "$SYMPHONY_REPOSITORY_PATH" "$SYMP_PROJECT_SLUG" "$SYMP_PROJECT_REPOSITORY" > hook-env.log
+        """
+      )
+
+      alpha_issue = %{id: "issue-alpha", identifier: "MT-PROJ-A", project_slug: "alpha-slug"}
+      beta_issue = %{id: "issue-beta", identifier: "MT-PROJ-B", project_slug: "beta-slug"}
+
+      assert {:ok, alpha_workspace} = Workspace.create_for_issue(alpha_issue)
+      assert {:ok, beta_workspace} = Workspace.create_for_issue(beta_issue)
+
+      assert File.read!(Path.join(alpha_workspace, "PROJECT.txt")) == "alpha\n"
+      assert File.read!(Path.join(beta_workspace, "PROJECT.txt")) == "beta\n"
+
+      assert File.read!(Path.join(alpha_workspace, "hook-env.log")) ==
+               """
+               slug=alpha-slug
+               key=alpha
+               repos=file://#{repo_a}
+               repo_url=file://#{repo_a}
+               repo_path=
+               legacy_slug=alpha-slug
+               legacy_repos=file://#{repo_a}
+               """
+
+      assert File.read!(Path.join(beta_workspace, "hook-env.log")) ==
+               """
+               slug=beta-slug
+               key=beta
+               repos=#{repo_b}
+               repo_url=
+               repo_path=#{repo_b}
+               legacy_slug=beta-slug
+               legacy_repos=#{repo_b}
+               """
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace fails before hooks when issue project is not configured" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-unmapped-project-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      hook_marker = Path.join(test_root, "hook-ran")
+      repo_a = Path.join(test_root, "repo-a")
+
+      create_git_repo!(repo_a, "alpha")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_projects: %{"alpha" => %{"project_slug" => "alpha-slug", "repository_path" => repo_a}},
+        hook_after_create: "echo ran > #{hook_marker}"
+      )
+
+      missing_issue = %{id: "issue-missing", identifier: "MT-PROJ-MISSING", project_slug: "missing-slug"}
+
+      assert {:error, {:unmapped_linear_project, "missing-slug"}} =
+               Workspace.create_for_issue(missing_issue)
+
+      refute File.exists?(hook_marker)
+      refute File.exists?(Path.join(workspace_root, "MT-PROJ-MISSING"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace rejects configured repository paths inside workspace root before hooks run" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-repo-path-safety-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      unsafe_repo = Path.join(workspace_root, "repo")
+      hook_marker = Path.join(test_root, "hook-ran")
+
+      File.mkdir_p!(unsafe_repo)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_projects: %{"unsafe" => %{"project_slug" => "unsafe-slug", "repository_path" => unsafe_repo}},
+        hook_after_create: "echo ran > #{hook_marker}"
+      )
+
+      unsafe_issue = %{id: "issue-unsafe", identifier: "MT-PROJ-UNSAFE", project_slug: "unsafe-slug"}
+
+      assert {:error, {:repository_path_inside_workspace, ^unsafe_repo, ^workspace_root}} =
+               Workspace.create_for_issue(unsafe_issue)
+
+      refute File.exists?(hook_marker)
+      refute File.exists?(Path.join(workspace_root, "MT-PROJ-UNSAFE"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "before_run and after_run hooks receive configured project repository context" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-run-hook-project-context-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      repo_a = Path.join(test_root, "repo-a")
+      hook_log = Path.join(test_root, "run-hooks.log")
+
+      create_git_repo!(repo_a, "alpha")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        tracker_project_slug: nil,
+        tracker_projects: %{
+          "alpha" => %{
+            "project_slug" => "alpha-slug",
+            "repository_path" => repo_a,
+            "repository_ref" => "main"
+          }
+        },
+        hook_before_run: "printf 'before:%s:%s:%s:%s\\n' \"$SYMPHONY_PROJECT_SLUG\" \"$SYMPHONY_PROJECT_KEY\" \"$SYMPHONY_REPOSITORY_PATH\" \"$SYMPHONY_REPOSITORY_REF\" >> #{hook_log}",
+        hook_after_run: "printf 'after:%s:%s:%s:%s\\n' \"$SYMP_PROJECT_SLUG\" \"$SYMP_PROJECT_KEY\" \"$SYMP_PROJECT_REPOSITORY\" \"$SYMPHONY_REPOSITORY_REF\" >> #{hook_log}"
+      )
+
+      issue = %{id: "issue-alpha", identifier: "MT-RUN-HOOKS", project_slug: "alpha-slug"}
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert :ok = Workspace.run_before_run_hook(workspace, issue)
+      assert :ok = Workspace.run_after_run_hook(workspace, issue)
+
+      assert File.read!(hook_log) ==
+               """
+               before:alpha-slug:alpha:#{repo_a}:main
+               after:alpha-slug:alpha:#{repo_a}:main
+               """
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace remove continues when before_remove hook fails" do
     test_root =
       Path.join(
@@ -1464,5 +1639,16 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp create_git_repo!(path, project_name) do
+    File.mkdir_p!(path)
+    File.write!(Path.join(path, "PROJECT.txt"), project_name <> "\n")
+    {_output, 0} = System.cmd("git", ["-C", path, "init", "-b", "main"])
+    {_output, 0} = System.cmd("git", ["-C", path, "config", "user.name", "Test User"])
+    {_output, 0} = System.cmd("git", ["-C", path, "config", "user.email", "test@example.com"])
+    {_output, 0} = System.cmd("git", ["-C", path, "add", "PROJECT.txt"])
+    {_output, 0} = System.cmd("git", ["-C", path, "commit", "-m", "initial"])
+    :ok
   end
 end

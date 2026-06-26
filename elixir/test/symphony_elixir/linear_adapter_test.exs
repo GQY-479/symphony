@@ -34,6 +34,53 @@ defmodule SymphonyElixir.LinearAdapterTest do
     :ok
   end
 
+  test "client fetches candidate issues for every configured project slug" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_projects: %{
+        deepquest: %{slug: "deepquest-slug", repository: "https://example.invalid/deepquest.git"},
+        symphony: %{slug: "symphony-slug", repository: "/tmp/symphony-repo"}
+      }
+    )
+
+    test_pid = self()
+
+    request_fun = fn payload, _headers ->
+      project_slug = get_in(payload, ["variables", :projectSlug])
+      send(test_pid, {:candidate_fetch_project_slug, project_slug})
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "data" => %{
+             "issues" => %{
+               "nodes" => [
+                 %{
+                   "id" => "issue-#{project_slug}",
+                   "identifier" => "MT-#{project_slug}",
+                   "title" => "Issue for #{project_slug}",
+                   "state" => %{"name" => "Todo"},
+                   "project" => %{"id" => "project-#{project_slug}", "name" => project_slug, "slugId" => project_slug}
+                 }
+               ],
+               "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+             }
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issues} = Client.fetch_candidate_issues_for_test(request_fun: request_fun)
+
+    assert_receive {:candidate_fetch_project_slug, "deepquest-slug"}
+    assert_receive {:candidate_fetch_project_slug, "symphony-slug"}
+
+    assert Enum.map(issues, & &1.project_slug) == ["deepquest-slug", "symphony-slug"]
+    assert Enum.map(issues, & &1.project_key) == ["deepquest", "symphony"]
+    assert Enum.map(issues, & &1.project_repository) == ["https://example.invalid/deepquest.git", "/tmp/symphony-repo"]
+  end
+
   test "create_issue resolves workspace labels for the target team" do
     write_workflow_file!(
       Workflow.workflow_file_path(),

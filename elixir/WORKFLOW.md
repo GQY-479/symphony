@@ -44,7 +44,7 @@ hooks:
         for repo in $REPOS; do
           repo=$(printf '%s' "$repo" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
           case "$repo" in
-            http*) git clone --depth 1 "$repo" . && break ;;
+            http*|git@*) git clone --depth 1 "$repo" . && break ;;
           esac
         done
       fi

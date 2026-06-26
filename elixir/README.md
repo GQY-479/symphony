@@ -151,12 +151,34 @@ Minimal example:
 ---
 tracker:
   kind: linear
-  project_slug: "..."
+  projects:
+    web:
+      slug: "web-app-123abc"
+      repository: "git@github.com:your-org/web-app.git"
+    api:
+      slug: "api-service-456def"
+      repository:
+        - "/Users/dev/src/api-service"
+        - "https://github.com/your-org/api-service"
 workspace:
   root: ~/code/workspaces
 hooks:
   after_create: |
-    git clone git@github.com:your-org/your-repo.git .
+    REPOS="${SYMPHONY_PROJECT_REPOSITORIES:-${SYMP_PROJECT_REPOSITORY:-}}"
+    OLD_IFS="$IFS"
+    IFS=','
+    for repo in $REPOS; do
+      repo=$(printf '%s' "$repo" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      if [ -d "$repo" ]; then
+        cp -r "$repo"/* . 2>/dev/null || true
+        cp -r "$repo"/.[!.]* . 2>/dev/null || true
+        break
+      fi
+      case "$repo" in
+        http*|git@*) git clone --depth 1 "$repo" . && break ;;
+      esac
+    done
+    IFS="$OLD_IFS"
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -195,8 +217,14 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
-- Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need.
+- Use `tracker.projects` to watch multiple Linear projects. Each key is an operator-chosen project
+  name, `slug` is the Linear project slug from the project URL, and `repository` is either one
+  address or an ordered list of addresses. The list can mix local repository paths and remote Git
+  URLs; hooks receive the active issue's mapped repositories in
+  `SYMPHONY_PROJECT_REPOSITORIES` as a comma-separated value. The legacy
+  `SYMP_PROJECT_REPOSITORY` alias is still exported for older hooks.
+- Use `hooks.after_create` to bootstrap a fresh workspace. For Git-backed repos, clone or copy from
+  `SYMPHONY_PROJECT_REPOSITORIES` so each Linear project seeds workspaces from its own repository.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.

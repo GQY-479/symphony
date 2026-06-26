@@ -34,6 +34,11 @@ help with the setup:
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 
+Symphony can watch more than one Linear project from a single workflow. Configure
+`tracker.projects` with one entry per Linear project and give each entry the repository address or
+addresses that should seed issue workspaces. See [elixir/README.md](elixir/README.md#configuration)
+for a complete example with two Linear project-to-repository mappings.
+
 ---
 
 ## License

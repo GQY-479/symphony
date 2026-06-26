@@ -166,6 +166,16 @@ Fields:
 - `branch_name` (string or null)
   - Tracker-provided branch metadata if available.
 - `url` (string or null)
+- `project_id` (string or null)
+- `project_name` (string or null)
+- `project_slug` (string or null)
+- `project_key` (string or null)
+  - Operator-chosen key from `tracker.projects` when the issue belongs to a configured project.
+- `project_repository` (string or null)
+  - Comma-separated repository addresses from the active issue's configured project mapping.
+- `team_id` (string or null)
+- `team_key` (string or null)
+- `team_name` (string or null)
 - `labels` (list of strings)
   - Normalized to lowercase.
 - `blocked_by` (list of blocker refs)
@@ -357,7 +367,33 @@ Fields:
   - Canonical environment variable for `tracker.kind == "linear"`: `LINEAR_API_KEY`.
   - If `$VAR_NAME` resolves to an empty string, treat the key as missing.
 - `project_slug` (string)
-  - REQUIRED for dispatch when `tracker.kind == "linear"`.
+  - Legacy single-project configuration.
+  - REQUIRED for dispatch when `tracker.kind == "linear"` and `projects` is empty or absent.
+- `projects` (map of project key to object)
+  - Preferred multi-project configuration.
+  - Each key is an operator-chosen stable project key used in logs, hook env, and dashboard output.
+  - Each value has:
+    - `slug` or `project_slug` (string, REQUIRED): Linear project slug from the project URL.
+    - `repository` or `repositories` (string or list of strings, OPTIONAL): ordered repository
+      addresses used by workspace bootstrap hooks for issues from that Linear project.
+  - When present and non-empty, candidate issue fetches query every configured Linear project.
+  - When an issue carries project context that does not match any configured project, workspace
+    creation MUST fail before running workspace hooks.
+  - Example:
+
+    ```yaml
+    tracker:
+      kind: linear
+      projects:
+        web:
+          slug: "web-app-123abc"
+          repository: "git@github.com:example/web-app.git"
+        api:
+          slug: "api-service-456def"
+          repository:
+            - "/srv/repos/api-service"
+            - "https://github.com/example/api-service"
+    ```
 - `required_labels` (list of strings)
   - Default: `[]`.
   - An issue MUST contain every configured label to dispatch or continue.
@@ -566,7 +602,8 @@ Validation checks:
 - Workflow file can be loaded and parsed.
 - `tracker.kind` is present and supported.
 - `tracker.api_key` is present after `$` resolution.
-- `tracker.project_slug` is present when REQUIRED by the selected tracker kind.
+- `tracker.project_slug` or at least one `tracker.projects` entry is present when REQUIRED by the
+  selected tracker kind.
 - `codex.command` is present and non-empty.
 
 ### 6.4 Core Config Fields Summary (Cheat Sheet)
@@ -578,7 +615,10 @@ not require recognizing or validating extension fields unless that extension is 
 - `tracker.kind`: string, REQUIRED, currently `linear`
 - `tracker.endpoint`: string, default `https://api.linear.app/graphql` when `tracker.kind=linear`
 - `tracker.api_key`: string or `$VAR`, canonical env `LINEAR_API_KEY` when `tracker.kind=linear`
-- `tracker.project_slug`: string, REQUIRED when `tracker.kind=linear`
+- `tracker.project_slug`: legacy string, REQUIRED only when `tracker.projects` is empty or absent
+  and `tracker.kind=linear`
+- `tracker.projects`: map of project key to project config, preferred for multi-project Linear
+  workflows
 - `tracker.required_labels`: list of strings, default `[]`
 - `tracker.active_states`: list of strings, default `["Todo", "In Progress"]`
 - `tracker.terminal_states`: list of strings, default `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]`
@@ -834,22 +874,31 @@ Workspace persistence:
 
 ### 9.2 Workspace Creation and Reuse
 
-Input: `issue.identifier`
+Input: issue metadata, including `issue.identifier` and any tracker project context.
 
 Algorithm summary:
 
-1. Sanitize identifier to `workspace_key`.
-2. Compute workspace path under workspace root.
-3. Ensure the workspace path exists as a directory.
-4. Mark `created_now=true` only if the directory was created during this call; otherwise
+1. If `tracker.projects` is configured and the issue carries project context, resolve the issue's
+   project slug/key to a configured project entry before running hooks.
+2. If the issue's project context does not match any configured project, fail workspace creation.
+3. Validate any configured local repository paths before running hooks.
+4. Sanitize identifier to `workspace_key`.
+5. Compute workspace path under workspace root.
+6. Ensure the workspace path exists as a directory.
+7. Mark `created_now=true` only if the directory was created during this call; otherwise
    `created_now=false`.
-5. If `created_now=true`, run `after_create` hook if configured.
+8. If `created_now=true`, run `after_create` hook if configured.
 
 Notes:
 
 - This section does not assume any specific repository/VCS workflow.
 - Workspace preparation beyond directory creation (for example dependency bootstrap, checkout/sync,
   code generation) is implementation-defined and is typically handled via hooks.
+- If `tracker.projects` maps the issue's Linear project to one or more repositories, the
+  implementation MUST resolve that issue-specific mapping before running `after_create`.
+- Local repository paths from the mapping MUST NOT be inside the configured workspace root and MUST
+  NOT contain path traversal segments. Invalid mapped paths fail workspace creation before hook
+  execution.
 
 ### 9.3 OPTIONAL Workspace Population (Implementation-Defined)
 
@@ -857,6 +906,10 @@ The spec does not require any built-in VCS or repository bootstrap behavior.
 
 Implementations MAY populate or synchronize the workspace using implementation-defined logic and/or
 hooks (for example `after_create` and/or `before_run`).
+
+For project-aware Linear workflows, hooks SHOULD use the active issue's repository mapping rather
+than a hard-coded repository URL. The reference implementation exposes the active mapping as a
+comma-separated list in `SYMPHONY_PROJECT_REPOSITORIES`.
 
 Failure handling:
 
@@ -881,6 +934,20 @@ Execution contract:
   `cwd`.
 - On POSIX systems, `sh -lc <script>` (or a stricter equivalent such as `bash -lc <script>`) is a
   conforming default.
+- Export issue and project context to hooks:
+  - `SYMPHONY_ISSUE_ID`
+  - `SYMPHONY_ISSUE_IDENTIFIER`
+  - `SYMPHONY_PROJECT_KEY`
+  - `SYMPHONY_PROJECT_SLUG`
+  - `SYMPHONY_PROJECT_REPOSITORY`
+  - `SYMPHONY_PROJECT_REPOSITORIES`
+- For compatibility, implementations MAY also export the legacy aliases:
+  - `SYMP_ISSUE_ID`
+  - `SYMP_ISSUE_IDENTIFIER`
+  - `SYMP_PROJECT_KEY`
+  - `SYMP_PROJECT_SLUG`
+  - `SYMP_PROJECT_REPOSITORY`
+  - `SYMP_PROJECT_REPOSITORIES`
 - Hook timeout uses `hooks.timeout_ms`; default: `60000 ms`.
 - Log hook start, failures, and timeouts.
 
@@ -1160,8 +1227,11 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - `tracker.kind == "linear"`
 - GraphQL endpoint (default `https://api.linear.app/graphql`)
 - Auth token sent in `Authorization` header
-- `tracker.project_slug` maps to Linear project `slugId`
-- Candidate issue query filters project using `project: { slugId: { eq: $projectSlug } }`
+- Each configured `tracker.projects` entry maps its `slug` or `project_slug` to Linear project
+  `slugId`; legacy `tracker.project_slug` is treated as a single configured project.
+- Candidate issue queries filter one Linear project at a time using
+  `project: { slugId: { eq: $projectSlug } }`, then merge the pages from all configured projects
+  while preserving per-project issue ordering.
 - Candidate and issue-state refresh queries include issue labels. Required
   label filtering happens after normalization so refresh can observe label
   removal and stop or release existing work.
@@ -1314,6 +1384,11 @@ implementation-defined.
 
 If present, it SHOULD draw from orchestrator state/metrics only and MUST NOT be REQUIRED for
 correctness.
+
+For Linear workflows, the status surface SHOULD present the active configured project set. A
+single-project configuration MAY show one project link; a multi-project configuration SHOULD show
+each configured project key with its Linear project link. Issue-specific detail views SHOULD prefer
+the issue's project context when available.
 
 ### 13.5 Session Metrics and Token Accounting
 
@@ -1982,7 +2057,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 
 ### 17.3 Issue Tracker Client
 
-- Candidate issue fetch uses active states and project slug
+- Candidate issue fetch uses active states and every configured Linear project slug
 - Linear query uses the specified project filter field (`slugId`)
 - Empty `fetch_issues_by_states([])` returns empty without API call
 - Pagination preserves order across multiple pages
