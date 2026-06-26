@@ -32,7 +32,14 @@ defmodule SymphonyElixir.OmnigentSseTest do
   test "解析 data-only 事件、注释和 done 标记" do
     {events, _state} =
       Sse.new()
-      |> Sse.feed(": heartbeat\n\ndata: {\"type\":\"session.status\",\"status\":\"running\"}\n\ndata: [DONE]\n\n")
+      |> Sse.feed("""
+      : heartbeat
+
+      data: {"type":"session.status","status":"running"}
+
+      data: [DONE]
+
+      """)
 
     assert [
              %{event: nil, data: %{"type" => "session.status", "status" => "running"}},

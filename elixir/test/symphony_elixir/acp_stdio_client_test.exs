@@ -624,7 +624,7 @@ defmodule SymphonyElixir.AcpStdioClientTest do
           "sessionNewError" => true
         })
 
-      assert {:error, {:acp_error, %{"code" => -32000, "message" => "session new failed"}}} =
+      assert {:error, {:acp_error, %{"code" => -32_000, "message" => "session new failed"}}} =
                Client.start_session(
                  workspace,
                  %{command: executable, args: [], env: env, permission_policy: "reject", timeout_ms: 5_000},

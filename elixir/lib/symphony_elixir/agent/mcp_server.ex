@@ -45,7 +45,7 @@ defmodule SymphonyElixir.Agent.McpServer do
   def handle(%{"method" => method}, _opts) when is_binary(method) do
     {:error,
      %{
-       "code" => -32601,
+       "code" => -32_601,
        "message" => "Unsupported MCP method: #{method}"
      }}
   end
@@ -55,7 +55,7 @@ defmodule SymphonyElixir.Agent.McpServer do
   @spec invalid_params_error(String.t()) :: error()
   def invalid_params_error(message) do
     %{
-      "code" => -32602,
+      "code" => -32_602,
       "message" => message
     }
   end

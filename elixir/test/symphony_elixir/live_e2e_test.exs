@@ -617,9 +617,8 @@ defmodule SymphonyElixir.LiveE2ETest do
 
         try do
           unless eventually_live?(fn ->
-                   with {:ok, registry} <- Registry.load_by_root_identifier(root_issue.identifier) do
-                     registry["status"] in ["completed", "blocked", "failed"]
-                   else
+                   case Registry.load_by_root_identifier(root_issue.identifier) do
+                     {:ok, registry} -> registry["status"] in ["completed", "blocked", "failed"]
                      _ -> false
                    end
                  end) do

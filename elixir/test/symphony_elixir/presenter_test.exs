@@ -1,8 +1,8 @@
 defmodule SymphonyElixirWeb.PresenterTest do
   use SymphonyElixir.TestSupport
 
-  alias SymphonyElixirWeb.Presenter
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixirWeb.Presenter
 
   @snapshot_timeout_ms 1_000
 

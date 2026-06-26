@@ -199,7 +199,10 @@ defmodule SymphonyElixir.Linear.Adapter do
     with {:ok, project_id, team_ids} <- resolve_issue_context(attrs),
          {:ok, team_id, state_id, label_ids} <- resolve_project_team_inputs(team_ids, state_name, label_names),
          {:ok, response} <-
-           client_module().graphql(@create_issue_mutation, issue_create_variables(attrs, team_id, project_id, state_id, label_ids)),
+           client_module().graphql(
+             @create_issue_mutation,
+             issue_create_variables(attrs, team_id, project_id, state_id, label_ids)
+           ),
          {:ok, issue} <- normalize_created_issue(response) do
       {:ok, issue}
     end

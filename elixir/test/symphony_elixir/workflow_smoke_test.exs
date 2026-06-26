@@ -234,15 +234,16 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     unless eventually?(fn ->
              snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
 
-             with {:ok, %{"status" => "blocked", "human_input_request" => request}}
-                  when is_binary(request) <- Registry.load_by_root_identifier(root_issue.identifier) do
-               snapshot.running == [] and snapshot.retrying == [] and
-                 Enum.any?(snapshot.blocked, fn blocked ->
-                   blocked.issue_id == root_issue.id and blocked.workflow_phase == :review and
-                     String.contains?(blocked.error, "review needs human")
-                 end)
-             else
-               _ -> false
+             case Registry.load_by_root_identifier(root_issue.identifier) do
+               {:ok, %{"status" => "blocked", "human_input_request" => request}} when is_binary(request) ->
+                 snapshot.running == [] and snapshot.retrying == [] and
+                   Enum.any?(snapshot.blocked, fn blocked ->
+                     blocked.issue_id == root_issue.id and blocked.workflow_phase == :review and
+                       String.contains?(blocked.error, "review needs human")
+                   end)
+
+               _ ->
+                 false
              end
            end) do
       flunk("""
@@ -322,15 +323,16 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     unless eventually?(fn ->
              snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
 
-             with {:ok, %{"status" => "failed", "failure_reason" => reason}}
-                  when is_binary(reason) <- Registry.load_by_root_identifier(root_issue.identifier) do
-               snapshot.running == [] and snapshot.retrying == [] and
-                 Enum.any?(snapshot.blocked, fn blocked ->
-                   blocked.issue_id == root_issue.id and blocked.workflow_phase == :review and
-                     String.contains?(blocked.error, "review failed")
-                 end)
-             else
-               _ -> false
+             case Registry.load_by_root_identifier(root_issue.identifier) do
+               {:ok, %{"status" => "failed", "failure_reason" => reason}} when is_binary(reason) ->
+                 snapshot.running == [] and snapshot.retrying == [] and
+                   Enum.any?(snapshot.blocked, fn blocked ->
+                     blocked.issue_id == root_issue.id and blocked.workflow_phase == :review and
+                       String.contains?(blocked.error, "review failed")
+                   end)
+
+               _ ->
+                 false
              end
            end) do
       flunk("""

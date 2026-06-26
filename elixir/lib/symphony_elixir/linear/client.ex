@@ -429,7 +429,10 @@ defmodule SymphonyElixir.Linear.Client do
   @spec fetch_candidate_issues_for_test(keyword()) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues_for_test(opts) when is_list(opts) do
     request_fun = Keyword.fetch!(opts, :request_fun)
-    fetch_candidate_issues(Config.settings!(), fn query, variables -> graphql(query, variables, request_fun: request_fun) end)
+
+    fetch_candidate_issues(Config.settings!(), fn query, variables ->
+      graphql(query, variables, request_fun: request_fun)
+    end)
   end
 
   defp fetch_candidate_issues(settings, graphql_fun) when is_function(graphql_fun, 2) do
@@ -444,7 +447,12 @@ defmodule SymphonyElixir.Linear.Client do
 
       true ->
         with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_by_project_entries(Config.tracker_project_entries(settings), tracker.active_states, assignee_filter, graphql_fun)
+          do_fetch_by_project_entries(
+            Config.tracker_project_entries(settings),
+            tracker.active_states,
+            assignee_filter,
+            graphql_fun
+          )
         end
     end
   end

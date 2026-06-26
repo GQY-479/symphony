@@ -62,7 +62,12 @@ defmodule SymphonyElixir.Workflow.Controller do
   def handle_execution_completion(_issue, _workspace), do: {:error, :invalid_arguments}
 
   @spec handle_review_completion(Issue.t(), Path.t()) ::
-          {:ok, {:pass, String.t()} | {:needs_human, String.t(), String.t()} | {:needs_replan, String.t(), String.t()} | {:needs_rework, String.t(), String.t()} | {:fail, String.t(), String.t()}}
+          {:ok,
+           {:pass, String.t()}
+           | {:needs_human, String.t(), String.t()}
+           | {:needs_replan, String.t(), String.t()}
+           | {:needs_rework, String.t(), String.t()}
+           | {:fail, String.t(), String.t()}}
           | {:error, term()}
   def handle_review_completion(%Issue{} = issue, workspace) when is_binary(workspace) do
     with {:ok, decision} <- Artifacts.load_review_decision(workspace),
@@ -148,13 +153,13 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp validate_nodes(nodes) when is_list(nodes) do
-    if Enum.all?(nodes, &is_valid_node?/1), do: :ok, else: {:error, :invalid_workflow_plan}
+    if Enum.all?(nodes, &valid_node?/1), do: :ok, else: {:error, :invalid_workflow_plan}
   end
 
   defp validate_nodes(_nodes), do: {:error, :invalid_workflow_plan}
 
   defp validate_edges(edges) when is_list(edges) do
-    if Enum.all?(edges, &is_valid_edge?/1), do: :ok, else: {:error, :invalid_workflow_plan}
+    if Enum.all?(edges, &valid_edge?/1), do: :ok, else: {:error, :invalid_workflow_plan}
   end
 
   defp validate_edges(_edges), do: {:error, :invalid_workflow_plan}
@@ -173,15 +178,22 @@ defmodule SymphonyElixir.Workflow.Controller do
     end
   end
 
-  defp is_valid_node?(%{"node_key" => node_key, "task_type" => task_type, "title" => title, "goal" => goal, "agent_id" => agent_id})
-       when is_binary(node_key) and is_binary(task_type) and is_binary(title) and is_binary(goal) and is_binary(agent_id),
+  defp valid_node?(%{
+         "node_key" => node_key,
+         "task_type" => task_type,
+         "title" => title,
+         "goal" => goal,
+         "agent_id" => agent_id
+       })
+       when is_binary(node_key) and is_binary(task_type) and is_binary(title) and
+              is_binary(goal) and is_binary(agent_id),
        do: true
 
-  defp is_valid_node?(_node), do: false
+  defp valid_node?(_node), do: false
 
-  defp is_valid_edge?(%{"from" => from, "to" => to}) when is_binary(from) and is_binary(to), do: true
-  defp is_valid_edge?(%{from: from, to: to}) when is_binary(from) and is_binary(to), do: true
-  defp is_valid_edge?(_edge), do: false
+  defp valid_edge?(%{"from" => from, "to" => to}) when is_binary(from) and is_binary(to), do: true
+  defp valid_edge?(%{from: from, to: to}) when is_binary(from) and is_binary(to), do: true
+  defp valid_edge?(_edge), do: false
 
   defp materialize_plan(registry, root_issue, %{"kind" => "direct_execution"} = plan) do
     {:ok,
