@@ -516,60 +516,6 @@ defmodule SymphonyElixir.AgentRunner do
     """
   end
 
-  defp workflow_artifact_repair_prompt(:execution, workspace, artifact_path, reason) do
-    """
-    上一轮 execution 已正常结束，但缺少必需 artifact 或 artifact 无法通过校验。
-
-    现在只做 artifact 修复，不要继续实现新功能，不要改 Linear 状态，不要写其他文件。
-
-    - 工作区: #{workspace}
-    - 必须创建目录: #{Path.dirname(artifact_path)}
-    - 必须写入文件: #{artifact_path}
-    - 当前错误: #{inspect(reason)}
-
-    写入的 JSON 至少必须包含：
-    ```json
-    {
-      "outcome": "completed",
-      "summary": "本阶段完成情况",
-      "evidence": ["验证或证据"],
-      "decisions": [],
-      "open_questions": [],
-      "next_handoff": "交给 review 或下游节点的交接"
-    }
-    ```
-
-    完成前必须读回 #{artifact_path}，确认 JSON 可以解析。
-    """
-  end
-
-  defp workflow_artifact_repair_prompt(:review, workspace, artifact_path, reason) do
-    """
-    上一轮 review 已正常结束，但缺少必需 artifact 或 artifact 无法通过校验。
-
-    现在只做 artifact 修复，不要继续审查以外的工作，不要改 Linear 状态，不要写其他文件。
-
-    - 工作区: #{workspace}
-    - 必须创建目录: #{Path.dirname(artifact_path)}
-    - 必须写入文件: #{artifact_path}
-    - 当前错误: #{inspect(reason)}
-
-    写入的 JSON 至少必须包含：
-    ```json
-    {
-      "decision": "pass",
-      "summary": "审查结论",
-      "confidence": "medium"
-    }
-    ```
-
-    `decision` 只能是 `pass`、`needs_rework`、`needs_replan`、`needs_human`、`fail`。
-    `needs_rework`、`needs_replan`、`fail` 必须包含非空 `reason`。
-    `needs_human` 必须包含非空 `reason` 和 `requested_input`。
-    完成前必须读回 #{artifact_path}，确认 JSON 可以解析。
-    """
-  end
-
   defp append_runtime_guidance(prompt, %{kind: "acp_stdio", config: config}) when is_map(config) do
     if linear_mcp_enabled?(Map.get(config, "mcp") || Map.get(config, :mcp)) do
       prompt <> acp_linear_mcp_guidance()

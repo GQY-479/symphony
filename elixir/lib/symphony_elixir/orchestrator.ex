@@ -317,8 +317,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp phase_label(:planning), do: "planning"
   defp phase_label(:issue), do: "issue"
-  defp phase_label(:execution), do: "execution"
-  defp phase_label(:review), do: "review"
   defp phase_label(phase), do: to_string(phase)
 
   defp artifact_path_for_phase(:planning, running_entry), do: artifact_path(running_entry, &Artifacts.workflow_plan_path/1)
@@ -905,7 +903,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp refresh_or_release_blocked_issue_state(%State{} = state, %Issue{} = issue) do
     case Map.get(state.blocked, issue.id) do
-      %{workflow_phase: phase, error: error} when phase in [:execution, :issue] and is_binary(error) ->
+      %{workflow_phase: :issue, error: error} when is_binary(error) ->
         if String.contains?(error, "workflow waiting") and Controller.issue_ready?(issue.id) do
           Logger.info("Workflow issue became ready: #{issue_context(issue)}; releasing workflow wait block")
           release_issue_claim(state, issue.id)

@@ -143,6 +143,31 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
     end
   end
 
+  test "active workflow code no longer exposes retired workflow phase artifact repair paths" do
+    root = Path.expand("../..", __DIR__)
+
+    active_sources =
+      [
+        "lib/symphony_elixir/agent_runner.ex",
+        "lib/symphony_elixir/orchestrator.ex"
+      ]
+      |> Enum.map(&File.read!(Path.join(root, &1)))
+      |> Enum.join("\n")
+
+    retired_execution = "exec" <> "ution"
+    retired_review = "rev" <> "iew"
+
+    for forbidden <- [
+          "workflow_artifact_repair_prompt(:" <> retired_execution,
+          "workflow_artifact_repair_prompt(:" <> retired_review,
+          "phase_label(:" <> retired_execution,
+          "phase_label(:" <> retired_review,
+          "phase in [:" <> retired_execution <> ", :issue]"
+        ] do
+      refute active_sources =~ forbidden
+    end
+  end
+
   defp workflow_front_matter(contents) do
     case String.split(contents, "---", parts: 3) do
       [_prefix, front_matter, _body] -> YamlElixir.read_from_string!(front_matter)
