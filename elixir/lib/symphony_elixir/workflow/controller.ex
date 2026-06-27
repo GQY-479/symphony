@@ -79,6 +79,23 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   def handle_review_completion(_issue, _workspace), do: {:error, :invalid_arguments}
 
+  @spec handle_issue_completion(Issue.t(), Path.t()) ::
+          {:ok,
+           {:completed, String.t()}
+           | {:needs_human, String.t(), String.t()}
+           | {:needs_replan, String.t(), String.t()}
+           | {:needs_rework, String.t(), String.t()}
+           | {:fail, String.t(), String.t()}}
+          | {:error, term()}
+  def handle_issue_completion(%Issue{} = issue, workspace) when is_binary(workspace) do
+    with {:ok, result} <- Artifacts.load_issue_result(workspace),
+         :ok <- Tracker.create_comment(issue.id, render_issue_result_comment(issue, result)) do
+      apply_issue_result(issue, result)
+    end
+  end
+
+  def handle_issue_completion(_issue, _workspace), do: {:error, :invalid_arguments}
+
   @spec issue_ready?(String.t()) :: boolean()
   def issue_ready?(issue_id) when is_binary(issue_id) do
     case Registry.load_by_issue_id(issue_id) do
@@ -423,6 +440,105 @@ defmodule SymphonyElixir.Workflow.Controller do
     Summary: #{decision["summary"]}
     """
     |> String.trim()
+  end
+
+  defp render_issue_result_comment(issue, result) do
+    """
+    ## Issue Result
+
+    Issue: #{issue.identifier}
+    Node: #{result["node_key"]}
+    Task type: #{result["task_type"]}
+    Outcome: #{result["outcome"]}
+    Summary: #{result["summary"]}
+
+    Evidence:
+    #{format_list(result["evidence"] || [])}
+
+    Decisions:
+    #{format_list(result["decisions"] || [])}
+
+    Open questions:
+    #{format_list(result["open_questions"] || [])}
+    """
+    |> String.trim()
+  end
+
+  defp apply_issue_result(%Issue{} = issue, %{"task_type" => "review", "outcome" => "pass"} = result) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, _node} ->
+        updated_registry =
+          registry
+          |> put_node_issue_result(node_key, result)
+          |> put_node_status(node_key, "completed")
+          |> Registry.put_review_state(node_key, review_state(result, "accepted"))
+          |> unlock_ready_nodes()
+          |> maybe_complete_registry()
+
+        with :ok <- Registry.save!(updated_registry),
+             :ok <- Tracker.update_issue_state(issue.id, workflow_terminal_state()),
+             :ok <- maybe_close_root_issue(updated_registry, issue.id) do
+          {:ok, {:completed, issue.id}}
+        end
+
+      {:error, :not_found} ->
+        {:ok, {:completed, issue.id}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp apply_issue_result(%Issue{} = issue, %{"task_type" => "review"} = result) do
+    decision = review_result_to_decision(result)
+
+    with :ok <- maybe_apply_review_registry_update(issue, decision) do
+      apply_review_decision(issue, decision)
+    end
+  end
+
+  defp apply_issue_result(%Issue{} = issue, result) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, _node} ->
+        updated_registry =
+          registry
+          |> put_node_issue_result(node_key, result)
+          |> put_node_status(node_key, "completed")
+          |> unlock_ready_nodes()
+          |> maybe_complete_registry()
+
+        with :ok <- Registry.save!(updated_registry),
+             :ok <- Tracker.update_issue_state(issue.id, workflow_terminal_state()),
+             :ok <- maybe_close_root_issue(updated_registry, issue.id) do
+          {:ok, {:completed, issue.id}}
+        end
+
+      {:error, :not_found} ->
+        {:ok, {:completed, issue.id}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp review_state(result, status) do
+    %{
+      "decision" => result["outcome"],
+      "status" => status,
+      "summary" => result["summary"],
+      "reviews" => result["reviews"] || [],
+      "decided_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+  end
+
+  defp review_result_to_decision(result) do
+    %{
+      "decision" => result["outcome"],
+      "summary" => result["summary"],
+      "reason" => result["reason"],
+      "requested_input" => result["requested_input"],
+      "confidence" => result["confidence"] || "not_applicable"
+    }
   end
 
   defp apply_review_decision(%Issue{} = issue, %{"decision" => "pass"}) do
@@ -836,6 +952,13 @@ defmodule SymphonyElixir.Workflow.Controller do
   defp put_node_completion_packet(registry, node_key, packet) do
     update_in(registry, ["nodes", node_key], fn
       %{} = node -> Map.put(node, "completion_packet", packet)
+      node -> node
+    end)
+  end
+
+  defp put_node_issue_result(registry, node_key, result) do
+    update_in(registry, ["nodes", node_key], fn
+      %{} = node -> Map.put(node, "issue_result", result)
       node -> node
     end)
   end

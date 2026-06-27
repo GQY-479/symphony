@@ -862,6 +862,182 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert body =~ "是否允许写 root workspace？"
   end
 
+  test "issue completion stores issue result and unlocks downstream nodes" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-issue-result-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-result", identifier: "YQE-RESULT", title: "root", state: "In Progress"}
+    issue = %Issue{id: "derived-result", identifier: "YQE-RESULT-1", title: "调研", state: "In Progress"}
+    downstream = %Issue{id: "derived-result-2", identifier: "YQE-RESULT-2", title: "实现", state: "Todo"}
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("research", %{
+      "node_key" => "research",
+      "issue_id" => issue.id,
+      "issue_identifier" => issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "research",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => []
+    })
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => downstream.id,
+      "issue_identifier" => downstream.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "waiting",
+      "dependencies" => ["research"]
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.issue_result_path(workspace),
+      Jason.encode!(%{
+        "schema_version" => 1,
+        "node_key" => "research",
+        "task_type" => "research",
+        "outcome" => "completed",
+        "summary" => "调研完成",
+        "evidence" => ["research.md"],
+        "decisions" => [],
+        "open_questions" => []
+      })
+    )
+
+    assert {:ok, {:completed, "derived-result"}} = Controller.handle_issue_completion(issue, workspace)
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert Registry.node(registry, "research")["status"] == "completed"
+    assert Registry.node(registry, "research")["issue_result"]["summary"] == "调研完成"
+    assert Registry.node(registry, "implementation")["status"] == "ready"
+  end
+
+  test "review issue result pass accepts subject and unlocks downstream nodes" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-review-result-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_terminal_states: ["Closed"],
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-review-result", identifier: "YQE-REVIEW-ROOT", title: "root", state: "In Progress"}
+
+    implementation_issue = %Issue{
+      id: "impl-review-result",
+      identifier: "YQE-REVIEW-1",
+      title: "实现",
+      state: "Closed"
+    }
+
+    review_issue = %Issue{
+      id: "review-result",
+      identifier: "YQE-REVIEW-2",
+      title: "审查实现",
+      state: "In Progress"
+    }
+
+    downstream_issue = %Issue{
+      id: "downstream-review-result",
+      identifier: "YQE-REVIEW-3",
+      title: "下游",
+      state: "Todo"
+    }
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => implementation_issue.id,
+      "issue_identifier" => implementation_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "completed",
+      "dependencies" => [],
+      "issue_result" => %{"summary" => "实现完成"}
+    })
+    |> Registry.put_node("implementation_review", %{
+      "node_key" => "implementation_review",
+      "issue_id" => review_issue.id,
+      "issue_identifier" => review_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "review",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => ["implementation"],
+      "reviews" => ["implementation"],
+      "subject_selector" => %{
+        "type" => "candidate_range",
+        "from" => "implementation.candidate_before_sha",
+        "to" => "implementation.candidate_after_sha"
+      }
+    })
+    |> Registry.put_node("downstream", %{
+      "node_key" => "downstream",
+      "issue_id" => downstream_issue.id,
+      "issue_identifier" => downstream_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "waiting",
+      "dependencies" => ["implementation_review"]
+    })
+    |> Registry.put_subject("subject-implementation", %{
+      "type" => "candidate_range",
+      "base_sha" => "base",
+      "head_sha" => "head",
+      "paths" => [],
+      "status" => "pending"
+    })
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, review_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.issue_result_path(workspace),
+      Jason.encode!(%{
+        "schema_version" => 1,
+        "node_key" => "implementation_review",
+        "task_type" => "review",
+        "outcome" => "pass",
+        "reviews" => ["implementation"],
+        "summary" => "审查通过",
+        "evidence" => ["mix test"],
+        "decisions" => [],
+        "open_questions" => []
+      })
+    )
+
+    assert {:ok, {:completed, "review-result"}} = Controller.handle_issue_completion(review_issue, workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert Registry.node(registry, "implementation_review")["status"] == "completed"
+    assert Registry.node(registry, "downstream")["status"] == "ready"
+    assert registry["reviews"]["implementation_review"]["status"] == "accepted"
+  end
+
   test "review completion 读取 review decision、回写评论并返回 pass 决策" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-review-#{System.unique_integer([:positive])}")
