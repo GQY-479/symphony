@@ -500,6 +500,56 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
     assert Registry.node(loaded, "research-1")["status"] == "ready"
   end
 
+  test "registry stores checkpoints subjects and review states" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: Path.join(System.tmp_dir!(), "workflow-registry-subjects"),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{id: "root-subject", identifier: "YQE-SUBJECT", title: "root", state: "In Progress"}
+
+    registry =
+      root_issue
+      |> Registry.new_root()
+      |> Registry.put_workflow_git(%{
+        "target_branch" => "main",
+        "target_base_sha" => "base",
+        "candidate_branch" => "symphony/YQE-SUBJECT/candidate",
+        "candidate_head_sha" => "base",
+        "final_review_node" => "final_review"
+      })
+      |> Registry.add_checkpoint(%{
+        "id" => "checkpoint-001",
+        "node_key" => "implementation",
+        "issue_branch" => "symphony/YQE-SUBJECT/YQE-2",
+        "issue_base_sha" => "base",
+        "issue_head_sha" => "head",
+        "candidate_before_sha" => "base",
+        "candidate_after_sha" => "after",
+        "merge_commit_sha" => "merge"
+      })
+      |> Registry.put_subject("subject-001", %{
+        "type" => "candidate_range",
+        "base_sha" => "base",
+        "head_sha" => "after",
+        "paths" => [],
+        "artifact_ref" => nil,
+        "status" => "pending"
+      })
+      |> Registry.put_review_state("implementation_review", %{
+        "subject_id" => "subject-001",
+        "decision" => "pass",
+        "status" => "accepted",
+        "decided_at" => "2026-06-27T00:00:00Z"
+      })
+
+    assert registry["candidate_branch"] == "symphony/YQE-SUBJECT/candidate"
+    assert [checkpoint] = registry["checkpoints"]
+    assert checkpoint["candidate_after_sha"] == "after"
+    assert registry["subjects"]["subject-001"]["status"] == "pending"
+    assert registry["reviews"]["implementation_review"]["status"] == "accepted"
+  end
+
   test "registry paths expand tilde workspace roots before joining workflow directory" do
     workspace_root = "~/workflow-registry-expanded-#{System.unique_integer([:positive])}"
 

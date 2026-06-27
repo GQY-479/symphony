@@ -14,6 +14,9 @@ defmodule SymphonyElixir.Workflow.Registry do
       "status" => "planning",
       "nodes" => %{},
       "edges" => [],
+      "checkpoints" => [],
+      "subjects" => %{},
+      "reviews" => %{},
       "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
     }
   end
@@ -30,6 +33,36 @@ defmodule SymphonyElixir.Workflow.Registry do
   @spec put_node(map(), String.t(), map()) :: map()
   def put_node(registry, node_key, node) when is_map(registry) and is_binary(node_key) and is_map(node) do
     put_in(registry, ["nodes", node_key], normalize_node(node))
+  end
+
+  @spec put_workflow_git(map(), map()) :: map()
+  def put_workflow_git(registry, attrs) when is_map(registry) and is_map(attrs) do
+    registry
+    |> Map.merge(normalize_map(attrs))
+    |> Map.put("updated_at", DateTime.utc_now() |> DateTime.to_iso8601())
+  end
+
+  @spec add_checkpoint(map(), map()) :: map()
+  def add_checkpoint(registry, checkpoint) when is_map(registry) and is_map(checkpoint) do
+    update_in(registry, ["checkpoints"], fn checkpoints ->
+      (checkpoints || []) ++ [normalize_map(checkpoint)]
+    end)
+  end
+
+  @spec put_subject(map(), String.t(), map()) :: map()
+  def put_subject(registry, subject_id, subject)
+      when is_map(registry) and is_binary(subject_id) and is_map(subject) do
+    update_in(registry, ["subjects"], fn subjects ->
+      Map.put(subjects || %{}, subject_id, normalize_map(subject))
+    end)
+  end
+
+  @spec put_review_state(map(), String.t(), map()) :: map()
+  def put_review_state(registry, review_node, review_state)
+      when is_map(registry) and is_binary(review_node) and is_map(review_state) do
+    update_in(registry, ["reviews"], fn reviews ->
+      Map.put(reviews || %{}, review_node, normalize_map(review_state))
+    end)
   end
 
   @spec node(map(), String.t()) :: map() | nil
@@ -212,13 +245,27 @@ defmodule SymphonyElixir.Workflow.Registry do
 
   defp node_issue_id(_node), do: nil
 
-  defp valid_registry?(%{"nodes" => nodes, "edges" => edges, "status" => status})
-       when is_map(nodes) and is_list(edges) and is_binary(status),
-       do: true
+  defp valid_registry?(%{"nodes" => nodes, "edges" => edges, "status" => status} = registry)
+       when is_map(nodes) and is_list(edges) and is_binary(status) do
+    valid_optional_registry_collections?(registry)
+  end
 
-  defp valid_registry?(%{nodes: nodes, edges: edges, status: status})
-       when is_map(nodes) and is_list(edges) and is_binary(status),
-       do: true
+  defp valid_registry?(%{nodes: nodes, edges: edges, status: status} = registry)
+       when is_map(nodes) and is_list(edges) and is_binary(status) do
+    valid_optional_registry_collections?(registry)
+  end
 
   defp valid_registry?(_registry), do: false
+
+  defp valid_optional_registry_collections?(registry) when is_map(registry) do
+    valid_optional_list?(Map.get(registry, "checkpoints") || Map.get(registry, :checkpoints)) and
+      valid_optional_map?(Map.get(registry, "subjects") || Map.get(registry, :subjects)) and
+      valid_optional_map?(Map.get(registry, "reviews") || Map.get(registry, :reviews))
+  end
+
+  defp valid_optional_list?(nil), do: true
+  defp valid_optional_list?(value), do: is_list(value)
+
+  defp valid_optional_map?(nil), do: true
+  defp valid_optional_map?(value), do: is_map(value)
 end
