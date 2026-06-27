@@ -546,8 +546,15 @@ defmodule SymphonyElixir.Config do
           invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string values")
         end
 
+      {:ok, value} when is_list(value) ->
+        if Enum.all?(value, &is_binary/1) do
+          :ok
+        else
+          invalid_config("agents.#{agent_id}.#{field} must be a list of strings")
+        end
+
       {:ok, value} ->
-        invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string values, got #{inspect(value)}")
+        invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string values or a list of strings, got #{inspect(value)}")
     end
   end
 
