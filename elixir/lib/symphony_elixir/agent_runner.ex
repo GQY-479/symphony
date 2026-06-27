@@ -369,6 +369,11 @@ defmodule SymphonyElixir.AgentRunner do
     artifact_result(path, Artifacts.load_workflow_plan(workspace))
   end
 
+  defp load_workflow_artifact(:issue, workspace) when is_binary(workspace) do
+    path = Artifacts.issue_result_path(workspace)
+    artifact_result(path, Artifacts.load_issue_result(workspace))
+  end
+
   defp load_workflow_artifact(:execution, workspace) when is_binary(workspace) do
     path = Artifacts.completion_packet_path(workspace)
     artifact_result(path, Artifacts.load_completion_packet(workspace))
@@ -484,6 +489,40 @@ defmodule SymphonyElixir.AgentRunner do
     ```
 
     完成前必须读回 #{artifact_path}，确认 JSON 可以解析，并且不要只在最终回复里描述计划。
+    """
+  end
+
+  defp workflow_artifact_repair_prompt(:issue, workspace, artifact_path, reason) do
+    """
+    上一轮 issue 已正常结束，但缺少必需 artifact 或 artifact 无法通过校验。
+
+    现在只做 artifact 修复，不要继续实现或审查新内容，不要改 Linear 状态，不要写其他文件。
+
+    - 工作区: #{workspace}
+    - 必须创建目录: #{Path.dirname(artifact_path)}
+    - 必须写入文件: #{artifact_path}
+    - 当前错误: #{inspect(reason)}
+
+    写入的 JSON 至少必须包含：
+    ```json
+    {
+      "schema_version": 1,
+      "node_key": "implementation",
+      "task_type": "implementation",
+      "outcome": "completed",
+      "summary": "本 issue 完成情况",
+      "evidence": ["验证或证据"],
+      "decisions": [],
+      "open_questions": []
+    }
+    ```
+
+    如果这是 review issue，`task_type` 必须是 `review`，`outcome` 只能是
+    `pass`、`needs_rework`、`needs_replan`、`needs_human` 或 `fail`，并且必须包含
+    非空 `reviews` 数组。非 pass outcome 还必须包含 `reason`；`needs_human`
+    还必须包含 `requested_input`。
+
+    完成前必须读回 #{artifact_path}，确认 JSON 可以解析。
     """
   end
 

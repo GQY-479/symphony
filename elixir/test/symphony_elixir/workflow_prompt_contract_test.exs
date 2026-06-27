@@ -71,8 +71,27 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
     workspace = "/tmp/symphony-contract-workspace"
 
     planning = Prompts.append("Base prompt", :planning, %{}, workspace)
-    execution = Prompts.append("Base prompt", :execution, %{}, workspace)
-    review = Prompts.append("Base prompt", :review, %{}, workspace)
+
+    issue =
+      Prompts.append(
+        "Base prompt",
+        :issue,
+        %{"node_key" => "implementation", "task_type" => "implementation"},
+        workspace
+      )
+
+    review_issue =
+      Prompts.append(
+        "Base prompt",
+        :issue,
+        %{
+          "node_key" => "implementation_review",
+          "task_type" => "review",
+          "reviews" => ["implementation"],
+          "subject_selector" => %{"type" => "candidate_range"}
+        },
+        workspace
+      )
 
     for text <- [
           "workflow_plan.json",
@@ -90,24 +109,29 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
     end
 
     for text <- [
-          "completion_packet.json",
+          "issue_result.json",
           "必须包含所有字段",
+          "schema_version",
+          "node_key",
+          "task_type",
           "outcome",
-          "failed",
+          "completed",
           "summary",
           "evidence",
           "非空",
           "decisions",
           "open_questions",
-          "next_handoff",
           "不要通过移动当前 Linear issue 状态",
-          "写入并读回 `completion_packet.json` 后立即结束"
+          "写入并读回 `issue_result.json` 后立即结束"
         ] do
-      assert execution =~ text
+      assert issue =~ text
     end
 
+    refute issue =~ "completion_packet.json"
+    refute issue =~ "review_decision.json"
+
     for text <- [
-          "review_decision.json",
+          "issue_result.json",
           "pass",
           "needs_rework",
           "needs_replan",
@@ -115,7 +139,6 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "fail",
           "evidence",
           "summary",
-          "confidence",
           "reason",
           "requested_input",
           "不要通过移动当前 Linear issue 状态",
@@ -124,10 +147,13 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "不要 commit",
           "不要 push",
           "不要创建 PR",
-          "写入并读回 `review_decision.json` 后立即结束"
+          "写入并读回 `issue_result.json` 后立即结束"
         ] do
-      assert review =~ text
+      assert review_issue =~ text
     end
+
+    refute review_issue =~ "completion_packet.json"
+    refute review_issue =~ "review_decision.json"
   end
 
   defp workflow_body(contents) do

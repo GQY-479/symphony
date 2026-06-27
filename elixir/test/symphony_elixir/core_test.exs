@@ -2312,13 +2312,13 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "MT-903"
   end
 
-  test "提示词构建器附加执行阶段完成包合约" do
+  test "提示词构建器附加 issue result 合约" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
 
     issue = %Issue{
       identifier: "MT-901",
-      title: "执行阶段提示",
-      description: "确认 completion packet 合约",
+      title: "Issue 阶段提示",
+      description: "确认 issue result 合约",
       state: "In Progress",
       url: "https://example.org/issues/MT-901",
       labels: []
@@ -2326,8 +2326,10 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt =
       PromptBuilder.build_prompt(issue,
-        workflow_phase: :execution,
+        workflow_phase: :issue,
         workflow_context: %{
+          node_key: "implementation",
+          task_type: "implementation",
           upstream_packets: [%{"summary" => "上游摘要 A"}, %{"summary" => "上游摘要 B"}],
           upstream_workspaces: [
             %{
@@ -2340,17 +2342,21 @@ defmodule SymphonyElixir.CoreTest do
         workspace: "/tmp/workspace"
       )
 
-    assert prompt =~ "completion_packet.json"
+    assert prompt =~ "issue_result.json"
+    assert prompt =~ "schema_version"
+    assert prompt =~ "node_key"
+    assert prompt =~ "task_type"
     assert prompt =~ "decisions"
     assert prompt =~ "open_questions"
-    assert prompt =~ "next_handoff"
+    refute prompt =~ "completion_packet.json"
+    refute prompt =~ "review_decision.json"
     assert prompt =~ "上游摘要 A"
     assert prompt =~ "上游摘要 B"
     assert prompt =~ "/tmp/upstream-research"
     assert prompt =~ "先检查依赖节点 workspace"
   end
 
-  test "提示词构建器在 execution 和 review 阶段附加 root workflow workspace 上下文" do
+  test "提示词构建器在 issue 阶段附加 root workflow workspace 上下文" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
 
     issue = %Issue{
@@ -2362,10 +2368,12 @@ defmodule SymphonyElixir.CoreTest do
       labels: []
     }
 
-    execution_prompt =
+    issue_prompt =
       PromptBuilder.build_prompt(issue,
-        workflow_phase: :execution,
+        workflow_phase: :issue,
         workflow_context: %{
+          node_key: "implementation",
+          task_type: "implementation",
           root_workspace: "/tmp/root-workspace",
           root_issue_identifier: "ROOT-1"
         },
@@ -2374,21 +2382,24 @@ defmodule SymphonyElixir.CoreTest do
 
     review_prompt =
       PromptBuilder.build_prompt(issue,
-        workflow_phase: :review,
+        workflow_phase: :issue,
         workflow_context: %{
+          node_key: "implementation_review",
+          task_type: "review",
+          reviews: ["implementation"],
           root_workspace: "/tmp/root-workspace",
           root_issue_identifier: "ROOT-1"
         },
         workspace: "/tmp/derived-workspace"
       )
 
-    assert execution_prompt =~ "/tmp/root-workspace"
-    assert execution_prompt =~ "ROOT-1"
+    assert issue_prompt =~ "/tmp/root-workspace"
+    assert issue_prompt =~ "ROOT-1"
     assert review_prompt =~ "/tmp/root-workspace"
     assert review_prompt =~ "ROOT-1"
   end
 
-  test "提示词构建器附加审查阶段决策合约" do
+  test "提示词构建器为 review issue 附加审查结果合约" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
 
     issue = %Issue{
@@ -2402,17 +2413,23 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt =
       PromptBuilder.build_prompt(issue,
-        workflow_phase: :review,
-        workflow_context: %{},
+        workflow_phase: :issue,
+        workflow_context: %{
+          node_key: "implementation_review",
+          task_type: "review",
+          reviews: ["implementation"],
+          subject_selector: %{"type" => "candidate_range"}
+        },
         workspace: "/tmp/workspace"
       )
 
-    assert prompt =~ "review_decision.json"
+    assert prompt =~ "issue_result.json"
     assert prompt =~ "pass"
     assert prompt =~ "needs_rework"
     assert prompt =~ "needs_replan"
     assert prompt =~ "needs_human"
     assert prompt =~ "fail"
+    refute prompt =~ "review_decision.json"
   end
 
   test "AgentRunner 将 workflow_phase、workspace 和 workflow_context 传给首轮提示词" do
@@ -2442,7 +2459,7 @@ defmodule SymphonyElixir.CoreTest do
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
       printf 'CWD:%s\\n' "$PWD" >> "$trace_file"
       mkdir -p .symphony
-      printf '%s\\n' '{"outcome":"completed","summary":"fake cli completed execution","evidence":["fake cli wrote completion packet"],"decisions":["fake cli completed execution"],"open_questions":[],"next_handoff":"review fake cli completion"}' > .symphony/completion_packet.json
+      printf '%s\\n' '{"schema_version":1,"node_key":"implementation","task_type":"implementation","outcome":"completed","summary":"fake cli completed issue","evidence":["fake cli wrote issue result"],"decisions":["fake cli completed issue"],"open_questions":[]}' > .symphony/issue_result.json
       printf '%s\\n' '{"kind":"runner-progress"}'
       """)
 
@@ -2479,13 +2496,17 @@ defmodule SymphonyElixir.CoreTest do
       assert :ok =
                AgentRunner.run(issue, self(),
                  agent_id: "mimocode",
-                 workflow_phase: :execution,
-                 workflow_context: %{upstream_packets: [%{"summary" => "上游交接摘要"}]},
+                 workflow_phase: :issue,
+                 workflow_context: %{
+                   node_key: "implementation",
+                   task_type: "implementation",
+                   upstream_packets: [%{"summary" => "上游交接摘要"}]
+                 },
                  issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
                )
 
       trace = File.read!(trace_file)
-      assert trace =~ "completion_packet.json"
+      assert trace =~ "issue_result.json"
       assert trace =~ "上游交接摘要"
       assert trace =~ Path.join(workspace_root, "MT-903")
     after
@@ -2624,11 +2645,11 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "AgentRunner execution artifact repair prompt includes full completion packet schema" do
+  test "AgentRunner issue artifact repair prompt includes full issue result schema" do
     test_root =
       Path.join(
         System.tmp_dir!(),
-        "symphony-elixir-agent-runner-execution-artifact-repair-#{System.unique_integer([:positive])}"
+        "symphony-elixir-agent-runner-issue-artifact-repair-#{System.unique_integer([:positive])}"
       )
 
     try do
@@ -2674,7 +2695,7 @@ defmodule SymphonyElixir.CoreTest do
           elif method == "initialized":
               pass
           elif method == "thread/start":
-              send({"id": request_id, "result": {"thread": {"id": "thread-execution-repair"}}})
+              send({"id": request_id, "result": {"thread": {"id": "thread-issue-repair"}}})
           elif method == "turn/start":
               turn_count += 1
               text = prompt_text(message)
@@ -2683,14 +2704,16 @@ defmodule SymphonyElixir.CoreTest do
 
               if turn_count == 2:
                   os.makedirs(".symphony", exist_ok=True)
-                  with open(".symphony/completion_packet.json", "w", encoding="utf-8") as handle:
+                  with open(".symphony/issue_result.json", "w", encoding="utf-8") as handle:
                       json.dump({
+                          "schema_version": 1,
+                          "node_key": "implementation",
+                          "task_type": "implementation",
                           "outcome": "completed",
-                          "summary": "execution repair produced completion packet",
-                          "evidence": ["repair prompt listed full schema"],
+                          "summary": "issue repair produced issue result",
+                          "evidence": ["repair prompt listed issue schema"],
                           "decisions": [],
-                          "open_questions": [],
-                          "next_handoff": "review repaired completion"
+                          "open_questions": []
                       }, handle)
 
               send({"id": request_id, "result": {"turn": {"id": f"turn-{turn_count}"}}})
@@ -2735,8 +2758,8 @@ defmodule SymphonyElixir.CoreTest do
       issue = %Issue{
         id: "issue-execution-repair",
         identifier: "MT-906",
-        title: "执行产物修复",
-        description: "第一轮完成但没有写 completion_packet.json",
+        title: "Issue 产物修复",
+        description: "第一轮完成但没有写 issue_result.json",
         state: "In Progress",
         url: "https://example.org/issues/MT-906",
         labels: []
@@ -2744,18 +2767,22 @@ defmodule SymphonyElixir.CoreTest do
 
       assert :ok =
                AgentRunner.run(issue, self(),
-                 workflow_phase: :execution,
+                 workflow_phase: :issue,
+                 workflow_context: %{node_key: "implementation", task_type: "implementation"},
                  issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
                )
 
       workspace = Path.join(workspace_root, issue.identifier)
-      assert File.exists?(Path.join([workspace, ".symphony", "completion_packet.json"]))
+      assert File.exists?(Path.join([workspace, ".symphony", "issue_result.json"]))
 
       trace = File.read!(trace_file)
-      assert trace =~ "上一轮 execution 已正常结束，但缺少必需 artifact"
+      assert trace =~ "上一轮 issue 已正常结束，但缺少必需 artifact"
+      assert trace =~ "schema_version"
+      assert trace =~ "node_key"
+      assert trace =~ "task_type"
       assert trace =~ "decisions"
       assert trace =~ "open_questions"
-      assert trace =~ "next_handoff"
+      refute trace =~ "completion_packet.json"
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)

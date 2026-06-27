@@ -14,6 +14,10 @@ defmodule SymphonyElixir.Workflow.Prompts do
     base_prompt <> planning_prompt(context, workspace)
   end
 
+  def append(base_prompt, :issue, context, workspace) do
+    base_prompt <> issue_prompt(context, workspace)
+  end
+
   def append(base_prompt, :execution, context, workspace) do
     base_prompt <> execution_prompt(context, workspace)
   end
@@ -158,6 +162,90 @@ defmodule SymphonyElixir.Workflow.Prompts do
     """
   end
 
+  defp issue_prompt(context, workspace) do
+    context = context_map(context)
+    task_type = Map.get(context, :task_type) || Map.get(context, "task_type") || "implementation"
+    node_key = Map.get(context, :node_key) || Map.get(context, "node_key") || "-"
+    root_workspace = Map.get(context, :root_workspace) || Map.get(context, "root_workspace")
+    root_issue_identifier = Map.get(context, :root_issue_identifier) || Map.get(context, "root_issue_identifier")
+    result_path = artifact_path_text(workspace, :issue_result)
+
+    upstream_summaries =
+      context
+      |> upstream_packets()
+      |> Enum.map_join("\n", fn packet ->
+        summary = Map.get(packet, "summary") || Map.get(packet, :summary) || ""
+        "- #{summary}"
+      end)
+
+    upstream_workspace_lines =
+      context
+      |> upstream_workspaces()
+      |> Enum.map_join("\n", fn upstream ->
+        node_key = Map.get(upstream, "node_key") || Map.get(upstream, :node_key) || "-"
+        issue_identifier = Map.get(upstream, "issue_identifier") || Map.get(upstream, :issue_identifier) || "-"
+        workspace = Map.get(upstream, "workspace") || Map.get(upstream, :workspace) || "未提供"
+
+        "- #{node_key} (#{issue_identifier}): #{workspace}"
+      end)
+
+    review_rules =
+      if task_type == "review" do
+        """
+
+        Review issue 附加规则:
+
+        - review 是普通 issue node；不要把它当作内部 review phase。
+        - 只允许读取相关文件、运行验证命令、判断结果，并创建或更新当前 issue 的 `issue_result.json`。
+        - 不要修改源码、测试、文档或业务文件；不要把 review issue 变成返工实现 issue。
+        - 不要执行 `git add`，不要 stage，不要 commit，不要 push，不要创建 PR，不要创建或切换分支。
+        - 允许的 review outcome 集合: #{Enum.join(@review_decisions, ", ")}。
+        - `pass` 表示审查通过。
+        - `needs_rework`、`needs_replan`、`fail` 必须包含非空 `reason`。
+        - `needs_human` 必须包含非空 `reason` 和 `requested_input`。
+        - `reviews` 必须列出被审查 node key；不要自行改写 controller 给出的审查对象。
+        """
+      else
+        ""
+      end
+
+    """
+
+    Issue 阶段附加要求:
+
+    - 这是 workflow issue node；输出会被控制层消费，不是普通进度记录。
+    - 生成或更新 `issue_result.json`；这是当前 issue node 的唯一完成 artifact。
+    - 不要通过移动当前 Linear issue 状态来表示完成、交接、审查通过或关闭；当前 issue 的交接只能通过 `issue_result.json`。
+    - `issue_result.json` 必须写入：`#{result_path}`。
+    - `issue_result.json` 必须包含所有字段，且 `evidence` 必须是非空数组:
+
+      ```json
+      {
+        "schema_version": 1,
+        "node_key": "#{node_key}",
+        "task_type": "#{task_type}",
+        "outcome": "completed",
+        "summary": "完成内容摘要",
+        "evidence": ["非空验证证据，例如命令、输出摘要、文件路径或截图"],
+        "decisions": [],
+        "open_questions": []
+      }
+      ```
+
+    - 当前派生 issue workspace: #{workspace_text(workspace)}
+    - Root workflow issue: #{value_or_dash(root_issue_identifier)}
+    - Root workflow workspace: #{workspace_text(root_workspace)}
+    - 如果任务说明要求在 root workflow workspace 中读取或写入文件，可以在那里操作目标业务文件；但当前 issue artifact 仍然必须写在当前派生 issue workspace 的 `.symphony` 目录中。
+    - 先检查依赖节点 workspace；如果当前节点依赖上游实现，必须在当前派生 issue workspace 中合入、cherry-pick 或移植必要代码后再继续，不要只依赖摘要。
+    - 依赖节点 workspaces:
+    #{value_or_dash(upstream_workspace_lines)}
+    #{review_rules}
+    - 写入并读回 `issue_result.json` 后立即结束，等待控制层推进 workflow graph。
+    - 上游摘要:
+    #{upstream_summaries}
+    """
+  end
+
   defp review_prompt(context, workspace) do
     context = context_map(context)
     root_workspace = Map.get(context, :root_workspace) || Map.get(context, "root_workspace")
@@ -245,6 +333,11 @@ defmodule SymphonyElixir.Workflow.Prompts do
     do: Artifacts.workflow_plan_path(workspace)
 
   defp artifact_path_text(_workspace, :workflow_plan), do: "`workflow_plan.json` 的完整路径未提供"
+
+  defp artifact_path_text(workspace, :issue_result) when is_binary(workspace),
+    do: Artifacts.issue_result_path(workspace)
+
+  defp artifact_path_text(_workspace, :issue_result), do: "`issue_result.json` 的完整路径未提供"
 
   defp artifact_dir_text(workspace) when is_binary(workspace),
     do: Path.dirname(Artifacts.workflow_plan_path(workspace))
