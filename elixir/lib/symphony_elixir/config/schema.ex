@@ -10,7 +10,7 @@ defmodule SymphonyElixir.Config.Schema do
   @primary_key false
   @default_agent_id "mimocode"
   @default_mimocode_command "mimo-code"
-  @default_mimocode_model "mimo/mimo-auto"
+  @default_mimocode_model ["mimo-v2.5-pro", "mimo/mimo-auto"]
   @default_mimocode_args ["acp", "--cwd", "{{workspace}}"]
   @default_mimocode_mcp %{"linear_tools" => true}
 
