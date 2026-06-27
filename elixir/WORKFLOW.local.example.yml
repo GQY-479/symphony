@@ -1,0 +1,28 @@
+# Copy to WORKFLOW.local.yml for machine-specific runtime settings.
+# WORKFLOW.local.yml is ignored by Git. Keep shared workflow rules and prompt
+# text in WORKFLOW.md.
+
+tracker:
+  projects:
+    symphony:
+      slug: "your-linear-project-slug"
+      repository:
+        - "/absolute/path/to/local/Symphony"
+        - "https://github.com/openai/symphony"
+  assignee: "me"
+workspace:
+  root: ~/code/symphony-workspaces-local
+  preserve_terminal: true
+agents:
+  mimocode:
+    command: /path/to/mimo
+  codex:
+    approval_policy: never
+    thread_sandbox: danger-full-access
+    turn_sandbox_policy:
+      type: dangerFullAccess
+routing:
+  by_label:
+    "agent:mimo": mimocode
+server:
+  port: 4000

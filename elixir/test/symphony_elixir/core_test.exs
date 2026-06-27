@@ -952,19 +952,32 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.workflow_prompt() == prompt
   end
 
-  test "WORKFLOW.local.md 默认开启编排，避免 root issue 回退到 legacy 直接执行" do
+  test "WORKFLOW.local.example.yml overlays runtime config without replacing workflow prompt" do
     original_workflow_path = Workflow.workflow_file_path()
-    local_workflow_path = Path.expand("../../WORKFLOW.local.md", __DIR__)
+
+    workflow_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-local-overlay-example-#{System.unique_integer([:positive])}"
+      )
+
+    workflow_path = Path.join(workflow_root, "WORKFLOW.md")
+    overlay_path = Path.join(workflow_root, "WORKFLOW.local.yml")
 
     on_exit(fn ->
       Workflow.set_workflow_file_path(original_workflow_path)
       if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+      File.rm_rf(workflow_root)
     end)
 
-    Workflow.set_workflow_file_path(local_workflow_path)
+    File.mkdir_p!(workflow_root)
+    File.cp!(Path.expand("../../WORKFLOW.md", __DIR__), workflow_path)
+    File.cp!(Path.expand("../../WORKFLOW.local.example.yml", __DIR__), overlay_path)
+
+    Workflow.set_workflow_file_path(workflow_path)
     if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
 
-    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load()
+    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load(workflow_path, local_overlay: true)
 
     orchestration = Map.get(config, "orchestration", %{})
 
@@ -973,6 +986,8 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.get(orchestration, "reviewer_agent") == "mimocode"
     assert Map.get(orchestration, "planning_max_turns") == 1
     assert Map.get(orchestration, "review_max_turns") == 1
+    assert get_in(config, ["tracker", "projects", "symphony", "slug"]) == "your-linear-project-slug"
+    assert get_in(config, ["workspace", "root"]) == "~/code/symphony-workspaces-local"
     assert String.trim(prompt) != ""
     assert prompt =~ "Do not move the current Linear issue to signal completion, handoff, review, or closure"
   end
@@ -1033,6 +1048,89 @@ defmodule SymphonyElixir.CoreTest do
     Workflow.set_workflow_file_path(app_workflow_path)
 
     assert Workflow.workflow_file_path() == app_workflow_path
+  end
+
+  test "workflow load applies local yaml overlay to config while keeping base prompt" do
+    workflow_path = Workflow.workflow_file_path()
+
+    write_workflow_file!(workflow_path,
+      tracker_project_slug: nil,
+      tracker_projects: %{
+        "symphony" => %{
+          "slug" => "shared-symphony",
+          "repository" => "https://github.com/openai/symphony"
+        }
+      },
+      max_concurrent_agents: 10,
+      codex_command: "codex app-server",
+      prompt: "Shared prompt only"
+    )
+
+    overlay_path = Path.join(Path.dirname(workflow_path), "WORKFLOW.local.yml")
+
+    File.write!(overlay_path, """
+    tracker:
+      assignee: me
+      projects:
+        symphony:
+          slug: local-symphony
+        deepquest:
+          slug: local-deepquest
+          repository:
+            - /mnt/c/Users/GQY47/coding/DeepQuest
+            - https://github.com/GQY-479/DeepQuest
+    agent:
+      max_concurrent_agents: 2
+    agents:
+      codex:
+        command: local-codex app-server
+    """)
+
+    assert {:ok, %{config: config, prompt: "Shared prompt only", prompt_template: "Shared prompt only"}} =
+             Workflow.load(workflow_path, local_overlay: true)
+
+    assert get_in(config, ["tracker", "assignee"]) == "me"
+    assert get_in(config, ["tracker", "projects", "symphony", "slug"]) == "local-symphony"
+
+    assert get_in(config, ["tracker", "projects", "symphony", "repository"]) ==
+             "https://github.com/openai/symphony"
+
+    assert get_in(config, ["tracker", "projects", "deepquest", "repository"]) == [
+             "/mnt/c/Users/GQY47/coding/DeepQuest",
+             "https://github.com/GQY-479/DeepQuest"
+           ]
+
+    assert get_in(config, ["agent", "max_concurrent_agents"]) == 2
+    assert get_in(config, ["agents", "codex", "command"]) == "local-codex app-server"
+  end
+
+  test "workflow load reports invalid local yaml overlay" do
+    workflow_path = Workflow.workflow_file_path()
+    overlay_path = Path.join(Path.dirname(workflow_path), "WORKFLOW.local.yml")
+
+    File.write!(overlay_path, "tracker:\n  projects: \"unterminated\n")
+
+    assert {:error, {:workflow_local_overlay_parse_error, ^overlay_path, _reason}} =
+             Workflow.load(workflow_path, local_overlay: true)
+  end
+
+  test "workflow load can skip local yaml overlay" do
+    workflow_path = Workflow.workflow_file_path()
+
+    write_workflow_file!(workflow_path,
+      tracker_assignee: nil,
+      max_concurrent_agents: 10,
+      prompt: "Base prompt"
+    )
+
+    overlay_path = Path.join(Path.dirname(workflow_path), "WORKFLOW.local.yml")
+    File.write!(overlay_path, "tracker:\n  assignee: me\nagent:\n  max_concurrent_agents: 2\n")
+
+    assert {:ok, %{config: config, prompt: "Base prompt"}} =
+             Workflow.load(workflow_path, local_overlay: false)
+
+    assert get_in(config, ["tracker", "assignee"]) == nil
+    assert get_in(config, ["agent", "max_concurrent_agents"]) == 10
   end
 
   test "workflow load accepts prompt-only files without front matter" do

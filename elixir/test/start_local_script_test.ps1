@@ -4,7 +4,7 @@ Set-StrictMode -Version Latest
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $elixirRoot = Resolve-Path (Join-Path $scriptRoot "..")
 $startScript = Join-Path $elixirRoot "start-local.ps1"
-$workflow = Join-Path $elixirRoot "WORKFLOW.local.md"
+$workflow = Join-Path $elixirRoot "WORKFLOW.md"
 $keyFile = Join-Path ([IO.Path]::GetTempPath()) ("symphony-linear-key-{0}.txt" -f ([guid]::NewGuid()))
 
 function Assert-True {
@@ -50,6 +50,7 @@ try {
   Assert-True ($exitCode -eq 0) "start-local.ps1 -Preflight should exit successfully."
   Assert-Match $text "Preflight OK" "Preflight output should report success."
   Assert-Match $text "Workflow:" "Preflight output should include workflow path."
+  Assert-Match $text "Local overlay:" "Preflight output should include local overlay path."
   Assert-Match $text "LINEAR_API_KEY source:" "Preflight output should include Linear key source."
   Assert-Match $text "WSL:" "Preflight output should include WSL check."
   Assert-Match $text "Runtime:" "Preflight output should include runtime check."

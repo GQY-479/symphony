@@ -32,28 +32,26 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
     end
   end
 
-  test "in-repo workflow files keep agent overrides under agents" do
+  test "in-repo workflow and local overlay example keep agent overrides under agents" do
     workflow = File.read!(Path.expand("../../WORKFLOW.md", __DIR__))
-    local_workflow = File.read!(Path.expand("../../WORKFLOW.local.md", __DIR__))
+    local_overlay = File.read!(Path.expand("../../WORKFLOW.local.example.yml", __DIR__))
 
     refute workflow =~ "\ncodex:"
-    refute local_workflow =~ "\ncodex:"
+    refute local_overlay =~ "\ncodex:"
 
-    assert local_workflow =~ "\nagents:"
-    assert local_workflow =~ "  codex:"
-    assert local_workflow =~ "  mimocode:"
+    assert local_overlay =~ "\nagents:"
+    assert local_overlay =~ "  codex:"
+    assert local_overlay =~ "  mimocode:"
   end
 
-  test "in-repo workflow files start MiMo ACP with the supported command shape" do
-    for path <- ["../../WORKFLOW.md", "../../WORKFLOW.local.md"] do
-      workflow = File.read!(Path.expand(path, __DIR__))
-      front_matter = workflow_front_matter(workflow)
-      args = get_in(front_matter, ["agents", "mimocode", "args"])
+  test "in-repo WORKFLOW.md starts MiMo ACP with the supported command shape" do
+    workflow = File.read!(Path.expand("../../WORKFLOW.md", __DIR__))
+    front_matter = workflow_front_matter(workflow)
+    args = get_in(front_matter, ["agents", "mimocode", "args"])
 
-      assert args == ["acp", "--cwd", "{{workspace}}", "--pure"]
-      refute "--agent" in args
-      refute Enum.chunk_every(args, 2, 1, :discard) |> Enum.any?(&(&1 == ["--agent", "compose"]))
-    end
+    assert args == ["acp", "--cwd", "{{workspace}}", "--pure"]
+    refute "--agent" in args
+    refute Enum.chunk_every(args, 2, 1, :discard) |> Enum.any?(&(&1 == ["--agent", "compose"]))
   end
 
   test "phase prompts document orchestration artifact contracts" do

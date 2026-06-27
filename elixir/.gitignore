@@ -42,6 +42,7 @@ erl_crash.dump
 .env
 .env.*
 .linear_api_key
+WORKFLOW.local.yml
 *.local.log
 symphony-local-*.log
 wsl-bg-test*.out

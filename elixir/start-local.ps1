@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if ([string]::IsNullOrWhiteSpace($Workflow)) {
-  $Workflow = Join-Path $PSScriptRoot "WORKFLOW.local.md"
+  $Workflow = Join-Path $PSScriptRoot "WORKFLOW.md"
 }
 
 if ([string]::IsNullOrWhiteSpace($LinearApiKeyFile)) {
@@ -170,6 +170,8 @@ if (-not (Test-Path -LiteralPath $Workflow -PathType Leaf)) {
 }
 
 $workflowFullPath = [IO.Path]::GetFullPath($Workflow)
+$workflowDirectory = Split-Path -Parent $workflowFullPath
+$workflowLocalOverlay = Join-Path $workflowDirectory "WORKFLOW.local.yml"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $repoRootWsl = ConvertTo-WslPath $repoRoot
 $workflowWsl = ConvertTo-WslPath $workflowFullPath
@@ -200,6 +202,11 @@ try {
 if ($preflightOnly) {
   $portCheck = Test-LocalPortAvailable -Port $Port
   Write-Host "Workflow: $workflowFullPath"
+  if (Test-Path -LiteralPath $workflowLocalOverlay -PathType Leaf) {
+    Write-Host "Local overlay: $workflowLocalOverlay"
+  } else {
+    Write-Host "Local overlay: missing"
+  }
   Write-Host ("CODEX_API_KEY source: {0}" -f $codexApiKeyInfo.Source)
   Write-Host ("LINEAR_API_KEY source: {0}" -f $linearApiKeyInfo.Source)
   Write-Host ("WSL: {0}" -f $wslStatus)

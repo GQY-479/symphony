@@ -79,10 +79,13 @@ mise exec -- ./bin/symphony ./WORKFLOW.md
 `symphony_boot_*.exs` 或手写 `mix run` 启动链路；这样容易漏掉新 agent backend、workflow
 路径、端口、日志和环境变量传递。
 
-`WORKFLOW.local.md` 是仓库维护的本地运行 profile，不是启动时从 `WORKFLOW.md` 自动生成的文件。
-如果需要为另一台机器创建 local profile，先复制 `WORKFLOW.md`，再只修改本地差异，例如 workspace
-root、clone 来源、端口、agent 命令路径、并发数和 smoke-test hooks。
-本地 profile 应保留与 `WORKFLOW.md` 相同的 prompt body，只让 YAML front matter 承载运行环境差异。
+`WORKFLOW.md` 是唯一共享 workflow 文件。启动时 Symphony 会自动加载同目录的
+`WORKFLOW.local.yml`（如果存在），并把它作为本机 YAML overlay 合并到
+`WORKFLOW.md` 的 front matter；prompt body 始终只来自 `WORKFLOW.md`。
+
+`WORKFLOW.local.yml` 已被 Git 忽略，只用于本机运行配置，例如 workspace root、clone
+来源、端口、agent 命令路径、并发数和 smoke-test hooks。新机器可从
+`WORKFLOW.local.example.yml` 复制一份后填入本机差异。
 
 推荐先做预检：
 
@@ -104,7 +107,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\elixir\stop-local.ps1
 
 默认配置如下：
 
-- workflow：`elixir/WORKFLOW.local.md`
+- workflow：`elixir/WORKFLOW.md`
+- local overlay：`elixir/WORKFLOW.local.yml`（如果存在）
 - dashboard/API 端口：`4000`
 - Linear token：优先读取 `LINEAR_API_KEY` 环境变量，其次读取 `$HOME\.linear_api_key`
 - 日志：WSL 内 `/tmp/symphony-local-4000.log`
