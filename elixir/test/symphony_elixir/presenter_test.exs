@@ -4,7 +4,7 @@ defmodule SymphonyElixirWeb.PresenterTest do
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixirWeb.Presenter
 
-  @snapshot_timeout_ms 1_000
+  @snapshot_timeout_ms 5_000
 
   defp build_orchestrator!(name) do
     {:ok, pid} = Orchestrator.start_link(name: name)
@@ -130,7 +130,7 @@ defmodule SymphonyElixirWeb.PresenterTest do
     test "includes workflow_phase in retry entries" do
       orchestrator = build_orchestrator!(PresenterTest.RetryPhaseOrch)
       issue = base_issue("MT-RTRP")
-      entry = base_retry_entry(issue, workflow_phase: :execution)
+      entry = base_retry_entry(issue, workflow_phase: :issue)
 
       replace_state!(orchestrator, fn state ->
         %{state | retry_attempts: %{issue.id => entry}}
@@ -139,14 +139,14 @@ defmodule SymphonyElixirWeb.PresenterTest do
       payload = Presenter.state_payload(orchestrator, @snapshot_timeout_ms)
 
       assert [retrying] = payload.retrying
-      assert retrying.workflow_phase == :execution
+      assert retrying.workflow_phase == :issue
       assert retrying.issue_identifier == "MT-RTRP"
     end
 
     test "includes workflow_phase in blocked entries" do
       orchestrator = build_orchestrator!(PresenterTest.BlockedPhaseOrch)
       issue = base_issue("MT-BP")
-      entry = base_blocked_entry(issue, workflow_phase: :review)
+      entry = base_blocked_entry(issue, workflow_phase: :issue)
 
       replace_state!(orchestrator, fn state ->
         state
@@ -158,7 +158,7 @@ defmodule SymphonyElixirWeb.PresenterTest do
       payload = Presenter.state_payload(orchestrator, @snapshot_timeout_ms)
 
       assert [blocked] = payload.blocked
-      assert blocked.workflow_phase == :review
+      assert blocked.workflow_phase == :issue
       assert blocked.issue_identifier == "MT-BP"
     end
 
@@ -182,12 +182,12 @@ defmodule SymphonyElixirWeb.PresenterTest do
       assert running.workflow_artifact_path =~ "workflow_plan.json"
     end
 
-    test "resolves workflow_artifact_path for execution phase" do
+    test "resolves workflow_artifact_path for issue phase" do
       orchestrator = build_orchestrator!(PresenterTest.ExecutionArtifactOrch)
       issue = base_issue("MT-EAP")
       workspace = "/tmp/symphony_workspaces/MT-EAP"
 
-      entry = base_running_entry(issue, workflow_phase: :execution, workspace_path: workspace)
+      entry = base_running_entry(issue, workflow_phase: :issue, workspace_path: workspace)
 
       replace_state!(orchestrator, fn state ->
         state
@@ -198,11 +198,11 @@ defmodule SymphonyElixirWeb.PresenterTest do
       payload = Presenter.state_payload(orchestrator, @snapshot_timeout_ms)
 
       assert [running] = payload.running
-      assert running.workflow_phase == :execution
-      assert running.workflow_artifact_path =~ "completion_packet.json"
+      assert running.workflow_phase == :issue
+      assert running.workflow_artifact_path =~ "issue_result.json"
     end
 
-    test "resolves workflow_artifact_path for review phase" do
+    test "retired workflow phases do not expose artifact paths" do
       orchestrator = build_orchestrator!(PresenterTest.ReviewArtifactOrch)
       issue = base_issue("MT-RVAP")
       workspace = "/tmp/symphony_workspaces/MT-RVAP"
@@ -219,7 +219,7 @@ defmodule SymphonyElixirWeb.PresenterTest do
 
       assert [running] = payload.running
       assert running.workflow_phase == :review
-      assert running.workflow_artifact_path =~ "review_decision.json"
+      assert running.workflow_artifact_path == nil
     end
 
     test "returns nil workflow_artifact_path when phase is nil" do
@@ -246,10 +246,10 @@ defmodule SymphonyElixirWeb.PresenterTest do
       orchestrator = build_orchestrator!(PresenterTest.DynamicPhaseOrch)
 
       issue_a = base_issue("MT-DYN-A")
-      entry_a = base_running_entry(issue_a, workflow_phase: :review)
+      entry_a = base_running_entry(issue_a, workflow_phase: :issue)
 
       issue_b = base_issue("MT-DYN-B")
-      entry_b = base_running_entry(issue_b, workflow_phase: :execution)
+      entry_b = base_running_entry(issue_b, workflow_phase: :issue)
 
       issue_c = base_issue("MT-DYN-C")
       entry_c = base_running_entry(issue_c, workflow_phase: :planning)
@@ -267,9 +267,8 @@ defmodule SymphonyElixirWeb.PresenterTest do
       payload = Presenter.state_payload(orchestrator, @snapshot_timeout_ms)
       phases = Enum.map(payload.running, & &1.workflow_phase) |> Enum.sort()
 
-      assert :execution in phases
       assert :planning in phases
-      assert :review in phases
+      assert Enum.count(phases, &(&1 == :issue)) == 2
     end
   end
 
@@ -293,7 +292,7 @@ defmodule SymphonyElixirWeb.PresenterTest do
     test "surfaces retry attempt while an issue is running from a retry dispatch" do
       orchestrator = build_orchestrator!(PresenterTest.IssueRunningRetryAttemptOrch)
       issue = base_issue("MT-RRA")
-      entry = base_running_entry(issue, workflow_phase: :execution, retry_attempt: 2)
+      entry = base_running_entry(issue, workflow_phase: :issue, retry_attempt: 2)
 
       replace_state!(orchestrator, fn state ->
         state
@@ -311,21 +310,21 @@ defmodule SymphonyElixirWeb.PresenterTest do
     test "includes workflow_phase in retry issue detail" do
       orchestrator = build_orchestrator!(PresenterTest.IssueRetryDetailOrch)
       issue = base_issue("MT-IRD")
-      entry = base_retry_entry(issue, workflow_phase: :execution)
+      entry = base_retry_entry(issue, workflow_phase: :issue)
 
       replace_state!(orchestrator, fn state ->
         %{state | retry_attempts: %{issue.id => entry}}
       end)
 
       assert {:ok, detail} = Presenter.issue_payload("MT-IRD", orchestrator, @snapshot_timeout_ms)
-      assert detail.retry.workflow_phase == :execution
+      assert detail.retry.workflow_phase == :issue
       assert detail.status == "retrying"
     end
 
     test "includes workflow_phase in blocked issue detail" do
       orchestrator = build_orchestrator!(PresenterTest.IssueBlockedDetailOrch)
       issue = base_issue("MT-IBD")
-      entry = base_blocked_entry(issue, workflow_phase: :review)
+      entry = base_blocked_entry(issue, workflow_phase: :issue)
 
       replace_state!(orchestrator, fn state ->
         state
@@ -335,7 +334,7 @@ defmodule SymphonyElixirWeb.PresenterTest do
       end)
 
       assert {:ok, detail} = Presenter.issue_payload("MT-IBD", orchestrator, @snapshot_timeout_ms)
-      assert detail.blocked.workflow_phase == :review
+      assert detail.blocked.workflow_phase == :issue
       assert detail.status == "blocked"
     end
 

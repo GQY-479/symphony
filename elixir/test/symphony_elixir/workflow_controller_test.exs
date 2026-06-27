@@ -26,7 +26,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     end
   end
 
-  test "mode direct_execution 仅落 root registry 且不创建派生 issue" do
+  test "mode direct_execution materializes root node and final review" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-direct-#{System.unique_integer([:positive])}")
 
@@ -37,6 +37,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     )
 
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
     root_issue = %Issue{
       id: "root-1",
@@ -63,19 +64,28 @@ defmodule SymphonyElixir.WorkflowControllerTest do
 
     assert registry["root_issue_id"] == "root-1"
     assert registry["root_issue_identifier"] == "YQE-100"
-    assert map_size(registry["nodes"]) == 1
+    assert map_size(registry["nodes"]) == 2
 
-    root_node =
-      registry["nodes"]
-      |> Map.values()
-      |> List.first()
-
+    root_node = Registry.node(registry, "root")
     assert root_node["issue_id"] == "root-1"
     assert root_node["issue_identifier"] == "YQE-100"
     assert root_node["status"] == "ready"
     assert root_node["agent_id"] == nil
+    assert root_node["task_type"] == "direct_execution"
 
-    refute_receive {:memory_tracker_issue_created, _}
+    assert_receive {:memory_tracker_issue_created, %Issue{} = final_review_issue}
+
+    final_review = Registry.node(registry, "final_review")
+    assert final_review["issue_id"] == final_review_issue.id
+    assert final_review["task_type"] == "review"
+    assert final_review["status"] == "waiting"
+    assert final_review["dependencies"] == ["root"]
+    assert final_review["reviews"] == ["__root_candidate__"]
+    assert final_review["subject_selector"] == %{"type" => "final_candidate_range"}
+
+    assert Enum.any?(registry["edges"], fn edge ->
+             edge["from"] == "root" and edge["to"] == "final_review"
+           end)
 
     assert {:ok, persisted} = Registry.load_by_root_identifier("YQE-100")
     assert persisted["root_issue_identifier"] == "YQE-100"
@@ -1036,6 +1046,105 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert Registry.node(registry, "implementation_review")["status"] == "completed"
     assert Registry.node(registry, "downstream")["status"] == "ready"
     assert registry["reviews"]["implementation_review"]["status"] == "accepted"
+  end
+
+  test "review issue result needs_rework targets the reviewed node" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-review-result-rework-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-review-result-rework", identifier: "YQE-REVIEW-REWORK", title: "root", state: "In Progress"}
+    implementation_issue = %Issue{id: "impl-review-result-rework", identifier: "YQE-REVIEW-REWORK-1", title: "实现", state: "Closed"}
+    review_issue = %Issue{id: "review-result-rework", identifier: "YQE-REVIEW-REWORK-2", title: "审查实现", state: "In Progress"}
+    downstream_issue = %Issue{id: "downstream-review-result-rework", identifier: "YQE-REVIEW-REWORK-3", title: "下游", state: "Todo"}
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => implementation_issue.id,
+      "issue_identifier" => implementation_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "completed",
+      "dependencies" => [],
+      "issue_result" => %{
+        "summary" => "实现完成",
+        "evidence" => ["mix test"]
+      }
+    })
+    |> Registry.put_node("implementation_review", %{
+      "node_key" => "implementation_review",
+      "issue_id" => review_issue.id,
+      "issue_identifier" => review_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "review",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => ["implementation"],
+      "reviews" => ["implementation"],
+      "subject_selector" => %{"type" => "candidate_range"}
+    })
+    |> Registry.put_node("downstream", %{
+      "node_key" => "downstream",
+      "issue_id" => downstream_issue.id,
+      "issue_identifier" => downstream_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "verification",
+      "workflow_semantics" => "executable",
+      "status" => "waiting",
+      "dependencies" => ["implementation_review"]
+    })
+    |> Registry.add_edge(%{"from" => "implementation_review", "to" => "downstream", "kind" => "handoff"})
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, review_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.issue_result_path(workspace),
+      Jason.encode!(%{
+        "schema_version" => 1,
+        "node_key" => "implementation_review",
+        "task_type" => "review",
+        "outcome" => "needs_rework",
+        "reviews" => ["implementation"],
+        "summary" => "需要补齐失败场景",
+        "reason" => "缺少失败场景测试",
+        "evidence" => ["mix test"],
+        "decisions" => [],
+        "open_questions" => []
+      })
+    )
+
+    assert {:ok, {:needs_rework, "review-result-rework", "需要补齐失败场景"}} =
+             Controller.handle_issue_completion(review_issue, workspace)
+
+    assert_receive {:memory_tracker_issue_created, %Issue{} = rework_issue}
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    original_node = Registry.node(registry, "implementation")
+    review_node = Registry.node(registry, "implementation_review")
+    rework_node = Registry.node(registry, "implementation-rework-1")
+
+    assert original_node["status"] == "superseded"
+    assert original_node["superseded_by"] == "implementation-rework-1"
+    assert review_node["status"] == "superseded"
+    assert review_node["review_summary"] == "需要补齐失败场景"
+    assert rework_node["issue_id"] == rework_issue.id
+    assert rework_node["task_type"] == "implementation"
+    assert rework_node["rework_of"] == "implementation"
+    assert Registry.node(registry, "implementation_review-rework-1") == nil
   end
 
   test "review completion 读取 review decision、回写评论并返回 pass 决策" do

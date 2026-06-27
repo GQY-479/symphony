@@ -116,8 +116,7 @@ defmodule SymphonyElixir.Workflow.ExecutionSummary do
   defp collect_artifact_paths(workspace) do
     [
       Artifacts.workflow_plan_path(workspace),
-      Artifacts.completion_packet_path(workspace),
-      Artifacts.review_decision_path(workspace)
+      Artifacts.issue_result_path(workspace)
     ]
     |> Enum.filter(&File.exists?/1)
   end

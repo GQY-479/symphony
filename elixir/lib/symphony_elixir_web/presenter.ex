@@ -255,13 +255,9 @@ defmodule SymphonyElixirWeb.Presenter do
        when is_binary(workspace) and workspace != "",
        do: Artifacts.workflow_plan_path(workspace)
 
-  defp workflow_artifact_path(%{workflow_phase: :execution, workspace_path: workspace})
+  defp workflow_artifact_path(%{workflow_phase: :issue, workspace_path: workspace})
        when is_binary(workspace) and workspace != "",
-       do: Artifacts.completion_packet_path(workspace)
-
-  defp workflow_artifact_path(%{workflow_phase: :review, workspace_path: workspace})
-       when is_binary(workspace) and workspace != "",
-       do: Artifacts.review_decision_path(workspace)
+       do: Artifacts.issue_result_path(workspace)
 
   defp workflow_artifact_path(_entry), do: nil
 

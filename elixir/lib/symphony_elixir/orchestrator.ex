@@ -323,8 +323,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp artifact_path_for_phase(:planning, running_entry), do: artifact_path(running_entry, &Artifacts.workflow_plan_path/1)
   defp artifact_path_for_phase(:issue, running_entry), do: artifact_path(running_entry, &Artifacts.issue_result_path/1)
-  defp artifact_path_for_phase(:execution, running_entry), do: artifact_path(running_entry, &Artifacts.completion_packet_path/1)
-  defp artifact_path_for_phase(:review, running_entry), do: artifact_path(running_entry, &Artifacts.review_decision_path/1)
   defp artifact_path_for_phase(_phase, running_entry), do: Map.get(running_entry, :workspace_path) || "unknown"
 
   defp artifact_path(running_entry, builder) when is_function(builder, 1) do
@@ -393,6 +391,7 @@ defmodule SymphonyElixir.Orchestrator do
     state
     |> complete_issue(issue_id)
     |> release_issue_claim(issue_id)
+    |> schedule_tick(0)
   end
 
   defp apply_workflow_issue_result(state, issue_id, running_entry, decision) do
@@ -409,6 +408,7 @@ defmodule SymphonyElixir.Orchestrator do
     state
     |> complete_issue(issue_id)
     |> release_issue_claim(issue_id)
+    |> schedule_tick(0)
   end
 
   defp apply_workflow_review_decision(state, issue_id, running_entry, {:needs_human, _reviewed_issue_id, reason}) do
@@ -419,6 +419,7 @@ defmodule SymphonyElixir.Orchestrator do
     state
     |> complete_issue(issue_id)
     |> release_issue_claim(issue_id)
+    |> schedule_tick(0)
   end
 
   defp apply_workflow_review_decision(state, issue_id, running_entry, {:fail, _reviewed_issue_id, reason}) do
@@ -908,7 +909,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp refresh_or_release_blocked_issue_state(%State{} = state, %Issue{} = issue) do
     case Map.get(state.blocked, issue.id) do
-      %{workflow_phase: :execution, error: error} when is_binary(error) ->
+      %{workflow_phase: phase, error: error} when phase in [:execution, :issue] and is_binary(error) ->
         if String.contains?(error, "workflow waiting") and Controller.issue_ready?(issue.id) do
           Logger.info("Workflow issue became ready: #{issue_context(issue)}; releasing workflow wait block")
           release_issue_claim(state, issue.id)

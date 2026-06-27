@@ -374,16 +374,6 @@ defmodule SymphonyElixir.AgentRunner do
     artifact_result(path, Artifacts.load_issue_result(workspace))
   end
 
-  defp load_workflow_artifact(:execution, workspace) when is_binary(workspace) do
-    path = Artifacts.completion_packet_path(workspace)
-    artifact_result(path, Artifacts.load_completion_packet(workspace))
-  end
-
-  defp load_workflow_artifact(:review, workspace) when is_binary(workspace) do
-    path = Artifacts.review_decision_path(workspace)
-    artifact_result(path, Artifacts.load_review_decision(workspace))
-  end
-
   defp load_workflow_artifact(_workflow_phase, _workspace), do: :skip
 
   defp expect_workflow_artifact(workflow_phase, workspace) do

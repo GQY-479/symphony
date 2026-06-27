@@ -226,19 +226,24 @@ defmodule SymphonyElixir.Workflow.Controller do
   defp valid_edge?(_edge), do: false
 
   defp materialize_plan(registry, root_issue, %{"kind" => "direct_execution"} = plan) do
-    {:ok,
-     registry
-     |> Registry.put_node("root", %{
-       "issue_id" => root_issue.id,
-       "issue_identifier" => root_issue.identifier,
-       "agent_id" => plan["agent_id"],
-       "node_key" => "root",
-       "task_type" => "direct_execution",
-       "workflow_semantics" => "executable",
-       "status" => "ready",
-       "summary" => plan["summary"]
-     })
-     |> Registry.put_status("planning_complete", %{})}
+    registry =
+      Registry.put_node(registry, "root", %{
+        "issue_id" => root_issue.id,
+        "issue_identifier" => root_issue.identifier,
+        "agent_id" => plan["agent_id"],
+        "node_key" => "root",
+        "task_type" => "direct_execution",
+        "workflow_semantics" => "executable",
+        "status" => "ready",
+        "summary" => plan["summary"]
+      })
+
+    final_edges = [%{"from" => "root", "to" => "final_review", "kind" => "review"}]
+
+    with {:ok, registry} <- create_derived_nodes(registry, root_issue, [final_review_node()], final_edges, plan),
+         {:ok, registry} <- attach_edges(registry, final_edges) do
+      {:ok, Registry.put_status(registry, "planning_complete", %{})}
+    end
   end
 
   defp materialize_plan(registry, root_issue, %{"kind" => "issue_graph", "nodes" => nodes, "edges" => edges} = plan) do
@@ -322,6 +327,9 @@ defmodule SymphonyElixir.Workflow.Controller do
     end)
   end
 
+  defp reusable_node_issue(%{"status" => "superseded"}), do: :error
+  defp reusable_node_issue(%{"workflow_semantics" => "superseded"}), do: :error
+
   defp reusable_node_issue(%{"issue_id" => issue_id, "issue_identifier" => issue_identifier})
        when is_binary(issue_id) and is_binary(issue_identifier) do
     {:ok, %{"issue_id" => issue_id, "issue_identifier" => issue_identifier}}
@@ -354,23 +362,25 @@ defmodule SymphonyElixir.Workflow.Controller do
     if Enum.any?(nodes, &(&1["node_key"] == "final_review")) do
       {nodes, edges}
     else
-      final_node = %{
-        "node_key" => "final_review",
-        "task_type" => "review",
-        "title" => "Final workflow review",
-        "goal" => "审查 root candidate 相对目标分支的最终结果",
-        "agent_id" => Config.settings!().orchestration.reviewer_agent,
-        "reviews" => ["__root_candidate__"],
-        "subject_selector" => %{"type" => "final_candidate_range"}
-      }
-
       final_edges =
         nodes
         |> leaf_node_keys(edges)
         |> Enum.map(&%{"from" => &1, "to" => "final_review", "kind" => "review"})
 
-      {nodes ++ [final_node], edges ++ final_edges}
+      {nodes ++ [final_review_node()], edges ++ final_edges}
     end
+  end
+
+  defp final_review_node do
+    %{
+      "node_key" => "final_review",
+      "task_type" => "review",
+      "title" => "Final workflow review",
+      "goal" => "审查 root candidate 相对目标分支的最终结果",
+      "agent_id" => Config.settings!().orchestration.reviewer_agent,
+      "reviews" => ["__root_candidate__"],
+      "subject_selector" => %{"type" => "final_candidate_range"}
+    }
   end
 
   defp leaf_node_keys(nodes, edges) do
@@ -537,7 +547,9 @@ defmodule SymphonyElixir.Workflow.Controller do
       "summary" => result["summary"],
       "reason" => result["reason"],
       "requested_input" => result["requested_input"],
-      "confidence" => result["confidence"] || "not_applicable"
+      "confidence" => result["confidence"] || "not_applicable",
+      "reviews" => result["reviews"] || [],
+      "issue_result" => result
     }
   end
 
@@ -586,7 +598,11 @@ defmodule SymphonyElixir.Workflow.Controller do
   defp maybe_apply_review_registry_update(%Issue{} = issue, %{"decision" => "needs_rework"} = decision) do
     case Registry.load_by_issue_id(issue.id) do
       {:ok, registry, node_key, node} ->
-        materialize_rework_issue(registry, node_key, node, issue, decision)
+        target_key = review_rework_target_node_key(registry, node_key, decision)
+        target_node = Registry.node(registry, target_key) || node
+        review_node_key = if target_key == node_key, do: nil, else: node_key
+
+        materialize_rework_issue(registry, target_key, target_node, issue, decision, review_node_key)
 
       {:error, :not_found} ->
         :ok
@@ -646,6 +662,17 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp maybe_apply_review_registry_update(_issue, _decision), do: :ok
 
+  defp review_rework_target_node_key(registry, fallback_node_key, %{"reviews" => [reviewed_node_key | []]})
+       when is_binary(reviewed_node_key) do
+    if reviewed_node_key != "__root_candidate__" and Registry.node(registry, reviewed_node_key) do
+      reviewed_node_key
+    else
+      fallback_node_key
+    end
+  end
+
+  defp review_rework_target_node_key(_registry, fallback_node_key, _decision), do: fallback_node_key
+
   defp mark_registry_for_replanning(registry, node_key, %Issue{} = issue, decision) do
     registry
     |> Registry.put_status("replanning", %{
@@ -678,6 +705,7 @@ defmodule SymphonyElixir.Workflow.Controller do
         node
         |> Map.put("status", status)
         |> Map.put("review_summary", decision["summary"])
+        |> maybe_put_issue_result(decision["issue_result"])
 
       node ->
         node
@@ -726,7 +754,7 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp replan_superseded_issue?(_node, _registry), do: false
 
-  defp materialize_rework_issue(registry, node_key, node, issue, decision) do
+  defp materialize_rework_issue(registry, node_key, node, issue, decision, review_node_key) do
     rework_key = next_rework_node_key(registry, node_key)
     title = rework_issue_title(node, issue)
     description = rework_issue_description(registry, node_key, node, issue, decision)
@@ -743,15 +771,17 @@ defmodule SymphonyElixir.Workflow.Controller do
              |> Map.merge(issue_tracker_context(issue))
            ) do
       dependencies = node["dependencies"] || []
+      downstream_source_key = review_node_key || node_key
 
       updated_registry =
         registry
         |> supersede_node(node_key, rework_key, decision)
+        |> maybe_supersede_review_node(review_node_key, rework_key, decision)
         |> put_rework_node(rework_key, node_key, node, rework_issue, decision, dependencies)
-        |> rewire_downstream_dependencies(node_key, rework_key)
-        |> rewire_downstream_edges(node_key, rework_key)
+        |> rewire_downstream_dependencies(downstream_source_key, rework_key)
+        |> rewire_downstream_edges(downstream_source_key, rework_key)
         |> Registry.add_edge(%{
-          "from" => node_key,
+          "from" => downstream_source_key,
           "to" => rework_key,
           "kind" => "rework",
           "handoff_summary" => decision["summary"]
@@ -852,11 +882,22 @@ defmodule SymphonyElixir.Workflow.Controller do
         |> Map.put("workflow_semantics", "superseded")
         |> Map.put("superseded_by", rework_key)
         |> Map.put("review_summary", decision["summary"])
+        |> maybe_put_issue_result(decision["issue_result"])
 
       node ->
         node
     end)
   end
+
+  defp maybe_supersede_review_node(registry, nil, _rework_key, _decision), do: registry
+
+  defp maybe_supersede_review_node(registry, review_node_key, rework_key, decision) do
+    supersede_node(registry, review_node_key, rework_key, decision)
+  end
+
+  defp maybe_put_issue_result(node, nil), do: node
+  defp maybe_put_issue_result(node, issue_result) when is_map(issue_result), do: Map.put(node, "issue_result", issue_result)
+  defp maybe_put_issue_result(node, _issue_result), do: node
 
   defp put_rework_node(registry, rework_key, original_node_key, original_node, rework_issue, decision, dependencies) do
     Registry.put_node(registry, rework_key, %{

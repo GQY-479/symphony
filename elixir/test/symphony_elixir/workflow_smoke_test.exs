@@ -18,17 +18,25 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       direct_execution_agent_script(
         log_path,
         %{
+          "schema_version" => 1,
+          "node_key" => "root",
+          "task_type" => "direct_execution",
           "outcome" => "completed",
           "summary" => "direct execution completed",
-          "evidence" => ["fake cli wrote completion_packet.json"],
+          "evidence" => ["fake cli wrote issue_result.json"],
           "decisions" => ["execute root issue directly"],
-          "open_questions" => [],
-          "next_handoff" => "review the direct execution"
+          "open_questions" => []
         },
         %{
-          "decision" => "pass",
+          "schema_version" => 1,
+          "node_key" => "final_review",
+          "task_type" => "review",
+          "outcome" => "pass",
+          "reviews" => ["__root_candidate__"],
           "summary" => "direct execution review passed",
-          "confidence" => "high"
+          "evidence" => ["fake cli reviewed issue_result.json"],
+          "decisions" => [],
+          "open_questions" => []
         }
       )
 
@@ -87,14 +95,15 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     assert root_node["issue_identifier"] == root_issue.identifier
     assert root_node["task_type"] == "direct_execution"
     assert root_node["status"] == "completed"
+    assert Registry.node(registry, "final_review")["status"] == "completed"
 
     issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-    assert Enum.map(issues, & &1.id) == [root_issue.id]
+    assert length(issues) == 2
 
     runs = read_agent_runs(log_path)
     assert %{"phase" => "planning", "issue_identifier" => root_issue.identifier, "workspace" => root_issue.identifier} in runs
-    assert %{"phase" => "execution", "issue_identifier" => root_issue.identifier, "workspace" => root_issue.identifier} in runs
-    assert %{"phase" => "review", "issue_identifier" => root_issue.identifier, "workspace" => root_issue.identifier} in runs
+    assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "direct_execution"))
+    assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "review"))
   end
 
   test "真实 Orchestrator 拒绝缺少 evidence 的 direct_execution completion packet" do
@@ -110,17 +119,25 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       direct_execution_agent_script(
         log_path,
         %{
+          "schema_version" => 1,
+          "node_key" => "root",
+          "task_type" => "direct_execution",
           "outcome" => "completed",
           "summary" => "direct execution completed without evidence",
           "evidence" => [],
           "decisions" => ["execute root issue directly"],
-          "open_questions" => [],
-          "next_handoff" => "review the direct execution"
+          "open_questions" => []
         },
         %{
-          "decision" => "pass",
-          "summary" => "review should not run for invalid completion packet",
-          "confidence" => "high"
+          "schema_version" => 1,
+          "node_key" => "final_review",
+          "task_type" => "review",
+          "outcome" => "pass",
+          "reviews" => ["__root_candidate__"],
+          "summary" => "review should not run for invalid issue result",
+          "evidence" => ["fake cli reviewed issue_result.json"],
+          "decisions" => [],
+          "open_questions" => []
         }
       )
 
@@ -151,8 +168,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
              snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
 
              Enum.any?(snapshot.blocked, fn blocked ->
-               blocked.issue_id == root_issue.id and blocked.workflow_phase == :execution and
-                 String.contains?(blocked.error, "invalid_completion_packet")
+               blocked.issue_id == root_issue.id and blocked.workflow_phase == :issue and
+                 String.contains?(blocked.error, "invalid_issue_result")
              end)
            end) do
       flunk("""
@@ -175,8 +192,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
 
     runs = read_agent_runs(log_path)
     assert Enum.any?(runs, &(&1["phase"] == "planning" and &1["issue_identifier"] == root_issue.identifier))
-    assert Enum.any?(runs, &(&1["phase"] == "execution" and &1["issue_identifier"] == root_issue.identifier))
-    refute Enum.any?(runs, &(&1["phase"] == "review"))
+    assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "direct_execution"))
+    refute Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "review"))
   end
 
   test "真实 Orchestrator 在 direct_execution review needs_human 时阻塞 registry 并保存人工输入请求" do
@@ -192,17 +209,25 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       direct_execution_agent_script(
         log_path,
         %{
+          "schema_version" => 1,
+          "node_key" => "root",
+          "task_type" => "direct_execution",
           "outcome" => "completed",
           "summary" => "direct execution completed but needs product input",
-          "evidence" => ["fake cli wrote completion_packet.json"],
+          "evidence" => ["fake cli wrote issue_result.json"],
           "decisions" => ["execute root issue directly"],
-          "open_questions" => [],
-          "next_handoff" => "review the direct execution"
+          "open_questions" => []
         },
         %{
-          "decision" => "needs_human",
+          "schema_version" => 1,
+          "node_key" => "final_review",
+          "task_type" => "review",
+          "outcome" => "needs_human",
+          "reviews" => ["__root_candidate__"],
           "summary" => "product decision required before closing",
-          "confidence" => "medium",
+          "evidence" => ["fake cli reviewed issue_result.json"],
+          "decisions" => [],
+          "open_questions" => [],
           "reason" => "acceptance criteria require human confirmation",
           "requested_input" => "Please confirm whether this direct execution is acceptable."
         }
@@ -238,7 +263,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
                {:ok, %{"status" => "blocked", "human_input_request" => request}} when is_binary(request) ->
                  snapshot.running == [] and snapshot.retrying == [] and
                    Enum.any?(snapshot.blocked, fn blocked ->
-                     blocked.issue_id == root_issue.id and blocked.workflow_phase == :review and
+                     blocked.workflow_phase == :issue and
                        String.contains?(blocked.error, "review needs human")
                    end)
 
@@ -265,8 +290,9 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
     assert registry["blocked_reason"] == "product decision required before closing"
     assert registry["human_input_request"] == "Please confirm whether this direct execution is acceptable."
-    assert Registry.node(registry, "root")["status"] == "blocked"
-    assert Registry.node(registry, "root")["review_summary"] == "product decision required before closing"
+    assert Registry.node(registry, "root")["status"] == "completed"
+    assert Registry.node(registry, "final_review")["status"] == "blocked"
+    assert Registry.node(registry, "final_review")["review_summary"] == "product decision required before closing"
   end
 
   test "真实 Orchestrator 在 direct_execution review fail 时标记 registry failed 并保存失败原因" do
@@ -282,17 +308,25 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       direct_execution_agent_script(
         log_path,
         %{
+          "schema_version" => 1,
+          "node_key" => "root",
+          "task_type" => "direct_execution",
           "outcome" => "completed",
           "summary" => "direct execution completed with unacceptable result",
-          "evidence" => ["fake cli wrote completion_packet.json"],
+          "evidence" => ["fake cli wrote issue_result.json"],
           "decisions" => ["execute root issue directly"],
-          "open_questions" => [],
-          "next_handoff" => "review the direct execution"
+          "open_questions" => []
         },
         %{
-          "decision" => "fail",
+          "schema_version" => 1,
+          "node_key" => "final_review",
+          "task_type" => "review",
+          "outcome" => "fail",
+          "reviews" => ["__root_candidate__"],
           "summary" => "direct execution failed review",
-          "confidence" => "high",
+          "evidence" => ["fake cli reviewed issue_result.json"],
+          "decisions" => [],
+          "open_questions" => [],
           "reason" => "completion evidence proves the wrong behavior"
         }
       )
@@ -327,7 +361,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
                {:ok, %{"status" => "failed", "failure_reason" => reason}} when is_binary(reason) ->
                  snapshot.running == [] and snapshot.retrying == [] and
                    Enum.any?(snapshot.blocked, fn blocked ->
-                     blocked.issue_id == root_issue.id and blocked.workflow_phase == :review and
+                     blocked.workflow_phase == :issue and
                        String.contains?(blocked.error, "review failed")
                    end)
 
@@ -354,8 +388,9 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
     assert registry["failure_reason"] == "direct execution failed review"
     refute registry["failure_reason"] == "completion evidence proves the wrong behavior"
-    assert Registry.node(registry, "root")["status"] == "failed"
-    assert Registry.node(registry, "root")["review_summary"] == "direct execution failed review"
+    assert Registry.node(registry, "root")["status"] == "completed"
+    assert Registry.node(registry, "final_review")["status"] == "failed"
+    assert Registry.node(registry, "final_review")["review_summary"] == "direct execution failed review"
   end
 
   test "真实 Orchestrator 通过 artifacts 跑通 planning execution review 闭环" do
@@ -367,12 +402,14 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     agent_script =
       "import json, os, sys; " <>
         "p=sys.argv[1]; os.makedirs('.symphony', exist_ok=True); " <>
-        "phase='plan' if 'workflow_plan.json' in p else ('completion' if 'completion_packet.json' in p else ('review' if 'review_decision.json' in p else '')); " <>
+        "phase='plan' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
+        "is_review='\"task_type\": \"review\"' in p or 'Review issue' in p; " <>
         "payloads={" <>
-        "'plan': {'kind': 'issue_graph', 'summary': 'smoke planning created one executable child issue', 'confidence': 'high', 'nodes': [{'node_key': 'implementation', 'task_type': 'implementation', 'title': 'Smoke derived implementation', 'goal': 'Prove the workflow closes through review', 'agent_id': 'codex', 'instructions': 'Write the completion packet for the smoke test.', 'evidence_expectations': ['completion packet exists']}], 'edges': []}, " <>
-        "'completion': {'outcome': 'completed', 'summary': 'smoke execution completed', 'evidence': ['fake cli wrote completion_packet.json'], 'decisions': ['use artifact handoff'], 'open_questions': [], 'next_handoff': 'review the smoke completion'}, " <>
-        "'review': {'decision': 'pass', 'summary': 'smoke review passed', 'confidence': 'high'}}; " <>
-        "paths={'plan': '.symphony/workflow_plan.json', 'completion': '.symphony/completion_packet.json', 'review': '.symphony/review_decision.json'}; " <>
+        "'plan': {'kind': 'issue_graph', 'summary': 'smoke planning created one executable child issue', 'confidence': 'high', 'nodes': [{'node_key': 'implementation', 'task_type': 'implementation', 'title': 'Smoke derived implementation', 'goal': 'Prove the workflow closes through review', 'agent_id': 'codex', 'instructions': 'Write the issue result for the smoke test.', 'evidence_expectations': ['issue result exists']}], 'edges': []}, " <>
+        "'implementation': {'schema_version': 1, 'node_key': 'implementation', 'task_type': 'implementation', 'outcome': 'completed', 'summary': 'smoke execution completed', 'evidence': ['fake cli wrote issue_result.json'], 'decisions': ['use artifact handoff'], 'open_questions': []}, " <>
+        "'review': {'schema_version': 1, 'node_key': 'final_review', 'task_type': 'review', 'outcome': 'pass', 'reviews': ['__root_candidate__'], 'summary': 'smoke review passed', 'evidence': ['fake cli reviewed issue_result.json'], 'decisions': [], 'open_questions': []}}; " <>
+        "payloads['issue']=payloads['review'] if is_review else payloads['implementation']; " <>
+        "paths={'plan': '.symphony/workflow_plan.json', 'issue': '.symphony/issue_result.json'}; " <>
         "phase or sys.exit(2); open(paths[phase], 'w', encoding='utf-8').write(json.dumps(payloads[phase]))"
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -471,13 +508,15 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     agent_script =
       "import json, os, sys; " <>
         "p=sys.argv[1]; log=#{Jason.encode!(log_path)}; os.makedirs('.symphony', exist_ok=True); os.makedirs(os.path.dirname(log), exist_ok=True); " <>
-        "phase='planning' if 'workflow_plan.json' in p else ('execution' if 'completion_packet.json' in p else ('review' if 'review_decision.json' in p else '')); " <>
+        "phase='planning' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
+        "is_review='\"task_type\": \"review\"' in p or 'Review issue' in p; " <>
         "payloads={" <>
-        "'planning': {'kind': 'issue_graph', 'summary': 'recovery planning created one executable child issue', 'confidence': 'high', 'nodes': [{'node_key': 'implementation', 'task_type': 'implementation', 'title': 'Recovery derived implementation', 'goal': 'Finish after orchestrator restart', 'agent_id': 'codex', 'instructions': 'Write the completion packet for recovery smoke.', 'evidence_expectations': ['completion packet exists']}], 'edges': []}, " <>
-        "'execution': {'outcome': 'completed', 'summary': 'recovery execution completed', 'evidence': ['fake cli wrote completion_packet.json'], 'decisions': ['continue from persisted registry'], 'open_questions': [], 'next_handoff': 'review the recovery completion'}, " <>
-        "'review': {'decision': 'pass', 'summary': 'recovery review passed', 'confidence': 'high'}}; " <>
-        "paths={'planning': '.symphony/workflow_plan.json', 'execution': '.symphony/completion_packet.json', 'review': '.symphony/review_decision.json'}; " <>
-        "phase or sys.exit(2); open(log, 'a', encoding='utf-8').write(json.dumps({'phase': phase, 'issue_identifier': os.path.basename(os.getcwd())}, ensure_ascii=False)+chr(10)); " <>
+        "'planning': {'kind': 'issue_graph', 'summary': 'recovery planning created one executable child issue', 'confidence': 'high', 'nodes': [{'node_key': 'implementation', 'task_type': 'implementation', 'title': 'Recovery derived implementation', 'goal': 'Finish after orchestrator restart', 'agent_id': 'codex', 'instructions': 'Write the issue result for recovery smoke.', 'evidence_expectations': ['issue result exists']}], 'edges': []}, " <>
+        "'implementation': {'schema_version': 1, 'node_key': 'implementation', 'task_type': 'implementation', 'outcome': 'completed', 'summary': 'recovery execution completed', 'evidence': ['fake cli wrote issue_result.json'], 'decisions': ['continue from persisted registry'], 'open_questions': []}, " <>
+        "'review': {'schema_version': 1, 'node_key': 'final_review', 'task_type': 'review', 'outcome': 'pass', 'reviews': ['__root_candidate__'], 'summary': 'recovery review passed', 'evidence': ['fake cli reviewed issue_result.json'], 'decisions': [], 'open_questions': []}}; " <>
+        "payloads['issue']=payloads['review'] if is_review else payloads['implementation']; " <>
+        "paths={'planning': '.symphony/workflow_plan.json', 'issue': '.symphony/issue_result.json'}; " <>
+        "phase or sys.exit(2); open(log, 'a', encoding='utf-8').write(json.dumps({'phase': phase, 'task_type': payloads[phase].get('task_type'), 'node_key': payloads[phase].get('node_key'), 'issue_identifier': os.path.basename(os.getcwd())}, ensure_ascii=False)+chr(10)); " <>
         "open(paths[phase], 'w', encoding='utf-8').write(json.dumps(payloads[phase], ensure_ascii=False))"
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -542,8 +581,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
                   %{"status" => "ready"} <- Registry.node(registry, "implementation") do
                registry["status"] == "planning_complete" and
                  Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "planning")) and
-                 not Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "execution")) and
-                 not Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "review"))
+                 not Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "issue"))
              else
                _ -> false
              end
@@ -618,8 +656,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     runs = read_agent_runs(log_path)
     assert Enum.count(runs, &(&1["phase"] == "planning")) == planning_runs_before_restart
     assert Enum.any?(runs, &(&1["phase"] == "planning" and &1["issue_identifier"] == root_issue.identifier))
-    assert Enum.any?(runs, &(&1["phase"] == "execution" and &1["issue_identifier"] != root_issue.identifier))
-    assert Enum.any?(runs, &(&1["phase"] == "review" and &1["issue_identifier"] != root_issue.identifier))
+    assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "implementation"))
+    assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "review"))
   end
 
   test "真实 Orchestrator 按规划结果把派生 issue 分派给指定 agent 并完成审查闭环" do
@@ -640,20 +678,27 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       SymphonyElixir.FakeAcpServer.write!(test_root, %{
         "sessionId" => "fake-mimo-session",
         "writeFileOnPrompt" => %{
-          "path" => ".symphony/completion_packet.json",
+          "path" => ".symphony/issue_result.json",
           "contents" =>
             Jason.encode!(%{
+              "schema_version" => 1,
+              "node_key" => "implementation",
+              "task_type" => "implementation",
               "outcome" => "completed",
               "summary" => "mimocode execution completed",
-              "evidence" => ["fake acp_stdio mimocode wrote completion_packet.json"],
+              "evidence" => ["fake acp_stdio mimocode wrote issue_result.json"],
               "decisions" => ["use mimocode for implementation"],
-              "open_questions" => [],
-              "next_handoff" => "codex review"
+              "open_questions" => []
             })
         },
         "appendJsonlOnPrompt" => %{
           "path" => log_path,
-          "entry" => %{"agent" => "mimocode", "agent_kind" => "acp_stdio", "phase" => "execution"}
+          "entry" => %{
+            "agent" => "mimocode",
+            "agent_kind" => "acp_stdio",
+            "phase" => "issue",
+            "task_type" => "implementation"
+          }
         }
       })
 
@@ -748,11 +793,24 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     runs = read_agent_runs(log_path)
 
     assert %{"agent" => "codex", "agent_kind" => "codex_app_server", "phase" => "planning"} in runs
-    assert %{"agent" => "mimocode", "agent_kind" => "acp_stdio", "phase" => "execution"} in runs
-    assert %{"agent" => "codex", "agent_kind" => "codex_app_server", "phase" => "review"} in runs
-    refute %{"agent" => "codex", "agent_kind" => "codex_app_server", "phase" => "execution"} in runs
+
+    assert %{
+             "agent" => "mimocode",
+             "agent_kind" => "acp_stdio",
+             "phase" => "issue",
+             "task_type" => "implementation"
+           } in runs
+
+    assert %{
+             "agent" => "codex",
+             "agent_kind" => "codex_app_server",
+             "phase" => "issue",
+             "task_type" => "review"
+           } in runs
+
+    refute Enum.any?(runs, &(&1["agent"] == "codex" and &1["task_type"] == "implementation"))
     refute %{"agent" => "mimocode", "agent_kind" => "acp_stdio", "phase" => "planning"} in runs
-    refute %{"agent" => "mimocode", "agent_kind" => "acp_stdio", "phase" => "review"} in runs
+    refute Enum.any?(runs, &(&1["agent"] == "mimocode" and &1["task_type"] == "review"))
 
     snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
     assert snapshot.running == []
@@ -769,13 +827,15 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     agent_script =
       "import json, os, sys; " <>
         "p=sys.argv[1]; os.makedirs('.symphony', exist_ok=True); " <>
-        "phase='plan' if 'workflow_plan.json' in p else ('completion' if 'completion_packet.json' in p else ('review' if 'review_decision.json' in p else '')); " <>
-        "decision='pass' if '返工：' in p else 'needs_rework'; " <>
+        "phase='plan' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
+        "is_review='\"task_type\": \"review\"' in p or 'Review issue' in p; is_final='final_review' in p or '__root_candidate__' in p; is_rework='返工：' in p or 'implementation-rework-1' in p; " <>
+        "decision='pass' if is_final else 'needs_rework'; " <>
         "payloads={" <>
-        "'plan': {'kind':'issue_graph','summary':'smoke planning created rework candidate','confidence':'high','nodes':[{'node_key':'implementation','task_type':'implementation','title':'Smoke rework implementation','goal':'Produce a packet that first review rejects','agent_id':'codex','instructions':'Write completion packet for rework smoke.','evidence_expectations':['completion packet exists']}],'edges':[]}, " <>
-        "'completion': {'outcome':'completed','summary':'smoke execution completed for '+p[:80],'evidence':['fake cli wrote completion_packet.json'],'decisions':['use artifact handoff'],'open_questions':[],'next_handoff':'review the smoke completion'}, " <>
-        "'review': {'decision':decision,'summary':'smoke rework passed' if decision=='pass' else 'smoke review requested rework','confidence':'high','reason':'smoke requested rework' if decision!='pass' else ''}}; " <>
-        "paths={'plan':'.symphony/workflow_plan.json','completion':'.symphony/completion_packet.json','review':'.symphony/review_decision.json'}; " <>
+        "'plan': {'kind':'issue_graph','summary':'smoke planning created rework candidate','confidence':'high','nodes':[{'node_key':'implementation','task_type':'implementation','title':'Smoke rework implementation','goal':'Produce a result that first review rejects','agent_id':'codex','instructions':'Write issue result for rework smoke.','evidence_expectations':['issue result exists']},{'node_key':'implementation_review','task_type':'review','title':'Review smoke implementation','goal':'Review the implementation result','agent_id':'codex','reviews':['implementation'],'subject_selector':{'type':'candidate_range'}}],'edges':[{'from':'implementation','to':'implementation_review'}]}, " <>
+        "'implementation': {'schema_version':1,'node_key':'implementation-rework-1' if is_rework else 'implementation','task_type':'implementation','outcome':'completed','summary':'smoke execution completed for '+p[:80],'evidence':['fake cli wrote issue_result.json'],'decisions':['use artifact handoff'],'open_questions':[]}, " <>
+        "'review': {'schema_version':1,'node_key':'final_review' if is_final else 'implementation_review','task_type':'review','outcome':decision,'reviews':['__root_candidate__'] if is_final else ['implementation'],'summary':'smoke review passed' if decision=='pass' else 'smoke review requested rework','reason':'smoke requested rework' if decision!='pass' else '', 'evidence':['fake cli reviewed issue_result.json'],'decisions':[],'open_questions':[]}}; " <>
+        "payloads['issue']=payloads['review'] if is_review else payloads['implementation']; " <>
+        "paths={'plan':'.symphony/workflow_plan.json','issue':'.symphony/issue_result.json'}; " <>
         "phase or sys.exit(2); open(paths[phase], 'w', encoding='utf-8').write(json.dumps(payloads[phase]))"
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -832,7 +892,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
              root = Enum.find(issues, &(&1.id == root_issue.id))
              derived = Enum.reject(issues, &(&1.id == root_issue.id))
 
-             root && root.state == "Done" && length(derived) == 2 &&
+             root && root.state == "Done" && length(derived) >= 3 &&
                Enum.all?(derived, &(&1.state == "Done")) &&
                orchestrator_idle?(orchestrator_name)
            end) do
@@ -854,6 +914,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     assert registry["status"] == "completed"
     assert Registry.node(registry, "implementation")["status"] == "superseded"
     assert Registry.node(registry, "implementation-rework-1")["status"] == "completed"
+    assert Registry.node(registry, "final_review")["status"] == "completed"
   end
 
   test "真实 Orchestrator 通过 needs_replan 回到 root planning 并完成新计划" do
@@ -865,14 +926,16 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     agent_script =
       "import json, os, sys; " <>
         "p=sys.argv[1]; os.makedirs('.symphony', exist_ok=True); " <>
-        "phase='plan' if 'workflow_plan.json' in p else ('completion' if 'completion_packet.json' in p else ('review' if 'review_decision.json' in p else '')); " <>
+        "phase='plan' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
+        "is_review='\"task_type\": \"review\"' in p or 'Review issue' in p; is_final='final_review' in p or '__root_candidate__' in p; " <>
         "replanning='重规划原因' in p; key='implementation-v2' if replanning else 'implementation-v1'; title='Smoke replanned implementation' if replanning else 'Smoke initial implementation'; summary='smoke replanning created replacement issue' if replanning else 'smoke planning created initial issue'; " <>
-        "decision='needs_replan' if 'Smoke initial implementation' in p else 'pass'; " <>
+        "decision='pass' if is_final else 'needs_replan'; " <>
         "payloads={" <>
-        "'plan': {'kind':'issue_graph','summary':summary,'confidence':'high','nodes':[{'node_key':key,'task_type':'implementation','title':title,'goal':'Prove replan closes through a replacement issue','agent_id':'codex','instructions':'Write completion packet for replan smoke.','evidence_expectations':['completion packet exists']}],'edges':[]}, " <>
-        "'completion': {'outcome':'completed','summary':'smoke execution completed for '+p[:80],'evidence':['fake cli wrote completion_packet.json'],'decisions':['use artifact handoff'],'open_questions':[],'next_handoff':'review the smoke completion'}, " <>
-        "'review': {'decision':decision,'summary':'smoke review requested replan' if decision=='needs_replan' else 'smoke replanned review passed','confidence':'high','reason':'smoke requested replan' if decision!='pass' else ''}}; " <>
-        "paths={'plan':'.symphony/workflow_plan.json','completion':'.symphony/completion_packet.json','review':'.symphony/review_decision.json'}; " <>
+        "'plan': {'kind':'issue_graph','summary':summary,'confidence':'high','nodes':([{'node_key':key,'task_type':'implementation','title':title,'goal':'Prove replan closes through a replacement issue','agent_id':'codex','instructions':'Write issue result for replan smoke.','evidence_expectations':['issue result exists']}] if replanning else [{'node_key':key,'task_type':'implementation','title':title,'goal':'Prove replan closes through a replacement issue','agent_id':'codex','instructions':'Write issue result for replan smoke.','evidence_expectations':['issue result exists']},{'node_key':'implementation_review','task_type':'review','title':'Review initial implementation','goal':'Request replanning for the initial result','agent_id':'codex','reviews':['implementation-v1'],'subject_selector':{'type':'candidate_range'}}]),'edges':([] if replanning else [{'from':'implementation-v1','to':'implementation_review'}])}, " <>
+        "'implementation': {'schema_version':1,'node_key':key,'task_type':'implementation','outcome':'completed','summary':'smoke execution completed for '+p[:80],'evidence':['fake cli wrote issue_result.json'],'decisions':['use artifact handoff'],'open_questions':[]}, " <>
+        "'review': {'schema_version':1,'node_key':'final_review' if is_final else 'implementation_review','task_type':'review','outcome':decision,'reviews':['__root_candidate__'] if is_final else ['implementation-v1'],'summary':'smoke review requested replan' if decision=='needs_replan' else 'smoke replanned review passed','reason':'smoke requested replan' if decision!='pass' else '', 'evidence':['fake cli reviewed issue_result.json'],'decisions':[],'open_questions':[]}}; " <>
+        "payloads['issue']=payloads['review'] if is_review else payloads['implementation']; " <>
+        "paths={'plan':'.symphony/workflow_plan.json','issue':'.symphony/issue_result.json'}; " <>
         "phase or sys.exit(2); open(paths[phase], 'w', encoding='utf-8').write(json.dumps(payloads[phase]))"
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -929,7 +992,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
              root = Enum.find(issues, &(&1.id == root_issue.id))
              derived = Enum.reject(issues, &(&1.id == root_issue.id))
 
-             root && root.state == "Done" && length(derived) == 2 &&
+             root && root.state == "Done" && length(derived) >= 2 &&
                Enum.all?(derived, &(&1.state == "Done")) &&
                orchestrator_idle?(orchestrator_name)
            end) do
@@ -949,8 +1012,9 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
 
     assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
     assert registry["status"] == "completed"
-    assert Registry.node(registry, "implementation-v1")["status"] == "superseded"
+    assert Registry.node(registry, "implementation-v1")["status"] == "completed"
     assert Registry.node(registry, "implementation-v2")["status"] == "completed"
+    assert Registry.node(registry, "final_review")["status"] == "completed"
   end
 
   test "真实 Codex app-server smoke 会把 root workspace 与可写目录传给 execution 和 review" do
@@ -1046,15 +1110,26 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
 
     runs = read_agent_runs(log_path)
 
-    assert Enum.any?(runs, &(&1["phase"] == "execution" and &1["prompt_contains_root_workspace"] == true))
-    assert Enum.any?(runs, &(&1["phase"] == "review" and &1["prompt_contains_root_workspace"] == true))
+    assert Enum.any?(
+             runs,
+             &(&1["phase"] == "issue" and &1["task_type"] == "implementation" and
+                 &1["prompt_contains_root_workspace"] == true)
+           )
+
+    assert Enum.any?(
+             runs,
+             &(&1["phase"] == "issue" and &1["task_type"] == "review" and
+                 &1["prompt_contains_root_workspace"] == true)
+           )
 
     assert Enum.any?(runs, fn run ->
-             run["phase"] == "execution" and is_list(run["writable_roots"]) and root_workspace in run["writable_roots"]
+             run["phase"] == "issue" and run["task_type"] == "implementation" and is_list(run["writable_roots"]) and
+               root_workspace in run["writable_roots"]
            end)
 
     assert Enum.any?(runs, fn run ->
-             run["phase"] == "review" and is_list(run["writable_roots"]) and root_workspace in run["writable_roots"]
+             run["phase"] == "issue" and run["task_type"] == "review" and is_list(run["writable_roots"]) and
+               root_workspace in run["writable_roots"]
            end)
   end
 
@@ -1137,7 +1212,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     )
   end
 
-  defp direct_execution_agent_script(log_path, completion_packet, review_decision) do
+  defp direct_execution_agent_script(log_path, issue_result, review_result) do
     plan_json =
       Jason.encode!(%{
         "kind" => "direct_execution",
@@ -1146,20 +1221,22 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         "agent_id" => "codex"
       })
 
-    completion_json = Jason.encode!(completion_packet)
-    review_json = Jason.encode!(review_decision)
+    issue_json = Jason.encode!(issue_result)
+    review_json = Jason.encode!(review_result)
 
     plan_b64 = Base.encode64(plan_json)
-    completion_b64 = Base.encode64(completion_json)
+    issue_b64 = Base.encode64(issue_json)
     review_b64 = Base.encode64(review_json)
 
     "import base64, json, os, sys; " <>
       "p=sys.argv[1]; log=#{Jason.encode!(log_path)}; os.makedirs('.symphony', exist_ok=True); os.makedirs(os.path.dirname(log), exist_ok=True); " <>
-      "phase='planning' if 'workflow_plan.json' in p else ('execution' if 'completion_packet.json' in p else ('review' if 'review_decision.json' in p else '')); " <>
+      "phase='planning' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
+      "task_type='review' if '\"task_type\": \"review\"' in p or 'Review issue' in p else ('direct_execution' if '\"task_type\": \"direct_execution\"' in p else ''); " <>
       "loads=lambda v: json.loads(base64.b64decode(v).decode('utf-8')); " <>
-      "payloads={'planning': loads('#{plan_b64}'), 'execution': loads('#{completion_b64}'), 'review': loads('#{review_b64}')}; " <>
-      "paths={'planning': '.symphony/workflow_plan.json', 'execution': '.symphony/completion_packet.json', 'review': '.symphony/review_decision.json'}; " <>
+      "payloads={'planning': loads('#{plan_b64}'), 'issue': (loads('#{review_b64}') if task_type=='review' else loads('#{issue_b64}'))}; " <>
+      "paths={'planning': '.symphony/workflow_plan.json', 'issue': '.symphony/issue_result.json'}; " <>
       "phase or sys.exit(2); open(log, 'a', encoding='utf-8').write(json.dumps({'phase': phase, 'issue_identifier': os.path.basename(os.getcwd()), 'workspace': os.path.basename(os.getcwd())}, ensure_ascii=False)+chr(10)); " <>
+      "open(log, 'a', encoding='utf-8').write(json.dumps({'phase': phase, 'task_type': task_type, 'node_key': payloads[phase].get('node_key'), 'issue_identifier': os.path.basename(os.getcwd()), 'workspace': os.path.basename(os.getcwd())}, ensure_ascii=False)+chr(10)) if phase == 'issue' else None; " <>
       "open(paths[phase], 'w', encoding='utf-8').write(json.dumps(payloads[phase], ensure_ascii=False))"
   end
 
@@ -1188,9 +1265,15 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
 
     review_json =
       Jason.encode!(%{
-        "decision" => "pass",
+        "schema_version" => 1,
+        "node_key" => "final_review",
+        "task_type" => "review",
+        "outcome" => "pass",
+        "reviews" => ["__root_candidate__"],
         "summary" => "codex review passed routed execution",
-        "confidence" => "high"
+        "evidence" => ["fake codex reviewed routed execution"],
+        "decisions" => [],
+        "open_questions" => []
       })
 
     File.write!(script, """
@@ -1215,10 +1298,13 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False))
 
-    def append_run(phase):
+    def append_run(phase, task_type=None):
         os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        payload = {"agent": "codex", "agent_kind": "codex_app_server", "phase": phase}
+        if task_type is not None:
+            payload["task_type"] = task_type
         with open(LOG_PATH, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"agent": "codex", "agent_kind": "codex_app_server", "phase": phase}, ensure_ascii=False) + "\\n")
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\\n")
 
     for line in sys.stdin:
         message = json.loads(line)
@@ -1238,13 +1324,13 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
                 phase = "planning"
                 if planning_turns > 1 or "上一轮 planning 已正常结束" in text:
                     write_json(".symphony/workflow_plan.json", PLAN)
-            elif "review_decision.json" in text:
-                phase = "review"
-                write_json(".symphony/review_decision.json", REVIEW)
+            elif "issue_result.json" in text:
+                phase = "issue"
+                write_json(".symphony/issue_result.json", REVIEW)
             else:
                 sys.exit(7)
 
-            append_run(phase)
+            append_run(phase, REVIEW.get("task_type") if phase == "issue" else None)
             send({"id": request_id, "result": {"turn": {"id": "fake-codex-" + phase}}})
             send({"method": "turn/completed"})
         elif request_id is not None:
@@ -1276,7 +1362,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
             "node_key" => "implementation",
             "task_type" => "implementation",
             "title" => "Probe root workspace implementation",
-            "goal" => "Verify execution/review receive root workspace context",
+            "goal" => "Verify implementation/review issue nodes receive root workspace context",
             "agent_id" => "codex",
             "instructions" => "在 root workflow workspace 中读取或写入目标文件，并在当前 issue workspace 写 artifact。",
             "evidence_expectations" => ["root workflow workspace path is present in prompt"]
@@ -1335,40 +1421,50 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
                     "prompt_contains_root_workspace": ROOT_WORKSPACE in text,
                     "writable_roots": writable_roots
                 })
-            elif "completion_packet.json" in text:
-                phase = "execution"
+            elif "issue_result.json" in text and not ("\\\"task_type\\\": \\\"review\\\"" in text or "Review issue" in text):
+                phase = "issue"
                 prompt_contains_root_workspace = ROOT_WORKSPACE in text
                 target = os.path.join(ROOT_WORKSPACE, "ROOT_WORKSPACE_PROBE.md")
                 os.makedirs(ROOT_WORKSPACE, exist_ok=True)
                 with open(target, "w", encoding="utf-8") as handle:
                     handle.write("probe ok\\n")
-                write_json(".symphony/completion_packet.json", {
+                write_json(".symphony/issue_result.json", {
+                    "schema_version": 1,
+                    "node_key": "implementation",
+                    "task_type": "implementation",
                     "outcome": "completed",
                     "summary": "execution saw root workspace context",
                     "evidence": [target],
                     "decisions": ["root workspace handoff available"],
-                    "open_questions": [],
-                    "next_handoff": "review the root workspace probe"
+                    "open_questions": []
                 })
                 append_run({
                     "phase": phase,
+                    "task_type": "implementation",
                     "prompt_contains_root_workspace": prompt_contains_root_workspace,
                     "writable_roots": writable_roots,
                     "target": target
                 })
-            elif "review_decision.json" in text:
-                phase = "review"
+            elif "issue_result.json" in text:
+                phase = "issue"
                 prompt_contains_root_workspace = ROOT_WORKSPACE in text
                 target = os.path.join(ROOT_WORKSPACE, "ROOT_WORKSPACE_PROBE.md")
                 exists = os.path.exists(target)
-                write_json(".symphony/review_decision.json", {
-                    "decision": "pass" if prompt_contains_root_workspace and exists else "fail",
+                write_json(".symphony/issue_result.json", {
+                    "schema_version": 1,
+                    "node_key": "final_review",
+                    "task_type": "review",
+                    "outcome": "pass" if prompt_contains_root_workspace and exists else "fail",
+                    "reviews": ["__root_candidate__"],
                     "summary": "review saw root workspace context" if prompt_contains_root_workspace and exists else "review missing root workspace context",
-                    "confidence": "high",
-                    "reason": "" if prompt_contains_root_workspace and exists else "root workspace probe missing"
+                    "reason": "root workspace probe missing" if not (prompt_contains_root_workspace and exists) else "",
+                    "evidence": [target],
+                    "decisions": [],
+                    "open_questions": []
                 })
                 append_run({
                     "phase": phase,
+                    "task_type": "review",
                     "prompt_contains_root_workspace": prompt_contains_root_workspace,
                     "writable_roots": writable_roots,
                     "target_exists": exists

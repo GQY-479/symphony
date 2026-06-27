@@ -18,14 +18,6 @@ defmodule SymphonyElixir.Workflow.Prompts do
     base_prompt <> issue_prompt(context, workspace)
   end
 
-  def append(base_prompt, :execution, context, workspace) do
-    base_prompt <> execution_prompt(context, workspace)
-  end
-
-  def append(base_prompt, :review, context, workspace) do
-    base_prompt <> review_prompt(context, workspace)
-  end
-
   def append(base_prompt, _phase, _context, _workspace), do: base_prompt
 
   defp planning_prompt(context, workspace) do
@@ -102,63 +94,6 @@ defmodule SymphonyElixir.Workflow.Prompts do
 
     #{replan_context}
     - 工作区: #{workspace_text(workspace)}
-    """
-  end
-
-  defp execution_prompt(context, workspace) do
-    context = context_map(context)
-
-    upstream_summaries =
-      context
-      |> upstream_packets()
-      |> Enum.map_join("\n", fn packet ->
-        summary = Map.get(packet, "summary") || Map.get(packet, :summary) || ""
-        "- #{summary}"
-      end)
-
-    upstream_workspace_lines =
-      context
-      |> upstream_workspaces()
-      |> Enum.map_join("\n", fn upstream ->
-        node_key = Map.get(upstream, "node_key") || Map.get(upstream, :node_key) || "-"
-        issue_identifier = Map.get(upstream, "issue_identifier") || Map.get(upstream, :issue_identifier) || "-"
-        workspace = Map.get(upstream, "workspace") || Map.get(upstream, :workspace) || "未提供"
-
-        "- #{node_key} (#{issue_identifier}): #{workspace}"
-      end)
-
-    root_workspace = Map.get(context, :root_workspace) || Map.get(context, "root_workspace")
-    root_issue_identifier = Map.get(context, :root_issue_identifier) || Map.get(context, "root_issue_identifier")
-
-    """
-
-    执行阶段附加要求:
-
-    - 生成或更新 `completion_packet.json`；这是交给控制层和审查阶段消费的 Completion Packet。
-    - 不要通过移动当前 Linear issue 状态来表示完成、交接、进入 review 或关闭；当前 phase 的交接只能通过 `completion_packet.json`。
-    - `completion_packet.json` 必须包含所有字段，且 `evidence` 必须是非空数组:
-
-      ```json
-      {
-        "outcome": "completed | blocked | partial | failed",
-        "summary": "完成内容摘要",
-        "evidence": ["非空验证证据，例如命令、输出摘要、文件路径或截图"],
-        "decisions": ["执行期间作出的关键决定"],
-        "open_questions": ["仍未解决的问题，没有则为空数组"],
-        "next_handoff": "交给审查或下一阶段的简短说明"
-      }
-      ```
-
-    - 当前派生 issue workspace: #{workspace_text(workspace)}
-    - Root workflow issue: #{value_or_dash(root_issue_identifier)}
-    - Root workflow workspace: #{workspace_text(root_workspace)}
-    - 如果任务说明要求在 root workflow workspace 中读取或写入文件，可以在那里操作目标业务文件；但当前 phase 的 artifact 仍然必须写在当前派生 issue workspace 的 `.symphony` 目录中。
-    - 先检查依赖节点 workspace；如果当前节点依赖上游实现，必须在当前派生 issue workspace 中合入、cherry-pick 或移植必要代码后再继续，不要只依赖摘要。
-    - 依赖节点 workspaces:
-    #{value_or_dash(upstream_workspace_lines)}
-    - 写入并读回 `completion_packet.json` 后立即结束，等待控制层进入 review 或推进下游阶段。
-    - 上游摘要:
-    #{upstream_summaries}
     """
   end
 
@@ -243,53 +178,6 @@ defmodule SymphonyElixir.Workflow.Prompts do
     - 写入并读回 `issue_result.json` 后立即结束，等待控制层推进 workflow graph。
     - 上游摘要:
     #{upstream_summaries}
-    """
-  end
-
-  defp review_prompt(context, workspace) do
-    context = context_map(context)
-    root_workspace = Map.get(context, :root_workspace) || Map.get(context, "root_workspace")
-    root_issue_identifier = Map.get(context, :root_issue_identifier) || Map.get(context, "root_issue_identifier")
-
-    """
-
-    审查阶段附加要求:
-
-    - 生成或更新 `review_decision.json`；这是控制层消费的 Review Decision，不能被最终回复或 Linear comment 替代。
-    - 审查阶段只允许读取相关文件、运行验证命令、判断结果，并创建或更新当前 phase 的 `review_decision.json`。
-    - 不要修改源码、测试、文档或业务文件；不要把审查阶段变成返工实现阶段。
-    - 不要通过移动当前 Linear issue 状态来表示审查通过、返工、重规划、需要人工输入或关闭；当前 phase 的交接只能通过 `review_decision.json`。
-    - 不要执行 `git add`，不要 stage，不要 commit，不要 push，不要创建 PR，不要创建或切换分支，不要加载提交、发布或 PR 相关 skill。
-    - 允许的 decision 集合: #{Enum.join(@review_decisions, ", ")}。
-    - `review_decision.json` 必须包含非空 `decision`、`summary` 和 `confidence`。
-    - 如果 Completion Packet 缺少 `evidence` 或证据不足，`pass` 无效；必须选择 `needs_rework`、`needs_replan`、`needs_human` 或 `fail` 并说明原因。
-    - `needs_rework`、`needs_replan`、`fail` 必须包含非空 `reason`；`needs_human` 必须包含非空 `reason` 和 `requested_input`。
-    - `pass` 示例:
-
-      ```json
-      {
-        "decision": "pass",
-        "summary": "审查通过的原因和证据摘要",
-        "confidence": "high"
-      }
-      ```
-
-    - `needs_rework` 示例:
-
-      ```json
-      {
-        "decision": "needs_rework",
-        "summary": "需要返工的摘要",
-        "confidence": "medium",
-        "reason": "具体返工原因"
-      }
-      ```
-
-    - 当前派生 issue workspace: #{workspace_text(workspace)}
-    - Root workflow issue: #{value_or_dash(root_issue_identifier)}
-    - Root workflow workspace: #{workspace_text(root_workspace)}
-    - 如果需要验收 root workflow workspace 中的业务文件，可以直接读取那里；但当前 phase 的 `review_decision.json` 仍然必须写在当前派生 issue workspace 的 `.symphony` 目录中。
-    - 写入并读回 `review_decision.json` 后立即结束，等待控制层根据 Review Decision 推进。
     """
   end
 

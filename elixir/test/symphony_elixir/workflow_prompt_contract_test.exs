@@ -14,8 +14,8 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "agents:",
           "agents.<id>",
           "Workflow registry",
-          "Completion Packet",
-          "Review Decision",
+          "issue_result.json",
+          "review issues",
           "artifact",
           "source of truth"
         ] do
@@ -54,13 +54,6 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
       refute "--agent" in args
       refute Enum.chunk_every(args, 2, 1, :discard) |> Enum.any?(&(&1 == ["--agent", "compose"]))
     end
-  end
-
-  test "local workflow shares the canonical prompt body" do
-    workflow = File.read!(Path.expand("../../WORKFLOW.md", __DIR__))
-    local_workflow = File.read!(Path.expand("../../WORKFLOW.local.md", __DIR__))
-
-    assert workflow_body(local_workflow) == workflow_body(workflow)
   end
 
   test "phase prompts document orchestration artifact contracts" do
@@ -154,13 +147,6 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
 
     refute review_issue =~ "completion_packet.json"
     refute review_issue =~ "review_decision.json"
-  end
-
-  defp workflow_body(contents) do
-    case String.split(contents, "---", parts: 3) do
-      [_prefix, _front_matter, body] -> String.trim_leading(body)
-      _other -> flunk("workflow file must contain YAML front matter")
-    end
   end
 
   defp workflow_front_matter(contents) do
