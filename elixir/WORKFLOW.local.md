@@ -31,8 +31,29 @@ workspace:
 hooks:
   timeout_ms: 180000
   after_create: |
-    git clone --depth 1 file:///mnt/c/Users/GQY47/coding/Symphony .
-    if command -v mise >/dev/null 2>&1; then
+    REPOS="${SYMPHONY_PROJECT_REPOSITORIES:-${SYMPHONY_PROJECT_REPOSITORY:-${SYMP_PROJECT_REPOSITORY:-}}}"
+    if [ -n "$REPOS" ]; then
+      OLD_IFS="$IFS"
+      IFS=','
+      for repo in $REPOS; do
+        repo=$(printf '%s' "$repo" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -d "$repo" ]; then
+          cp -r "$repo"/* . 2>/dev/null || true
+          cp -r "$repo"/.[!.]* . 2>/dev/null || true
+          break
+        fi
+      done
+      if [ ! -d ".git" ]; then
+        for repo in $REPOS; do
+          repo=$(printf '%s' "$repo" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+          case "$repo" in
+            http*|git@*) git clone --depth 1 "$repo" . && break ;;
+          esac
+        done
+      fi
+      IFS="$OLD_IFS"
+    fi
+    if [ -d elixir ] && command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise exec -- mix deps.get
     fi
   before_remove: |

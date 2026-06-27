@@ -840,6 +840,43 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "local workflow after_create bootstraps the issue project repository" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-local-workflow-project-repo-#{System.unique_integer([:positive])}"
+      )
+
+    original_path = System.get_env("PATH")
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      deepquest_repo = Path.join(test_root, "deepquest")
+      local_workflow_copy = Path.join(test_root, "WORKFLOW.local.md")
+
+      create_git_repo!(deepquest_repo, "deepquest-local")
+
+      local_workflow =
+        File.read!(Path.expand("../../WORKFLOW.local.md", __DIR__))
+        |> String.replace("root: ~/code/symphony-workspaces-local", "root: #{workspace_root}")
+        |> String.replace("/mnt/c/Users/GQY47/coding/DeepQuest", deepquest_repo)
+
+      File.write!(local_workflow_copy, local_workflow)
+      Workflow.set_workflow_file_path(local_workflow_copy)
+
+      System.put_env("PATH", "/usr/bin:/bin")
+
+      issue = %{id: "issue-deepquest", identifier: "YQE-76", project_slug: "04b9404aad35"}
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert File.read!(Path.join(workspace, "PROJECT.txt")) == "deepquest-local\n"
+      assert File.exists?(Path.join(workspace, ".git"))
+    after
+      restore_env("PATH", original_path)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace fails before hooks when issue project is not configured" do
     test_root =
       Path.join(
