@@ -153,14 +153,14 @@ The legacy top-level `codex:` config is accepted for compatibility only. New wor
 ## Default posture
 
 - Start by determining the ticket's current status, then follow the matching flow for that status.
-- Start every task by reading the Workflow registry and phase artifacts before doing new implementation work.
+- Start every task by reading the Workflow registry and current workflow artifacts before doing new implementation work.
 - Spend extra effort up front on planning and verification design before implementation.
 - Reproduce first: always confirm the current behavior/issue signal before changing code so the fix target is explicit.
 - Keep ticket metadata current (state, checklist, acceptance criteria, links).
 - Treat the Workflow registry and artifact files as the source of truth for control state. Linear comments and workpads are visibility only, not authoritative state.
-- When orchestration is active, planning must produce `workflow_plan.json`, execution must produce the Completion Packet in `completion_packet.json`, and review must produce the Review Decision in `review_decision.json`.
+- When orchestration is active, planning must produce `workflow_plan.json`; every non-planning workflow issue, including review issues, must produce `.symphony/issue_result.json`.
 - Do not move the current Linear issue to signal completion, handoff, review, or closure; Symphony advances or closes the current issue after it reads and validates the structured artifact.
-- Completion Packet evidence is required for automatic pass decisions; reviewers must not return `pass` without sufficient evidence in `completion_packet.json`.
+- Issue result evidence is required for review `pass` outcomes; review issues must not return `pass` without sufficient evidence in `issue_result.json`.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as non-negotiable acceptance input: carry it into the relevant artifacts and execute it before considering the work complete.
 - When meaningful out-of-scope improvements are discovered during execution,
   file a separate Linear issue instead of expanding scope. The follow-up issue
@@ -217,8 +217,8 @@ The legacy top-level `codex:` config is accepted for compatibility only. New wor
 
 1.  Read the Workflow registry and current artifact files:
     - Planning state belongs in `workflow_plan.json`.
-    - Execution handoff belongs in `completion_packet.json`.
-    - Review outcome belongs in `review_decision.json`.
+    - Non-planning issue outcome belongs in `issue_result.json`.
+    - Review is a normal issue node; review outcome also belongs in `issue_result.json`.
     - Linear comments may summarize status for reviewers, but they are visibility only.
 2.  If arriving from `Todo`, do not delay on additional status transitions: the issue should already be `In Progress` before this step begins.
 3.  Immediately reconcile artifact state before new edits:
@@ -298,7 +298,7 @@ Use this only when completion is blocked by missing required tools or missing au
 9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
 10. Update artifacts with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
-    - Add final handoff notes (commit + validation summary) in `completion_packet.json`.
+    - Add final handoff notes (commit + validation summary) in `issue_result.json`.
     - Do not include PR URL in visibility comments; keep PR linkage on the issue via attachment/link fields.
     - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
     - Do not post any additional completion summary comment.
@@ -369,7 +369,7 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Linear visibility comment template
 
-Use concise Linear comments only when they help reviewers see status. They are not authoritative and must not replace `workflow_plan.json`, `completion_packet.json`, `review_decision.json`, or Workflow registry state:
+Use concise Linear comments only when they help reviewers see status. They are not authoritative and must not replace `workflow_plan.json`, `issue_result.json`, or Workflow registry state:
 
 ````md
 ## Codex Visibility
