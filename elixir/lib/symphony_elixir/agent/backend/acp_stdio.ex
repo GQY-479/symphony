@@ -22,6 +22,9 @@ defmodule SymphonyElixir.Agent.Backend.AcpStdio do
     config = agent_config(resolved_agent)
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
 
+    model_list = extract_model_list(config)
+    current_model = List.first(model_list)
+
     client_config = %{
       command: Map.get(config, "command"),
       args: build_args(config, workspace),
@@ -38,10 +41,21 @@ defmodule SymphonyElixir.Agent.Backend.AcpStdio do
          session
          |> Map.put(:resolved_agent, resolved_agent)
          |> Map.put(:timeout_ms, Map.get(config, "timeout_ms", @default_timeout_ms))
-         |> Map.put(:close_timeout_ms, Map.get(config, "close_timeout_ms", 1_000))}
+         |> Map.put(:close_timeout_ms, Map.get(config, "close_timeout_ms", 1_000))
+         |> Map.put(:model_errors, %{})
+         |> Map.put(:current_model, current_model)
+         |> Map.put(:model_list, model_list)}
 
       other ->
         other
+    end
+  end
+
+  def extract_model_list(config) do
+    case get_in(config, ["config_options", "model"]) do
+      list when is_list(list) -> list
+      string when is_binary(string) -> [string]
+      _ -> ["mimo/mimo-auto"]
     end
   end
 
