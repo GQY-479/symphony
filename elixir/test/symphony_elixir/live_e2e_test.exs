@@ -608,7 +608,7 @@ defmodule SymphonyElixir.LiveE2ETest do
             planning_max_turns: 1,
             review_max_turns: 1
           },
-          prompt: "Run this as a workflow orchestration E2E. For simple work, choose direct_execution and produce valid artifacts."
+          prompt: "Run this as a workflow orchestration E2E. For simple work, produce a compact issue_graph with final_review and valid artifacts."
         )
 
         orchestrator_name = Module.concat(__MODULE__, :LiveWorkflowOrchestrator)

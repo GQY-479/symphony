@@ -26,14 +26,6 @@ defmodule SymphonyElixir.Workflow.Artifacts do
     do: load_json(issue_result_path(workspace), &validate_issue_result/1)
 
   @spec validate_plan(term()) :: :ok | {:error, :invalid_workflow_plan}
-  def validate_plan(%{"kind" => "direct_execution", "summary" => summary, "confidence" => confidence})
-      when is_binary(summary) and is_binary(confidence),
-      do: :ok
-
-  def validate_plan(%{"mode" => "direct_execution", "summary" => summary, "confidence" => confidence})
-      when is_binary(summary) and is_binary(confidence),
-      do: :ok
-
   def validate_plan(%{
         "kind" => "needs_human_input",
         "summary" => summary,
@@ -63,7 +55,8 @@ defmodule SymphonyElixir.Workflow.Artifacts do
     with :ok <- validate_plan_nodes(nodes),
          :ok <- validate_plan_edges(edges),
          :ok <- validate_plan_node_keys(nodes),
-         :ok <- validate_plan_edge_references(nodes, edges) do
+         :ok <- validate_plan_edge_references(nodes, edges),
+         :ok <- validate_plan_final_review(nodes) do
       :ok
     end
   end
@@ -79,7 +72,8 @@ defmodule SymphonyElixir.Workflow.Artifacts do
     with :ok <- validate_plan_nodes(nodes),
          :ok <- validate_plan_edges(edges),
          :ok <- validate_plan_node_keys(nodes),
-         :ok <- validate_plan_edge_references(nodes, edges) do
+         :ok <- validate_plan_edge_references(nodes, edges),
+         :ok <- validate_plan_final_review(nodes) do
       :ok
     end
   end
@@ -208,6 +202,16 @@ defmodule SymphonyElixir.Workflow.Artifacts do
     do: MapSet.member?(node_keys, from_node) and MapSet.member?(node_keys, to_node)
 
   defp valid_edge_references?(_edge, _node_keys), do: false
+
+  defp validate_plan_final_review(nodes) do
+    case Enum.find(nodes, &(&1["node_key"] == "final_review")) do
+      %{"task_type" => "review", "reviews" => ["__root_candidate__"], "subject_selector" => %{"type" => "final_candidate_range"}} ->
+        :ok
+
+      _other ->
+        {:error, :invalid_workflow_plan}
+    end
+  end
 
   defp valid_node?(
          %{

@@ -33,50 +33,52 @@ defmodule SymphonyElixir.Workflow.Prompts do
     - `workflow_plan.json` 是控制信号，不是 progress note。
     - Linear comment/workpad 只用于 visibility，不是 authoritative source of truth。
     - 规划阶段只允许创建或更新 planning artifact：`workflow_plan.json`。
-    - 不要修改源码、测试、文档或其他业务文件；这些只能在后续 execution phase 中处理。
-    - 不要执行 direct_execution 的实现内容；`direct_execution` 只是 planner 给控制层的决策。
+    - 不要修改源码、测试、文档或其他业务文件；这些只能在后续 issue node 中处理。
     - 不要修改当前 Linear issue 状态；Symphony 控制层会根据 artifact 推进当前 workflow issue。
     - 必须创建 artifact 目录：`mkdir -p #{artifact_dir}`。
     - 必须把规划结果写入：`#{plan_path}`。
-    - 最终回复不能替代 artifact 文件；完成前必须读回该文件，确认它是合法 JSON，且符合下面三种结构之一。
-    - 写入并读回 `workflow_plan.json` 后立即结束，等待控制层进入 execution、创建派生 issue 或请求人工输入。
-    - 只允许输出一种规划形态：`direct_execution`、`issue_graph` 或 `needs_human_input`。
+    - 最终回复不能替代 artifact 文件；完成前必须读回该文件，确认它是合法 JSON，且符合下面两种结构之一。
+    - 写入并读回 `workflow_plan.json` 后立即结束，等待控制层创建派生 issue 或请求人工输入。
+    - 只允许输出一种规划形态：`issue_graph` 或 `needs_human_input`。
 
     业务编排策略:
 
-    - 先判断任务形态，再选择最小可靠 workflow；不要先按固定模板凑 node。
-    - 单点、低风险、验收清楚，且不需要独立调研、方案选择或审查门禁时，使用 `direct_execution`。
-    - 原因、现状、影响范围不清楚时，先创建 `research` node；不要直接规划 implementation。research 必须交付事实、证据、建议路径、风险和未解问题。
-    - 存在方案选择或跨模块设计时，创建 `design` node；implementation 应依赖 design。design 必须冻结关键决策、接口边界、迁移策略和验收方式。
-    - 多个子任务可独立完成且文件或模块边界清楚时，使用 fanout：并行创建多个同层 node，再用 synthesis、integration、design 或 final review 汇合。不要并行拆分会互相改同一文件、共享状态或存在顺序依赖的任务。
-    - 高风险实现、核心行为、数据、权限、调度或安全相关改动，必须在 implementation 后创建 `review` node；下游需要已认可结果时必须依赖 review node，而不是依赖 implementation node。
-    - 大型或低置信度任务，不要一次规划完整大图；只规划下一批能降低最大风险的 node，并让后续根据 issue result 动态重规划。
-    - 审核、巡检、修复 review 意见、稳定性排查这类任务，优先使用 audit/research -> fix_plan/design -> implementation -> review 的形状。
-    - 需要用户做业务决策、授权、凭据、目标选择、发布窗口或高风险确认时，使用 `needs_human_input`；代码未知、影响范围未知或原因未知时，优先创建 research node，而不是直接问人。
-    - 优先少拆 issue，但不能跨越风险边界。一个 node 应该代表一个可独立完成、可独立验收、失败后可明确返工的业务单元。
+    - 不要机械地把需求拆成固定阶段；你的职责是管理不确定性、依赖、风险、证据和验证闭环。
+    - 每个 node 和每条 edge 都必须有明确编排理由：降低不确定性、隔离风险、支持安全并行、产出或精炼交付物、验证结果、解决集成风险，或请求无法安全推断的人类决策。
+    - 所有可执行工作都使用 `issue_graph`，包括单点、清楚、低风险的小任务；小任务可以只包含一个 `implementation` node 加一个 `final_review` node。
+    - 只有在缺少人类意图、业务优先级、授权、凭据、发布窗口、法律/安全批准或外部不可得状态，导致无法安全规划时，才使用 `needs_human_input`。代码未知、影响范围未知或原因未知时，优先创建 research/diagnosis node，而不是直接问人。
+    - 原因、现状、影响范围不清楚时，先创建 `research` 或 `diagnosis` node；不要直接规划 implementation。它必须交付事实、证据、建议路径、风险和未解问题。
+    - 存在方案选择、接口契约、数据模型、迁移、并发、安全或跨模块设计时，创建 `design` node；implementation 应依赖 design。design 必须冻结关键决策、接口边界、迁移策略和验收方式。
+    - 多个子任务目标独立、文件/模块边界清楚、不会争用同一契约时，可以 fanout 并行；如果并行结果需要组合，必须创建 `integration` node 汇合。不要并行拆分会互相修改同一文件、共享状态或存在顺序依赖的任务。
+    - 高风险实现、核心行为、数据、权限、调度或安全相关改动，必须在 implementation 后创建 `review` node。重要结果不要由同一个执行者自证。
+    - 如果 review 失败会让下游工作无效，下游必须依赖 review node；只有下游只是基于候选上下文继续工作，且后续仍有独立 review/verification 收口时，才可以依赖 implementation node。
+    - 大型或低置信度任务，不要一次规划完整大图；规划能降低当前最大风险的一批 node，并让后续根据 issue result 动态重规划。
+    - review/verification 发现 gap 时，后续应生成 `rework`、`diagnosis` 或新的 `design/implementation` node；gap 是下一轮规划输入，不只是评论。
+
+    task_type 语义:
+
+    - `research`: 收集规划或实现所需事实，回答“现在需要知道什么”。
+    - `diagnosis`: 定位失败或未知行为的根因，回答“为什么会这样”。
+    - `design`: 决定架构、接口、数据模型、迁移、集成或验证策略。
+    - `implementation`: 修改代码、测试、文档、配置或生成资产。
+    - `integration`: 合并、串联或协调多个已完成结果。
+    - `review`: 审查明确 subject 是否满足 contract，输出 pass/needs_rework/fail/needs_human。
+    - `verification`: 从 root goal 或用户可观察行为倒推验证整体目标是否达成。
+    - `rework`: 根据 review/verification gap 修复已有结果。
+    - `merge_resolution`: 解决候选分支或 issue 分支冲突。
+    - `human_input_request`: 在 graph 内请求一个明确人类决策；如果规划本身无法开始，则用顶层 `needs_human_input`。
 
     框架合规要求:
 
-    - issue 是唯一任务单位；research、design、implementation、review、rework、merge_resolution、synthesis、integration、audit 都应表达为普通 issue node。
+    - issue 是唯一任务单位；research、diagnosis、design、implementation、integration、review、verification、rework、merge_resolution、human_input_request 都应表达为普通 issue node。
     - review 是普通 issue node，不是隐藏 phase；需要审查时必须显式建 review node。
     - planner 不要填写 Git branch、sha、checkpoint 或 diff range；这些事实由 Symphony 控制层或 Git adapter 生成。
     - 每个 node 必须有明确交付物、证据预期和完成条件；不要创建“继续处理”“看一下”“完善一下”这类无边界 node。
     - 每个 node 的 `instructions` 应说明范围、禁止事项、上游输入和下游交接；`evidence_expectations` 应说明期望看到的命令、文件、测试、来源、截图或审查结论。
     - review node 必须说明 `reviews` 对象和 `subject_selector`；如果下游依赖审查认可，应让下游 edge 指向 review node。
-    - root workflow 最终必须有 final review；如果你显式创建，使用 `node_key` 为 `final_review`、`task_type` 为 `review`，并让它审查 root candidate 的最终结果。
+    - root workflow 必须显式包含 `final_review` node。它的 `node_key` 必须是 `final_review`，`task_type` 必须是 `review`，`reviews` 必须是 `["__root_candidate__"]`，`subject_selector.type` 必须是 `final_candidate_range`。
     - 不要让 agent 通过 Linear 状态、comment、workpad 或最终回复来代替 artifact；控制层只消费结构化 artifact 和 registry。
-    - 若任务足够简单，可写入 `direct_execution`:
-
-      ```json
-      {
-        "kind": "direct_execution",
-        "summary": "为什么可以直接执行",
-        "confidence": "high",
-        "agent_id": "可选，省略时使用普通路由"
-      }
-      ```
-
-    - 若任务需要拆分，写入 `issue_graph`。每个 node 必须包含 `node_key`、`task_type`、`title`、`goal`、`agent_id`，`edges` 必须是数组，且每条边的 `from`、`to` 必须引用已有 node:
+    - 写入 `issue_graph`。每个 node 必须包含 `node_key`、`task_type`、`title`、`goal`、`agent_id`，`edges` 必须是数组，且每条边的 `from`、`to` 必须引用已有 node:
 
       ```json
       {
@@ -93,6 +95,15 @@ defmodule SymphonyElixir.Workflow.Prompts do
             "instructions": "可选的执行说明",
             "evidence_expectations": ["可选的验收证据"],
             "completion_conditions": ["可选的完成条件，描述该步骤必须满足的条件"]
+          },
+          {
+            "node_key": "final_review",
+            "task_type": "review",
+            "title": "最终审查",
+            "goal": "审查 root candidate 是否满足用户目标",
+            "agent_id": "codex",
+            "reviews": ["__root_candidate__"],
+            "subject_selector": {"type": "final_candidate_range"}
           }
         ],
         "edges": [
@@ -100,6 +111,11 @@ defmodule SymphonyElixir.Workflow.Prompts do
             "from": "research",
             "to": "implementation",
             "handoff_summary": "上游交接给下游的关键内容"
+          },
+          {
+            "from": "implementation",
+            "to": "final_review",
+            "handoff_summary": "最终候选结果进入 root goal 审查"
           }
         ]
       }

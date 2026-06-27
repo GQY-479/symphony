@@ -2375,7 +2375,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "workflow_plan.json"
     assert prompt =~ "/tmp/workspace/.symphony/workflow_plan.json"
     assert prompt =~ "mkdir -p /tmp/workspace/.symphony"
-    assert prompt =~ "direct_execution"
+    retired_kind = "direct" <> "_execution"
+    refute prompt =~ retired_kind
     assert prompt =~ "issue_graph"
     assert prompt =~ "\"kind\": \"issue_graph\""
     assert prompt =~ "\"nodes\""
@@ -2670,9 +2671,28 @@ defmodule SymphonyElixir.CoreTest do
                   os.makedirs(".symphony", exist_ok=True)
                   with open(".symphony/workflow_plan.json", "w", encoding="utf-8") as handle:
                       json.dump({
-                          "kind": "direct_execution",
-                          "summary": "artifact repair produced a direct execution plan",
-                          "confidence": "medium"
+                          "kind": "issue_graph",
+                          "summary": "artifact repair produced an issue graph plan",
+                          "confidence": "medium",
+                          "nodes": [
+                              {
+                                  "node_key": "implementation",
+                                  "task_type": "implementation",
+                                  "title": "Repair implementation",
+                                  "goal": "Complete the repaired planning workflow",
+                                  "agent_id": "codex"
+                              },
+                              {
+                                  "node_key": "final_review",
+                                  "task_type": "review",
+                                  "title": "Final review",
+                                  "goal": "Review the root candidate result",
+                                  "agent_id": "codex",
+                                  "reviews": ["__root_candidate__"],
+                                  "subject_selector": {"type": "final_candidate_range"}
+                              }
+                          ],
+                          "edges": [{"from": "implementation", "to": "final_review"}]
                       }, handle)
 
               send({"id": request_id, "result": {"turn": {"id": f"turn-{turn_count}"}}})

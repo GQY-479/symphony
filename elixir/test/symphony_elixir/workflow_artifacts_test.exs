@@ -6,6 +6,18 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
   alias SymphonyElixir.Workflow.ExecutionSummary
   alias SymphonyElixir.Workflow.Registry
 
+  defp final_review_node do
+    %{
+      "node_key" => "final_review",
+      "task_type" => "review",
+      "title" => "最终审查",
+      "goal" => "审查 root candidate 是否满足用户目标",
+      "agent_id" => "codex",
+      "reviews" => ["__root_candidate__"],
+      "subject_selector" => %{"type" => "final_candidate_range"}
+    }
+  end
+
   test "artifact helpers build planning and issue result paths" do
     write_workflow_file!(Workflow.workflow_file_path(),
       orchestration: %{enabled: true, artifact_dir: ".symphony"}
@@ -31,14 +43,7 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
              Path.join([workspace, ".symphony", "execution_summary.json"])
   end
 
-  test "validate_plan accepts direct_execution and issue_graph" do
-    assert :ok ==
-             Artifacts.validate_plan(%{
-               "kind" => "direct_execution",
-               "summary" => "任务足够简单，可直接执行",
-               "confidence" => "high"
-             })
-
+  test "validate_plan accepts issue_graph" do
     assert :ok ==
              Artifacts.validate_plan(%{
                "kind" => "issue_graph",
@@ -51,9 +56,18 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
                    "title" => "调研 ACP 支持",
                    "goal" => "收集适配器设计证据",
                    "agent_id" => "codex"
+                 },
+                 %{
+                   "node_key" => "final_review",
+                   "task_type" => "review",
+                   "title" => "最终审查",
+                   "goal" => "审查 root candidate 是否满足用户目标",
+                   "agent_id" => "codex",
+                   "reviews" => ["__root_candidate__"],
+                   "subject_selector" => %{"type" => "final_candidate_range"}
                  }
                ],
-               "edges" => []
+               "edges" => [%{"from" => "research-1", "to" => "final_review"}]
              })
   end
 
@@ -77,9 +91,13 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
                    "title" => "实现功能",
                    "goal" => "根据调研结果实现",
                    "agent_id" => "codex"
-                 }
+                 },
+                 final_review_node()
                ],
-               "edges" => [%{"from" => "research-1", "to" => "implement-1"}]
+               "edges" => [
+                 %{"from" => "research-1", "to" => "implement-1"},
+                 %{"from" => "implement-1", "to" => "final_review"}
+               ]
              })
   end
 
@@ -117,13 +135,15 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
                    "title" => "集成测试",
                    "goal" => "集成 A 和 B",
                    "agent_id" => "codex"
-                 }
+                 },
+                 final_review_node()
                ],
                "edges" => [
                  %{"from" => "design", "to" => "impl-a"},
                  %{"from" => "design", "to" => "impl-b"},
                  %{"from" => "impl-a", "to" => "integration"},
-                 %{"from" => "impl-b", "to" => "integration"}
+                 %{"from" => "impl-b", "to" => "integration"},
+                 %{"from" => "integration", "to" => "final_review"}
                ]
              })
   end
@@ -154,9 +174,13 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
                      "from" => "implementation.candidate_before_sha",
                      "to" => "implementation.candidate_after_sha"
                    }
-                 }
+                 },
+                 final_review_node()
                ],
-               "edges" => [%{"from" => "implementation", "to" => "implementation_review"}]
+               "edges" => [
+                 %{"from" => "implementation", "to" => "implementation_review"},
+                 %{"from" => "implementation_review", "to" => "final_review"}
+               ]
              })
   end
 
@@ -247,9 +271,13 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
                    "goal" => "根据调研结果实现",
                    "agent_id" => "codex",
                    "completion_conditions" => ["测试通过", "文档更新"]
-                 }
+                 },
+                 final_review_node()
                ],
-               "edges" => [%{"from" => "research", "to" => "implementation"}]
+               "edges" => [
+                 %{"from" => "research", "to" => "implementation"},
+                 %{"from" => "implementation", "to" => "final_review"}
+               ]
              })
   end
 
@@ -286,9 +314,10 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
                    "title" => "A",
                    "goal" => "目标 A",
                    "agent_id" => "codex"
-                 }
+                 },
+                 final_review_node()
                ],
-               "edges" => []
+               "edges" => [%{"from" => "a", "to" => "final_review"}]
              })
   end
 
@@ -688,8 +717,11 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
   end
 
   test "validate_plan rejects plan with missing required fields" do
+    retired_kind = "direct" <> "_execution"
+
     assert {:error, :invalid_workflow_plan} = Artifacts.validate_plan(%{})
-    assert {:error, :invalid_workflow_plan} = Artifacts.validate_plan(%{"kind" => "direct_execution"})
+    assert {:error, :invalid_workflow_plan} = Artifacts.validate_plan(%{"kind" => retired_kind})
+    assert {:error, :invalid_workflow_plan} = Artifacts.validate_plan(%{"kind" => retired_kind, "summary" => "test", "confidence" => "high"})
     assert {:error, :invalid_workflow_plan} = Artifacts.validate_plan(%{"summary" => "test"})
   end
 

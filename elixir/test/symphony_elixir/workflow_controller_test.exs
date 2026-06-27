@@ -50,7 +50,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     issue_result(node_key, "review", summary, Map.merge(%{"outcome" => outcome, "reviews" => reviews}, overrides))
   end
 
-  test "mode direct_execution materializes root node and final review" do
+  test "single implementation issue_graph materializes implementation node and final review" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-direct-#{System.unique_integer([:positive])}")
 
@@ -78,9 +78,28 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     File.write!(
       Artifacts.workflow_plan_path(workspace),
       Jason.encode!(%{
-        "mode" => "direct_execution",
-        "summary" => "任务足够简单，可直接执行",
-        "confidence" => "high"
+        "mode" => "issue_graph",
+        "summary" => "任务足够简单，可用单个实现节点完成",
+        "confidence" => "high",
+        "nodes" => [
+          %{
+            "node_key" => "implementation",
+            "task_type" => "implementation",
+            "title" => "完成 root issue",
+            "goal" => "完成 root issue 的实现工作",
+            "agent_id" => "codex"
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "最终审查",
+            "goal" => "审查 root candidate 是否满足用户目标",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
+          }
+        ],
+        "edges" => [%{"from" => "implementation", "to" => "final_review"}]
       })
     )
 
@@ -90,25 +109,27 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert registry["root_issue_identifier"] == "YQE-100"
     assert map_size(registry["nodes"]) == 2
 
-    root_node = Registry.node(registry, "root")
-    assert root_node["issue_id"] == "root-1"
-    assert root_node["issue_identifier"] == "YQE-100"
-    assert root_node["status"] == "ready"
-    assert root_node["agent_id"] == nil
-    assert root_node["task_type"] == "direct_execution"
+    assert_receive {:memory_tracker_issue_created, %Issue{} = implementation_issue}
 
     assert_receive {:memory_tracker_issue_created, %Issue{} = final_review_issue}
+
+    implementation_node = Registry.node(registry, "implementation")
+    assert implementation_node["issue_id"] == implementation_issue.id
+    assert implementation_node["issue_identifier"] == implementation_issue.identifier
+    assert implementation_node["status"] == "ready"
+    assert implementation_node["agent_id"] == "codex"
+    assert implementation_node["task_type"] == "implementation"
 
     final_review = Registry.node(registry, "final_review")
     assert final_review["issue_id"] == final_review_issue.id
     assert final_review["task_type"] == "review"
     assert final_review["status"] == "waiting"
-    assert final_review["dependencies"] == ["root"]
+    assert final_review["dependencies"] == ["implementation"]
     assert final_review["reviews"] == ["__root_candidate__"]
     assert final_review["subject_selector"] == %{"type" => "final_candidate_range"}
 
     assert Enum.any?(registry["edges"], fn edge ->
-             edge["from"] == "root" and edge["to"] == "final_review"
+             edge["from"] == "implementation" and edge["to"] == "final_review"
            end)
 
     assert {:ok, persisted} = Registry.load_by_root_identifier("YQE-100")
@@ -164,6 +185,15 @@ defmodule SymphonyElixir.WorkflowControllerTest do
             "agent_id" => "codex",
             "instructions" => "复用 registry 与 tracker",
             "evidence_expectations" => ["补齐测试", "记录验证命令"]
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "最终审查",
+            "goal" => "审查 root candidate 是否满足用户目标",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
           }
         ],
         "edges" => [
@@ -172,6 +202,12 @@ defmodule SymphonyElixir.WorkflowControllerTest do
             "to" => "implementation-1",
             "kind" => "handoff",
             "handoff_summary" => "调研结论供实现任务消费"
+          },
+          %{
+            "from" => "implementation-1",
+            "to" => "final_review",
+            "kind" => "review",
+            "handoff_summary" => "最终候选结果进入 root goal 审查"
           }
         ]
       })
@@ -221,7 +257,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert implementation_issue.description =~ "调研结论供实现任务消费"
   end
 
-  test "issue_graph materialization auto creates final review when missing" do
+  test "issue_graph materialization rejects missing final review" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-final-review-#{System.unique_integer([:positive])}")
 
@@ -257,18 +293,10 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       })
     )
 
-    assert {:ok, registry} = Controller.handle_planning_completion(root_issue, workspace)
-
-    assert Registry.node(registry, "final_review")["task_type"] == "review"
-    assert Registry.node(registry, "final_review")["reviews"] == ["__root_candidate__"]
-    assert Registry.node(registry, "final_review")["subject_selector"] == %{"type" => "final_candidate_range"}
-
-    assert Enum.any?(registry["edges"], fn edge ->
-             edge["from"] == "implementation" and edge["to"] == "final_review"
-           end)
+    assert {:error, :invalid_workflow_plan} = Controller.handle_planning_completion(root_issue, workspace)
   end
 
-  test "auto final review depends on existing review leaves" do
+  test "explicit final review can depend on existing review leaves" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-final-after-review-#{System.unique_integer([:positive])}")
 
@@ -307,9 +335,21 @@ defmodule SymphonyElixir.WorkflowControllerTest do
             "agent_id" => "codex",
             "reviews" => ["implementation"],
             "subject_selector" => %{"type" => "candidate_range"}
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "最终审查",
+            "goal" => "审查 root candidate 是否满足用户目标",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
           }
         ],
-        "edges" => [%{"from" => "implementation", "to" => "implementation_review"}]
+        "edges" => [
+          %{"from" => "implementation", "to" => "implementation_review"},
+          %{"from" => "implementation_review", "to" => "final_review"}
+        ]
       })
     )
 
@@ -370,9 +410,21 @@ defmodule SymphonyElixir.WorkflowControllerTest do
             "goal" => "根据调研结果实现",
             "agent_id" => "codex",
             "completion_conditions" => ["测试通过", "文档更新"]
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "最终审查",
+            "goal" => "审查 root candidate 是否满足用户目标",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
           }
         ],
-        "edges" => [%{"from" => "research", "to" => "implementation"}]
+        "edges" => [
+          %{"from" => "research", "to" => "implementation"},
+          %{"from" => "implementation", "to" => "final_review"}
+        ]
       })
     )
 
@@ -423,9 +475,18 @@ defmodule SymphonyElixir.WorkflowControllerTest do
             "title" => "继承标签的派生任务",
             "goal" => "证明派生任务可调度",
             "agent_id" => "codex"
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "最终审查",
+            "goal" => "审查 root candidate 是否满足用户目标",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
           }
         ],
-        "edges" => []
+        "edges" => [%{"from" => "implementation", "to" => "final_review"}]
       })
     )
 
@@ -480,9 +541,18 @@ defmodule SymphonyElixir.WorkflowControllerTest do
             "title" => "继承 Linear 上下文的派生任务",
             "goal" => "证明派生任务创建时使用同一 project/team",
             "agent_id" => "codex"
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "最终审查",
+            "goal" => "审查 root candidate 是否满足用户目标",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
           }
         ],
-        "edges" => []
+        "edges" => [%{"from" => "implementation", "to" => "final_review"}]
       })
     )
 
@@ -531,9 +601,18 @@ defmodule SymphonyElixir.WorkflowControllerTest do
             "title" => "调研",
             "goal" => "收集证据",
             "agent_id" => "codex"
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "最终审查",
+            "goal" => "审查 root candidate 是否满足用户目标",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
           }
         ],
-        "edges" => []
+        "edges" => [%{"from" => "research-1", "to" => "final_review"}]
       })
     )
 
@@ -572,11 +651,21 @@ defmodule SymphonyElixir.WorkflowControllerTest do
         "nodes" => [
           %{"node_key" => "research-1", "task_type" => "research", "title" => "调研 A", "goal" => "A", "agent_id" => "codex"},
           %{"node_key" => "research-2", "task_type" => "research", "title" => "调研 B", "goal" => "B", "agent_id" => "codex"},
-          %{"node_key" => "implementation-1", "task_type" => "implementation", "title" => "实现", "goal" => "C", "agent_id" => "codex"}
+          %{"node_key" => "implementation-1", "task_type" => "implementation", "title" => "实现", "goal" => "C", "agent_id" => "codex"},
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "最终审查",
+            "goal" => "审查 root candidate 是否满足用户目标",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
+          }
         ],
         "edges" => [
           %{"from" => "research-1", "to" => "implementation-1", "kind" => "handoff", "handoff_summary" => "第一条交接"},
-          %{"from" => "research-2", "to" => "implementation-1", "kind" => "handoff", "handoff_summary" => "第二条交接"}
+          %{"from" => "research-2", "to" => "implementation-1", "kind" => "handoff", "handoff_summary" => "第二条交接"},
+          %{"from" => "implementation-1", "to" => "final_review", "kind" => "review", "handoff_summary" => "最终候选结果进入 root goal 审查"}
         ]
       })
     )
@@ -675,10 +764,20 @@ defmodule SymphonyElixir.WorkflowControllerTest do
         "confidence" => "medium",
         "nodes" => [
           %{"node_key" => "research-1", "task_type" => "research", "title" => "调研", "goal" => "A", "agent_id" => "codex"},
-          %{"node_key" => "implementation-1", "task_type" => "implementation", "title" => "实现", "goal" => "B", "agent_id" => "codex"}
+          %{"node_key" => "implementation-1", "task_type" => "implementation", "title" => "实现", "goal" => "B", "agent_id" => "codex"},
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "最终审查",
+            "goal" => "审查 root candidate 是否满足用户目标",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
+          }
         ],
         "edges" => [
-          %{"from" => "research-1", "to" => "implementation-1", "kind" => "handoff", "handoff_summary" => "调研后实现"}
+          %{"from" => "research-1", "to" => "implementation-1", "kind" => "handoff", "handoff_summary" => "调研后实现"},
+          %{"from" => "implementation-1", "to" => "final_review", "kind" => "review", "handoff_summary" => "最终候选结果进入 root goal 审查"}
         ]
       })
     )

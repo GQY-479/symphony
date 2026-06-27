@@ -86,19 +86,18 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
 
     for text <- [
           "workflow_plan.json",
-          "direct_execution",
           "issue_graph",
           "needs_human_input",
           "业务编排策略",
-          "先判断任务形态，再选择最小可靠 workflow",
-          "单点、低风险、验收清楚",
+          "管理不确定性、依赖、风险、证据和验证闭环",
+          "所有可执行工作都使用 `issue_graph`",
           "原因、现状、影响范围不清楚",
-          "存在方案选择或跨模块设计",
-          "多个子任务可独立完成且文件或模块边界清楚",
+          "存在方案选择、接口契约、数据模型",
+          "多个子任务目标独立",
           "高风险实现、核心行为、数据、权限、调度或安全相关改动",
           "大型或低置信度任务",
           "下游需要已认可结果时必须依赖 review node",
-          "优先少拆 issue，但不能跨越风险边界",
+          "每个 node 和每条 edge 都必须有明确编排理由",
           "框架合规要求",
           "review 是普通 issue node，不是隐藏 phase",
           "planner 不要填写 Git branch、sha、checkpoint 或 diff range",
@@ -106,12 +105,14 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "控制层",
           "只允许创建或更新 planning artifact",
           "不要修改源码、测试、文档或其他业务文件",
-          "不要执行 direct_execution 的实现内容",
           "不要修改当前 Linear issue 状态",
           "写入并读回 `workflow_plan.json` 后立即结束"
         ] do
       assert planning =~ text
     end
+
+    retired_kind = "direct" <> "_execution"
+    refute planning =~ retired_kind
 
     for text <- [
           "issue_result.json",

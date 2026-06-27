@@ -438,16 +438,7 @@ defmodule SymphonyElixir.AgentRunner do
     - 必须写入文件: #{artifact_path}
     - 当前错误: #{inspect(reason)}
 
-    写入的 JSON 必须是以下三种之一：`direct_execution`、`issue_graph`、`needs_human_input`。
-
-    `direct_execution` 示例：
-    ```json
-    {
-      "kind": "direct_execution",
-      "summary": "为什么可以直接执行",
-      "confidence": "medium"
-    }
-    ```
+    写入的 JSON 必须是以下两种之一：`issue_graph`、`needs_human_input`。
 
     `issue_graph` 示例：
     ```json
@@ -462,9 +453,20 @@ defmodule SymphonyElixir.AgentRunner do
           "title": "派生任务标题",
           "goal": "派生任务目标",
           "agent_id": "codex"
+        },
+        {
+          "node_key": "final_review",
+          "task_type": "review",
+          "title": "最终审查",
+          "goal": "审查 root candidate 是否满足用户目标",
+          "agent_id": "codex",
+          "reviews": ["__root_candidate__"],
+          "subject_selector": {"type": "final_candidate_range"}
         }
       ],
-      "edges": []
+      "edges": [
+        {"from": "implementation", "to": "final_review"}
+      ]
     }
     ```
 

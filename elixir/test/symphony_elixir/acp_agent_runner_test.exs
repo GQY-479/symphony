@@ -304,9 +304,28 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
             "path" => artifact_path,
             "contents" =>
               Jason.encode!(%{
-                kind: "direct_execution",
+                kind: "issue_graph",
                 summary: "Use the existing dashboard presenter path",
-                confidence: "high"
+                confidence: "high",
+                nodes: [
+                  %{
+                    node_key: "implementation",
+                    task_type: "implementation",
+                    title: "Use dashboard presenter path",
+                    goal: "Complete the scoped workflow work",
+                    agent_id: "mimocode"
+                  },
+                  %{
+                    node_key: "final_review",
+                    task_type: "review",
+                    title: "Final review",
+                    goal: "Review the root candidate result",
+                    agent_id: "mimocode",
+                    reviews: ["__root_candidate__"],
+                    subject_selector: %{type: "final_candidate_range"}
+                  }
+                ],
+                edges: [%{from: "implementation", to: "final_review"}]
               })
           },
           "delayPromptMs" => 500
@@ -349,7 +368,7 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
                  end
                )
 
-      assert {:ok, %{"kind" => "direct_execution"}} = SymphonyElixir.Workflow.Artifacts.load_workflow_plan(workspace)
+      assert {:ok, %{"kind" => "issue_graph"}} = SymphonyElixir.Workflow.Artifacts.load_workflow_plan(workspace)
 
       assert_receive {:codex_worker_update, "issue-acp-runner-artifact-timeout",
                       %{
@@ -382,9 +401,28 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
             "path" => artifact_path,
             "contents" =>
               Jason.encode!(%{
-                kind: "direct_execution",
+                kind: "issue_graph",
                 summary: "Use the existing dashboard presenter path",
-                confidence: "high"
+                confidence: "high",
+                nodes: [
+                  %{
+                    node_key: "implementation",
+                    task_type: "implementation",
+                    title: "Use dashboard presenter path",
+                    goal: "Complete the scoped workflow work",
+                    agent_id: "mimocode"
+                  },
+                  %{
+                    node_key: "final_review",
+                    task_type: "review",
+                    title: "Final review",
+                    goal: "Review the root candidate result",
+                    agent_id: "mimocode",
+                    reviews: ["__root_candidate__"],
+                    subject_selector: %{type: "final_candidate_range"}
+                  }
+                ],
+                edges: [%{from: "implementation", to: "final_review"}]
               })
           },
           "streamUpdatesBeforePromptResponseMs" => 8_000,
@@ -433,7 +471,7 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
       Process.put(:artifact_ready_task, task)
       assert {:ok, :ok} = Task.yield(task, 2_000)
       Process.delete(:artifact_ready_task)
-      assert {:ok, %{"kind" => "direct_execution"}} = SymphonyElixir.Workflow.Artifacts.load_workflow_plan(workspace)
+      assert {:ok, %{"kind" => "issue_graph"}} = SymphonyElixir.Workflow.Artifacts.load_workflow_plan(workspace)
     after
       if match?(%Task{}, Process.get(:artifact_ready_task)) do
         Task.shutdown(Process.get(:artifact_ready_task), :brutal_kill)

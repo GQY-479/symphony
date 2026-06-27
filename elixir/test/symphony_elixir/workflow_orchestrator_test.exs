@@ -293,9 +293,28 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     File.write!(
       Artifacts.workflow_plan_path(workspace),
       Jason.encode!(%{
-        "kind" => "direct_execution",
-        "summary" => "任务可直接执行",
-        "confidence" => "high"
+        "kind" => "issue_graph",
+        "summary" => "任务可用单个实现节点完成",
+        "confidence" => "high",
+        "nodes" => [
+          %{
+            "node_key" => "implementation",
+            "task_type" => "implementation",
+            "title" => "完成规划任务",
+            "goal" => "完成 root issue 的实现工作",
+            "agent_id" => "codex"
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "最终审查",
+            "goal" => "审查 root candidate 是否满足用户目标",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
+          }
+        ],
+        "edges" => [%{"from" => "implementation", "to" => "final_review"}]
       })
     )
 
@@ -310,7 +329,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     refute MapSet.member?(updated_state.claimed, root_issue.id)
     assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
-    assert Registry.node(registry, "root")["status"] == "ready"
+    assert Registry.node(registry, "implementation")["status"] == "ready"
   end
 
   test "planning phase 正常结束但缺少 workflow plan 时阻塞并保留可诊断原因" do
@@ -1130,11 +1149,11 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
 
     issue
     |> Registry.new_root()
-    |> Registry.put_node("root", %{
-      "node_key" => "root",
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
       "issue_id" => issue.id,
       "issue_identifier" => issue.identifier,
-      "task_type" => "direct_execution",
+      "task_type" => "implementation",
       "workflow_semantics" => "executable",
       "status" => "ready",
       "dependencies" => []

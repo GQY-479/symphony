@@ -1,11 +1,11 @@
-defmodule SymphonyElixir.WorkflowSmokeTest do
+﻿defmodule SymphonyElixir.WorkflowSmokeTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Workflow.Registry
 
   @moduletag timeout: 120_000
 
-  test "真实 Orchestrator 通过 direct_execution 跑通 root execution review 闭环" do
+  test "真实 Orchestrator 通过 implementation 跑通 root execution review 闭环" do
     stop_default_orchestrator()
 
     test_root =
@@ -15,14 +15,14 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     log_path = Path.join(test_root, "agent_runs.jsonl")
 
     agent_script =
-      direct_execution_agent_script(
+      single_issue_graph_agent_script(
         log_path,
         %{
           "schema_version" => 1,
-          "node_key" => "root",
-          "task_type" => "direct_execution",
+          "node_key" => "implementation",
+          "task_type" => "implementation",
           "outcome" => "completed",
-          "summary" => "direct execution completed",
+          "summary" => "implementation completed",
           "evidence" => ["fake cli wrote issue_result.json"],
           "decisions" => ["execute root issue directly"],
           "open_questions" => []
@@ -33,19 +33,19 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
           "task_type" => "review",
           "outcome" => "pass",
           "reviews" => ["__root_candidate__"],
-          "summary" => "direct execution review passed",
+          "summary" => "implementation review passed",
           "evidence" => ["fake cli reviewed issue_result.json"],
           "decisions" => [],
           "open_questions" => []
         }
       )
 
-    write_direct_execution_workflow!(workspace_root, agent_script)
+    write_issue_graph_workflow!(workspace_root, agent_script)
 
     root_issue = %Issue{
       id: "workflow-smoke-direct-root",
       identifier: "SMOKE-DIRECT-1",
-      title: "Smoke direct execution root issue",
+      title: "Smoke implementation root issue",
       state: "In Progress",
       url: "https://linear.app/example/issue/SMOKE-DIRECT-1"
     }
@@ -53,7 +53,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [root_issue])
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
-    orchestrator_name = Module.concat(__MODULE__, :SmokeDirectExecutionOrchestrator)
+    orchestrator_name = Module.concat(__MODULE__, :SmokeSingleIssueGraphOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
     Orchestrator.request_refresh(orchestrator_name)
 
@@ -70,7 +70,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
              root && root.state == "Done" && orchestrator_idle?(orchestrator_name)
            end) do
       flunk("""
-      workflow direct execution smoke did not close
+      workflow implementation smoke did not close
 
       issues:
       #{inspect(Application.get_env(:symphony_elixir, :memory_tracker_issues, []), pretty: true)}
@@ -90,23 +90,21 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     assert registry["status"] == "completed"
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
 
-    root_node = Registry.node(registry, "root")
-    assert root_node["issue_id"] == root_issue.id
-    assert root_node["issue_identifier"] == root_issue.identifier
-    assert root_node["task_type"] == "direct_execution"
-    assert root_node["status"] == "completed"
+    implementation_node = Registry.node(registry, "implementation")
+    assert implementation_node["task_type"] == "implementation"
+    assert implementation_node["status"] == "completed"
     assert Registry.node(registry, "final_review")["status"] == "completed"
 
     issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-    assert length(issues) == 2
+    assert length(issues) == 3
 
     runs = read_agent_runs(log_path)
     assert %{"phase" => "planning", "issue_identifier" => root_issue.identifier, "workspace" => root_issue.identifier} in runs
-    assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "direct_execution"))
+    assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "implementation"))
     assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "review"))
   end
 
-  test "真实 Orchestrator 拒绝缺少 evidence 的 direct_execution completion packet" do
+  test "真实 Orchestrator 拒绝缺少 evidence 的 implementation issue result" do
     stop_default_orchestrator()
 
     test_root =
@@ -116,14 +114,14 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     log_path = Path.join(test_root, "agent_runs.jsonl")
 
     agent_script =
-      direct_execution_agent_script(
+      single_issue_graph_agent_script(
         log_path,
         %{
           "schema_version" => 1,
           "node_key" => "root",
-          "task_type" => "direct_execution",
+          "task_type" => "implementation",
           "outcome" => "completed",
-          "summary" => "direct execution completed without evidence",
+          "summary" => "implementation completed without evidence",
           "evidence" => [],
           "decisions" => ["execute root issue directly"],
           "open_questions" => []
@@ -141,12 +139,12 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         }
       )
 
-    write_direct_execution_workflow!(workspace_root, agent_script)
+    write_issue_graph_workflow!(workspace_root, agent_script)
 
     root_issue = %Issue{
       id: "workflow-smoke-direct-missing-evidence-root",
       identifier: "SMOKE-DIRECT-EVIDENCE-1",
-      title: "Smoke direct execution missing evidence",
+      title: "Smoke implementation missing evidence",
       state: "In Progress",
       url: "https://linear.app/example/issue/SMOKE-DIRECT-EVIDENCE-1"
     }
@@ -173,7 +171,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
              end)
            end) do
       flunk("""
-      workflow direct execution missing evidence did not block in execution
+      workflow implementation missing evidence did not block in execution
 
       registry:
       #{inspect(Registry.load_by_root_identifier(root_issue.identifier), pretty: true)}
@@ -192,11 +190,11 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
 
     runs = read_agent_runs(log_path)
     assert Enum.any?(runs, &(&1["phase"] == "planning" and &1["issue_identifier"] == root_issue.identifier))
-    assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "direct_execution"))
+    assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "implementation"))
     refute Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "review"))
   end
 
-  test "真实 Orchestrator 在 direct_execution review needs_human 时阻塞 registry 并保存人工输入请求" do
+  test "真实 Orchestrator 在 implementation review needs_human 时阻塞 registry 并保存人工输入请求" do
     stop_default_orchestrator()
 
     test_root =
@@ -206,14 +204,14 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     log_path = Path.join(test_root, "agent_runs.jsonl")
 
     agent_script =
-      direct_execution_agent_script(
+      single_issue_graph_agent_script(
         log_path,
         %{
           "schema_version" => 1,
           "node_key" => "root",
-          "task_type" => "direct_execution",
+          "task_type" => "implementation",
           "outcome" => "completed",
-          "summary" => "direct execution completed but needs product input",
+          "summary" => "implementation completed but needs product input",
           "evidence" => ["fake cli wrote issue_result.json"],
           "decisions" => ["execute root issue directly"],
           "open_questions" => []
@@ -229,16 +227,16 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
           "decisions" => [],
           "open_questions" => [],
           "reason" => "acceptance criteria require human confirmation",
-          "requested_input" => "Please confirm whether this direct execution is acceptable."
+          "requested_input" => "Please confirm whether this implementation is acceptable."
         }
       )
 
-    write_direct_execution_workflow!(workspace_root, agent_script)
+    write_issue_graph_workflow!(workspace_root, agent_script)
 
     root_issue = %Issue{
       id: "workflow-smoke-direct-needs-human-root",
       identifier: "SMOKE-DIRECT-HUMAN-1",
-      title: "Smoke direct execution needs human",
+      title: "Smoke implementation needs human",
       state: "In Progress",
       url: "https://linear.app/example/issue/SMOKE-DIRECT-HUMAN-1"
     }
@@ -272,7 +270,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
              end
            end) do
       flunk("""
-      workflow direct execution needs_human did not block registry
+      workflow implementation needs_human did not block registry
 
       registry:
       #{inspect(Registry.load_by_root_identifier(root_issue.identifier), pretty: true)}
@@ -289,13 +287,13 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     assert registry["status"] == "blocked"
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
     assert registry["blocked_reason"] == "product decision required before closing"
-    assert registry["human_input_request"] == "Please confirm whether this direct execution is acceptable."
+    assert registry["human_input_request"] == "Please confirm whether this implementation is acceptable."
     assert Registry.node(registry, "root")["status"] == "completed"
     assert Registry.node(registry, "final_review")["status"] == "blocked"
     assert Registry.node(registry, "final_review")["review_summary"] == "product decision required before closing"
   end
 
-  test "真实 Orchestrator 在 direct_execution review fail 时标记 registry failed 并保存失败原因" do
+  test "真实 Orchestrator 在 implementation review fail 时标记 registry failed 并保存失败原因" do
     stop_default_orchestrator()
 
     test_root =
@@ -305,14 +303,14 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     log_path = Path.join(test_root, "agent_runs.jsonl")
 
     agent_script =
-      direct_execution_agent_script(
+      single_issue_graph_agent_script(
         log_path,
         %{
           "schema_version" => 1,
           "node_key" => "root",
-          "task_type" => "direct_execution",
+          "task_type" => "implementation",
           "outcome" => "completed",
-          "summary" => "direct execution completed with unacceptable result",
+          "summary" => "implementation completed with unacceptable result",
           "evidence" => ["fake cli wrote issue_result.json"],
           "decisions" => ["execute root issue directly"],
           "open_questions" => []
@@ -323,7 +321,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
           "task_type" => "review",
           "outcome" => "fail",
           "reviews" => ["__root_candidate__"],
-          "summary" => "direct execution failed review",
+          "summary" => "implementation failed review",
           "evidence" => ["fake cli reviewed issue_result.json"],
           "decisions" => [],
           "open_questions" => [],
@@ -331,12 +329,12 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         }
       )
 
-    write_direct_execution_workflow!(workspace_root, agent_script)
+    write_issue_graph_workflow!(workspace_root, agent_script)
 
     root_issue = %Issue{
       id: "workflow-smoke-direct-fail-root",
       identifier: "SMOKE-DIRECT-FAIL-1",
-      title: "Smoke direct execution fail",
+      title: "Smoke implementation fail",
       state: "In Progress",
       url: "https://linear.app/example/issue/SMOKE-DIRECT-FAIL-1"
     }
@@ -370,7 +368,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
              end
            end) do
       flunk("""
-      workflow direct execution fail did not fail registry
+      workflow implementation fail did not fail registry
 
       registry:
       #{inspect(Registry.load_by_root_identifier(root_issue.identifier), pretty: true)}
@@ -386,11 +384,11 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
     assert registry["status"] == "failed"
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
-    assert registry["failure_reason"] == "direct execution failed review"
+    assert registry["failure_reason"] == "implementation failed review"
     refute registry["failure_reason"] == "completion evidence proves the wrong behavior"
     assert Registry.node(registry, "root")["status"] == "completed"
     assert Registry.node(registry, "final_review")["status"] == "failed"
-    assert Registry.node(registry, "final_review")["review_summary"] == "direct execution failed review"
+    assert Registry.node(registry, "final_review")["review_summary"] == "implementation failed review"
   end
 
   test "真实 Orchestrator 通过 artifacts 跑通 planning execution review 闭环" do
@@ -405,7 +403,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         "phase='plan' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
         "is_review='\"task_type\": \"review\"' in p or 'Review issue' in p; " <>
         "payloads={" <>
-        "'plan': {'kind': 'issue_graph', 'summary': 'smoke planning created one executable child issue', 'confidence': 'high', 'nodes': [{'node_key': 'implementation', 'task_type': 'implementation', 'title': 'Smoke derived implementation', 'goal': 'Prove the workflow closes through review', 'agent_id': 'codex', 'instructions': 'Write the issue result for the smoke test.', 'evidence_expectations': ['issue result exists']}], 'edges': []}, " <>
+        "'plan': {'kind': 'issue_graph', 'summary': 'smoke planning created one executable child issue', 'confidence': 'high', 'nodes': [{'node_key': 'implementation', 'task_type': 'implementation', 'title': 'Smoke derived implementation', 'goal': 'Prove the workflow closes through review', 'agent_id': 'codex', 'instructions': 'Write the issue result for the smoke test.', 'evidence_expectations': ['issue result exists']},{'node_key':'final_review','task_type':'review','title':'Final review','goal':'Review the root candidate result','agent_id':'codex','reviews':['__root_candidate__'],'subject_selector':{'type':'final_candidate_range'}}], 'edges': [{'from':'implementation','to':'final_review'}]}, " <>
         "'implementation': {'schema_version': 1, 'node_key': 'implementation', 'task_type': 'implementation', 'outcome': 'completed', 'summary': 'smoke execution completed', 'evidence': ['fake cli wrote issue_result.json'], 'decisions': ['use artifact handoff'], 'open_questions': []}, " <>
         "'review': {'schema_version': 1, 'node_key': 'final_review', 'task_type': 'review', 'outcome': 'pass', 'reviews': ['__root_candidate__'], 'summary': 'smoke review passed', 'evidence': ['fake cli reviewed issue_result.json'], 'decisions': [], 'open_questions': []}}; " <>
         "payloads['issue']=payloads['review'] if is_review else payloads['implementation']; " <>
@@ -511,7 +509,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         "phase='planning' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
         "is_review='\"task_type\": \"review\"' in p or 'Review issue' in p; " <>
         "payloads={" <>
-        "'planning': {'kind': 'issue_graph', 'summary': 'recovery planning created one executable child issue', 'confidence': 'high', 'nodes': [{'node_key': 'implementation', 'task_type': 'implementation', 'title': 'Recovery derived implementation', 'goal': 'Finish after orchestrator restart', 'agent_id': 'codex', 'instructions': 'Write the issue result for recovery smoke.', 'evidence_expectations': ['issue result exists']}], 'edges': []}, " <>
+        "'planning': {'kind': 'issue_graph', 'summary': 'recovery planning created one executable child issue', 'confidence': 'high', 'nodes': [{'node_key': 'implementation', 'task_type': 'implementation', 'title': 'Recovery derived implementation', 'goal': 'Finish after orchestrator restart', 'agent_id': 'codex', 'instructions': 'Write the issue result for recovery smoke.', 'evidence_expectations': ['issue result exists']},{'node_key':'final_review','task_type':'review','title':'Final review','goal':'Review the root candidate result','agent_id':'codex','reviews':['__root_candidate__'],'subject_selector':{'type':'final_candidate_range'}}], 'edges': [{'from':'implementation','to':'final_review'}]}, " <>
         "'implementation': {'schema_version': 1, 'node_key': 'implementation', 'task_type': 'implementation', 'outcome': 'completed', 'summary': 'recovery execution completed', 'evidence': ['fake cli wrote issue_result.json'], 'decisions': ['continue from persisted registry'], 'open_questions': []}, " <>
         "'review': {'schema_version': 1, 'node_key': 'final_review', 'task_type': 'review', 'outcome': 'pass', 'reviews': ['__root_candidate__'], 'summary': 'recovery review passed', 'evidence': ['fake cli reviewed issue_result.json'], 'decisions': [], 'open_questions': []}}; " <>
         "payloads['issue']=payloads['review'] if is_review else payloads['implementation']; " <>
@@ -831,7 +829,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         "is_review='\"task_type\": \"review\"' in p or 'Review issue' in p; is_final='final_review' in p or '__root_candidate__' in p; is_rework='返工：' in p or 'implementation-rework-1' in p; " <>
         "decision='pass' if is_final else 'needs_rework'; " <>
         "payloads={" <>
-        "'plan': {'kind':'issue_graph','summary':'smoke planning created rework candidate','confidence':'high','nodes':[{'node_key':'implementation','task_type':'implementation','title':'Smoke rework implementation','goal':'Produce a result that first review rejects','agent_id':'codex','instructions':'Write issue result for rework smoke.','evidence_expectations':['issue result exists']},{'node_key':'implementation_review','task_type':'review','title':'Review smoke implementation','goal':'Review the implementation result','agent_id':'codex','reviews':['implementation'],'subject_selector':{'type':'candidate_range'}}],'edges':[{'from':'implementation','to':'implementation_review'}]}, " <>
+        "'plan': {'kind':'issue_graph','summary':'smoke planning created rework candidate','confidence':'high','nodes':[{'node_key':'implementation','task_type':'implementation','title':'Smoke rework implementation','goal':'Produce a result that first review rejects','agent_id':'codex','instructions':'Write issue result for rework smoke.','evidence_expectations':['issue result exists']},{'node_key':'implementation_review','task_type':'review','title':'Review smoke implementation','goal':'Review the implementation result','agent_id':'codex','reviews':['implementation'],'subject_selector':{'type':'candidate_range'}},{'node_key':'final_review','task_type':'review','title':'Final review','goal':'Review the root candidate result','agent_id':'codex','reviews':['__root_candidate__'],'subject_selector':{'type':'final_candidate_range'}}],'edges':[{'from':'implementation','to':'implementation_review'},{'from':'implementation_review','to':'final_review'}]}, " <>
         "'implementation': {'schema_version':1,'node_key':'implementation-rework-1' if is_rework else 'implementation','task_type':'implementation','outcome':'completed','summary':'smoke execution completed for '+p[:80],'evidence':['fake cli wrote issue_result.json'],'decisions':['use artifact handoff'],'open_questions':[]}, " <>
         "'review': {'schema_version':1,'node_key':'final_review' if is_final else 'implementation_review','task_type':'review','outcome':decision,'reviews':['__root_candidate__'] if is_final else ['implementation'],'summary':'smoke review passed' if decision=='pass' else 'smoke review requested rework','reason':'smoke requested rework' if decision!='pass' else '', 'evidence':['fake cli reviewed issue_result.json'],'decisions':[],'open_questions':[]}}; " <>
         "payloads['issue']=payloads['review'] if is_review else payloads['implementation']; " <>
@@ -931,7 +929,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         "replanning='重规划原因' in p; key='implementation-v2' if replanning else 'implementation-v1'; title='Smoke replanned implementation' if replanning else 'Smoke initial implementation'; summary='smoke replanning created replacement issue' if replanning else 'smoke planning created initial issue'; " <>
         "decision='pass' if is_final else 'needs_replan'; " <>
         "payloads={" <>
-        "'plan': {'kind':'issue_graph','summary':summary,'confidence':'high','nodes':([{'node_key':key,'task_type':'implementation','title':title,'goal':'Prove replan closes through a replacement issue','agent_id':'codex','instructions':'Write issue result for replan smoke.','evidence_expectations':['issue result exists']}] if replanning else [{'node_key':key,'task_type':'implementation','title':title,'goal':'Prove replan closes through a replacement issue','agent_id':'codex','instructions':'Write issue result for replan smoke.','evidence_expectations':['issue result exists']},{'node_key':'implementation_review','task_type':'review','title':'Review initial implementation','goal':'Request replanning for the initial result','agent_id':'codex','reviews':['implementation-v1'],'subject_selector':{'type':'candidate_range'}}]),'edges':([] if replanning else [{'from':'implementation-v1','to':'implementation_review'}])}, " <>
+        "'plan': {'kind':'issue_graph','summary':summary,'confidence':'high','nodes':([{'node_key':key,'task_type':'implementation','title':title,'goal':'Prove replan closes through a replacement issue','agent_id':'codex','instructions':'Write issue result for replan smoke.','evidence_expectations':['issue result exists']},{'node_key':'final_review','task_type':'review','title':'Final review','goal':'Review the root candidate result','agent_id':'codex','reviews':['__root_candidate__'],'subject_selector':{'type':'final_candidate_range'}}] if replanning else [{'node_key':key,'task_type':'implementation','title':title,'goal':'Prove replan closes through a replacement issue','agent_id':'codex','instructions':'Write issue result for replan smoke.','evidence_expectations':['issue result exists']},{'node_key':'implementation_review','task_type':'review','title':'Review initial implementation','goal':'Request replanning for the initial result','agent_id':'codex','reviews':['implementation-v1'],'subject_selector':{'type':'candidate_range'}},{'node_key':'final_review','task_type':'review','title':'Final review','goal':'Review the root candidate result','agent_id':'codex','reviews':['__root_candidate__'],'subject_selector':{'type':'final_candidate_range'}}]),'edges':([{'from':key,'to':'final_review'}] if replanning else [{'from':'implementation-v1','to':'implementation_review'},{'from':'implementation_review','to':'final_review'}])}, " <>
         "'implementation': {'schema_version':1,'node_key':key,'task_type':'implementation','outcome':'completed','summary':'smoke execution completed for '+p[:80],'evidence':['fake cli wrote issue_result.json'],'decisions':['use artifact handoff'],'open_questions':[]}, " <>
         "'review': {'schema_version':1,'node_key':'final_review' if is_final else 'implementation_review','task_type':'review','outcome':decision,'reviews':['__root_candidate__'] if is_final else ['implementation-v1'],'summary':'smoke review requested replan' if decision=='needs_replan' else 'smoke replanned review passed','reason':'smoke requested replan' if decision!='pass' else '', 'evidence':['fake cli reviewed issue_result.json'],'decisions':[],'open_questions':[]}}; " <>
         "payloads['issue']=payloads['review'] if is_review else payloads['implementation']; " <>
@@ -1181,7 +1179,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     end
   end
 
-  defp write_direct_execution_workflow!(workspace_root, agent_script) do
+  defp write_issue_graph_workflow!(workspace_root, agent_script) do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
       tracker_active_states: ["Todo", "In Progress"],
@@ -1212,13 +1210,31 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     )
   end
 
-  defp direct_execution_agent_script(log_path, issue_result, review_result) do
+  defp single_issue_graph_agent_script(log_path, issue_result, review_result) do
     plan_json =
       Jason.encode!(%{
-        "kind" => "direct_execution",
-        "summary" => "smoke planning chose direct execution",
+        "kind" => "issue_graph",
+        "summary" => "smoke planning created a single implementation node",
         "confidence" => "high",
-        "agent_id" => "codex"
+        "nodes" => [
+          %{
+            "node_key" => "implementation",
+            "task_type" => "implementation",
+            "title" => "Smoke implementation",
+            "goal" => "Prove the workflow closes through review",
+            "agent_id" => "codex"
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "Final review",
+            "goal" => "Review the root candidate result",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
+          }
+        ],
+        "edges" => [%{"from" => "implementation", "to" => "final_review"}]
       })
 
     issue_json = Jason.encode!(issue_result)
@@ -1231,7 +1247,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     "import base64, json, os, sys; " <>
       "p=sys.argv[1]; log=#{Jason.encode!(log_path)}; os.makedirs('.symphony', exist_ok=True); os.makedirs(os.path.dirname(log), exist_ok=True); " <>
       "phase='planning' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
-      "task_type='review' if '\"task_type\": \"review\"' in p or 'Review issue' in p else ('direct_execution' if '\"task_type\": \"direct_execution\"' in p else ''); " <>
+      "task_type='review' if '\"task_type\": \"review\"' in p or 'Review issue' in p else ('implementation' if '\"task_type\": \"implementation\"' in p else ''); " <>
       "loads=lambda v: json.loads(base64.b64decode(v).decode('utf-8')); " <>
       "payloads={'planning': loads('#{plan_b64}'), 'issue': (loads('#{review_b64}') if task_type=='review' else loads('#{issue_b64}'))}; " <>
       "paths={'planning': '.symphony/workflow_plan.json', 'issue': '.symphony/issue_result.json'}; " <>
