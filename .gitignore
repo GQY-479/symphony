@@ -6,4 +6,5 @@ SPEC.pdf
 .github/
 graphify-out/
 .superpowers/
+.worktrees/
 *-local-command-*.txt
