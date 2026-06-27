@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Workflow.Prompts do
 
   alias SymphonyElixir.Workflow.Artifacts
 
-  @review_decisions ["pass", "needs_rework", "needs_replan", "needs_human", "fail"]
+  @review_outcomes ["pass", "needs_rework", "needs_replan", "needs_human", "fail"]
 
   @spec append(String.t(), atom() | nil, map() | nil, Path.t() | nil) :: String.t()
   def append(base_prompt, nil, _context, _workspace), do: base_prompt
@@ -107,9 +107,9 @@ defmodule SymphonyElixir.Workflow.Prompts do
 
     upstream_summaries =
       context
-      |> upstream_packets()
-      |> Enum.map_join("\n", fn packet ->
-        summary = Map.get(packet, "summary") || Map.get(packet, :summary) || ""
+      |> upstream_results()
+      |> Enum.map_join("\n", fn result ->
+        summary = Map.get(result, "summary") || Map.get(result, :summary) || ""
         "- #{summary}"
       end)
 
@@ -134,7 +134,7 @@ defmodule SymphonyElixir.Workflow.Prompts do
         - 只允许读取相关文件、运行验证命令、判断结果，并创建或更新当前 issue 的 `issue_result.json`。
         - 不要修改源码、测试、文档或业务文件；不要把 review issue 变成返工实现 issue。
         - 不要执行 `git add`，不要 stage，不要 commit，不要 push，不要创建 PR，不要创建或切换分支。
-        - 允许的 review outcome 集合: #{Enum.join(@review_decisions, ", ")}。
+        - 允许的 review outcome 集合: #{Enum.join(@review_outcomes, ", ")}。
         - `pass` 表示审查通过。
         - `needs_rework`、`needs_replan`、`fail` 必须包含非空 `reason`。
         - `needs_human` 必须包含非空 `reason` 和 `requested_input`。
@@ -184,8 +184,8 @@ defmodule SymphonyElixir.Workflow.Prompts do
   defp context_map(context) when is_map(context), do: context
   defp context_map(_context), do: %{}
 
-  defp upstream_packets(context) when is_map(context) do
-    Map.get(context, :upstream_packets) || Map.get(context, "upstream_packets") || []
+  defp upstream_results(context) when is_map(context) do
+    Map.get(context, :upstream_results) || Map.get(context, "upstream_results") || []
   end
 
   defp upstream_workspaces(context) when is_map(context) do

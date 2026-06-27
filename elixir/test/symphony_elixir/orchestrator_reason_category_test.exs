@@ -270,7 +270,7 @@ defmodule SymphonyElixir.OrchestratorReasonCategoryTest do
         reason: "codex turn requires operator input",
         agent_id: "mimocode",
         agent_kind: "cli_run",
-        workflow_phase: :execution,
+        workflow_phase: :issue,
         blocked_at: DateTime.utc_now()
       }
 
@@ -295,7 +295,7 @@ defmodule SymphonyElixir.OrchestratorReasonCategoryTest do
            blocked: [
              %{
                identifier: "MT-CAT",
-               workflow_phase: :execution,
+               workflow_phase: :issue,
                reason_category: :operator_input_needed,
                workflow_blocked_reason: "codex turn requires operator input",
                error: "codex turn requires operator input"

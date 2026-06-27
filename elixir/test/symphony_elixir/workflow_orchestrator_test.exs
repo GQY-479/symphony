@@ -879,13 +879,15 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
       "workflow_semantics" => "executable",
       "status" => "ready",
       "dependencies" => [],
-      "completion_packet" => %{
+      "issue_result" => %{
+        "schema_version" => 1,
+        "node_key" => "implementation",
+        "task_type" => "implementation",
         "outcome" => "completed",
         "summary" => "实现了主体逻辑但缺少回归测试",
         "evidence" => ["mix test"],
         "decisions" => ["提交当前实现供审查"],
-        "open_questions" => [],
-        "next_handoff" => "请审查缺失的测试范围"
+        "open_questions" => []
       }
     })
     |> Map.put("status", "planning_complete")
@@ -974,13 +976,15 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
       "workflow_semantics" => "executable",
       "status" => "ready",
       "dependencies" => [],
-      "completion_packet" => %{
+      "issue_result" => %{
+        "schema_version" => 1,
+        "node_key" => "implementation",
+        "task_type" => "implementation",
         "outcome" => "completed",
         "summary" => "实现路径被审查判定需要改计划",
         "evidence" => ["mix test"],
         "decisions" => ["提交当前实现供重规划审查"],
-        "open_questions" => [],
-        "next_handoff" => "请判断是否需要重规划"
+        "open_questions" => []
       }
     })
     |> Map.put("status", "planning_complete")

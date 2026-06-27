@@ -144,7 +144,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       codex_input_tokens: 0,
       codex_output_tokens: 0,
       codex_total_tokens: 0,
-      workflow_phase: :review,
+      workflow_phase: :issue,
       workflow_root_issue_id: "MT-ROOT",
       started_at: DateTime.utc_now()
     }
@@ -166,7 +166,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       error: "workflow waiting on dependencies",
       agent_id: "codex",
       agent_kind: "cli_run",
-      workflow_phase: :execution,
+      workflow_phase: :issue,
       workflow_root_issue_id: "MT-ROOT",
       blocked_at: DateTime.utc_now()
     }
@@ -181,13 +181,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     snapshot = GenServer.call(pid, :snapshot)
 
     assert %{running: [running], retrying: [retrying], blocked: [blocked]} = snapshot
-    assert running.workflow_phase == :review
+    assert running.workflow_phase == :issue
     assert running.workflow_root_issue_id == "MT-ROOT"
     assert running.workflow_blocked_reason == nil
     assert retrying.workflow_phase == :planning
     assert retrying.workflow_root_issue_id == "MT-ROOT"
     assert retrying.workflow_blocked_reason == "workflow replan requested"
-    assert blocked.workflow_phase == :execution
+    assert blocked.workflow_phase == :issue
     assert blocked.workflow_root_issue_id == "MT-ROOT"
     assert blocked.workflow_blocked_reason == "workflow waiting on dependencies"
   end
@@ -1946,7 +1946,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            %{
              identifier: "MT-WF",
              state: "In Progress",
-             workflow_phase: :review,
+             workflow_phase: :issue,
              session_id: "thread-1234567890",
              codex_app_server_pid: nil,
              codex_total_tokens: 0,
@@ -1960,7 +1960,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          blocked: [
            %{
              identifier: "MT-WAIT",
-             workflow_phase: :execution,
+             workflow_phase: :issue,
              workflow_blocked_reason: "workflow waiting on dependencies",
              error: "workflow waiting on dependencies"
            }
@@ -1972,7 +1972,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
     plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
 
-    assert plain =~ "review"
+    assert plain =~ "issue"
     assert plain =~ "Blocked"
     assert plain =~ "MT-WAIT"
     assert plain =~ "workflow waiting on dependencies"

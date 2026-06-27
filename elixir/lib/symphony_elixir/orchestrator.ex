@@ -395,7 +395,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp apply_workflow_issue_result(state, issue_id, running_entry, decision) do
-    apply_workflow_review_decision(state, issue_id, running_entry, decision)
+    apply_workflow_review_outcome(state, issue_id, running_entry, decision)
   end
 
   defp running_workspace(%{workspace_path: workspace}) when is_binary(workspace) and workspace != "" do
@@ -404,29 +404,29 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp running_workspace(_running_entry), do: {:error, :missing_workspace_path}
 
-  defp apply_workflow_review_decision(state, issue_id, _running_entry, {:pass, _reviewed_issue_id}) do
+  defp apply_workflow_review_outcome(state, issue_id, _running_entry, {:pass, _reviewed_issue_id}) do
     state
     |> complete_issue(issue_id)
     |> release_issue_claim(issue_id)
     |> schedule_tick(0)
   end
 
-  defp apply_workflow_review_decision(state, issue_id, running_entry, {:needs_human, _reviewed_issue_id, reason}) do
+  defp apply_workflow_review_outcome(state, issue_id, running_entry, {:needs_human, _reviewed_issue_id, reason}) do
     block_issue_from_entry(state, issue_id, running_entry, "review needs human: #{reason}")
   end
 
-  defp apply_workflow_review_decision(state, issue_id, _running_entry, {:needs_rework, _reviewed_issue_id, _reason}) do
+  defp apply_workflow_review_outcome(state, issue_id, _running_entry, {:needs_rework, _reviewed_issue_id, _reason}) do
     state
     |> complete_issue(issue_id)
     |> release_issue_claim(issue_id)
     |> schedule_tick(0)
   end
 
-  defp apply_workflow_review_decision(state, issue_id, running_entry, {:fail, _reviewed_issue_id, reason}) do
+  defp apply_workflow_review_outcome(state, issue_id, running_entry, {:fail, _reviewed_issue_id, reason}) do
     block_issue_from_entry(state, issue_id, running_entry, "review failed: #{reason}")
   end
 
-  defp apply_workflow_review_decision(state, issue_id, running_entry, {:needs_replan, reviewed_issue_id, reason}) do
+  defp apply_workflow_review_outcome(state, issue_id, running_entry, {:needs_replan, reviewed_issue_id, reason}) do
     case Registry.load_by_issue_id(reviewed_issue_id) do
       {:ok, registry, _node_key, _node} ->
         schedule_root_replan(state, issue_id, running_entry, registry, reviewed_issue_id, reason)
@@ -562,15 +562,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp normalize_workflow_phase("planning"), do: :planning
   defp normalize_workflow_phase("issue"), do: :issue
-  defp normalize_workflow_phase("execution"), do: :execution
-  defp normalize_workflow_phase("review"), do: :review
   defp normalize_workflow_phase(phase), do: phase
 
   defp normalize_repair_reason(":enoent"), do: :enoent
   defp normalize_repair_reason(":invalid_workflow_plan"), do: :invalid_workflow_plan
   defp normalize_repair_reason(":invalid_issue_result"), do: :invalid_issue_result
-  defp normalize_repair_reason(":invalid_completion_packet"), do: :invalid_completion_packet
-  defp normalize_repair_reason(":invalid_review_decision"), do: :invalid_review_decision
   defp normalize_repair_reason(reason), do: reason
 
   defp maybe_dispatch(%State{} = state) do

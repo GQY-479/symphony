@@ -120,9 +120,6 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
       assert issue =~ text
     end
 
-    refute issue =~ "completion_packet.json"
-    refute issue =~ "review_decision.json"
-
     for text <- [
           "issue_result.json",
           "pass",
@@ -144,9 +141,6 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
         ] do
       assert review_issue =~ text
     end
-
-    refute review_issue =~ "completion_packet.json"
-    refute review_issue =~ "review_decision.json"
   end
 
   defp workflow_front_matter(contents) do

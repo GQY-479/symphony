@@ -202,26 +202,6 @@ defmodule SymphonyElixirWeb.PresenterTest do
       assert running.workflow_artifact_path =~ "issue_result.json"
     end
 
-    test "retired workflow phases do not expose artifact paths" do
-      orchestrator = build_orchestrator!(PresenterTest.ReviewArtifactOrch)
-      issue = base_issue("MT-RVAP")
-      workspace = "/tmp/symphony_workspaces/MT-RVAP"
-
-      entry = base_running_entry(issue, workflow_phase: :review, workspace_path: workspace)
-
-      replace_state!(orchestrator, fn state ->
-        state
-        |> Map.put(:running, %{issue.id => entry})
-        |> Map.put(:claimed, MapSet.put(state.claimed, issue.id))
-      end)
-
-      payload = Presenter.state_payload(orchestrator, @snapshot_timeout_ms)
-
-      assert [running] = payload.running
-      assert running.workflow_phase == :review
-      assert running.workflow_artifact_path == nil
-    end
-
     test "returns nil workflow_artifact_path when phase is nil" do
       orchestrator = build_orchestrator!(PresenterTest.NilArtifactOrch)
       issue = base_issue("MT-NAP")

@@ -431,97 +431,54 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
              })
   end
 
-  test "validate_completion_packet requires outcome summary and evidence" do
-    assert :ok ==
-             Artifacts.validate_completion_packet(%{
-               "outcome" => "completed",
-               "summary" => "实现了适配器",
-               "evidence" => ["mix test test/symphony_elixir/workflow_controller_test.exs"],
-               "decisions" => ["保留现有适配器边界"],
-               "open_questions" => [],
-               "next_handoff" => "交给 review 阶段检查实现"
-             })
-
-    assert {:error, :invalid_completion_packet} ==
-             Artifacts.validate_completion_packet(%{
-               "outcome" => "completed",
-               "summary" => "实现了适配器"
-             })
-  end
-
-  test "validate_completion_packet requires all handoff fields and non-empty evidence" do
-    valid_packet = %{
+  test "validate_issue_result rejects normal issue results with missing required fields" do
+    valid_result = %{
+      "schema_version" => 1,
+      "node_key" => "implementation",
+      "task_type" => "implementation",
       "outcome" => "completed",
-      "summary" => "实现了适配器",
-      "evidence" => ["mix test test/symphony_elixir/workflow_controller_test.exs"],
-      "decisions" => ["保留现有适配器边界"],
-      "open_questions" => [],
-      "next_handoff" => "交给 review 阶段检查实现"
+      "summary" => "实现完成",
+      "evidence" => ["mix test"],
+      "decisions" => [],
+      "open_questions" => []
     }
 
-    assert :ok == Artifacts.validate_completion_packet(valid_packet)
-
-    for invalid_packet <- [
-          Map.delete(valid_packet, "decisions"),
-          Map.delete(valid_packet, "open_questions"),
-          Map.delete(valid_packet, "next_handoff"),
-          %{valid_packet | "evidence" => []},
-          %{valid_packet | "next_handoff" => ""}
+    for invalid_result <- [
+          Map.delete(valid_result, "decisions"),
+          Map.delete(valid_result, "open_questions"),
+          %{valid_result | "evidence" => []},
+          %{valid_result | "summary" => ""}
         ] do
-      assert {:error, :invalid_completion_packet} ==
-               Artifacts.validate_completion_packet(invalid_packet)
+      assert {:error, :invalid_issue_result} ==
+               Artifacts.validate_issue_result(invalid_result)
     end
   end
 
-  test "validate_review_decision requires allowed decision summary and confidence" do
-    assert :ok ==
-             Artifacts.validate_review_decision(%{
-               "decision" => "pass",
-               "summary" => "满足当前阶段要求",
-               "confidence" => "high"
-             })
+  test "validate_issue_result rejects invalid review outcomes and missing review fields" do
+    valid_result = %{
+      "schema_version" => 1,
+      "node_key" => "implementation_review",
+      "task_type" => "review",
+      "outcome" => "needs_human",
+      "reviews" => ["implementation"],
+      "summary" => "需要人工确认上线窗口",
+      "reason" => "缺少上线窗口约束",
+      "requested_input" => "请确认是否可以今天发布",
+      "evidence" => ["mix test"],
+      "decisions" => [],
+      "open_questions" => []
+    }
 
-    assert {:error, :invalid_review_decision} ==
-             Artifacts.validate_review_decision(%{
-               "decision" => "unknown",
-               "summary" => "不合法",
-               "confidence" => "low"
-             })
-  end
-
-  test "validate_review_decision requires reason fields for non-pass decisions" do
-    assert :ok ==
-             Artifacts.validate_review_decision(%{
-               "decision" => "needs_human",
-               "summary" => "需要人工确认上线窗口",
-               "confidence" => "medium",
-               "reason" => "缺少上线窗口约束",
-               "requested_input" => "请确认是否可以今天发布"
-             })
-
-    assert :ok ==
-             Artifacts.validate_review_decision(%{
-               "decision" => "fail",
-               "summary" => "实现没有产出必要文件",
-               "confidence" => "high",
-               "reason" => "缺少 completion_packet.json"
-             })
-
-    assert {:error, :invalid_review_decision} ==
-             Artifacts.validate_review_decision(%{
-               "decision" => "needs_human",
-               "summary" => "需要人工确认上线窗口",
-               "confidence" => "medium",
-               "requested_input" => "请确认是否可以今天发布"
-             })
-
-    assert {:error, :invalid_review_decision} ==
-             Artifacts.validate_review_decision(%{
-               "decision" => "needs_human",
-               "summary" => "需要人工确认上线窗口",
-               "confidence" => "medium",
-               "reason" => "缺少上线窗口约束"
-             })
+    for invalid_result <- [
+          %{valid_result | "outcome" => "unknown"},
+          Map.delete(valid_result, "reviews"),
+          %{valid_result | "reviews" => []},
+          Map.delete(valid_result, "reason"),
+          Map.delete(valid_result, "requested_input")
+        ] do
+      assert {:error, :invalid_issue_result} ==
+               Artifacts.validate_issue_result(invalid_result)
+    end
   end
 
   test "load helpers return file and json errors without raising" do
@@ -536,8 +493,8 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
 
     assert {:error, :enoent} = Artifacts.load_plan(workspace)
 
-    File.write!(Artifacts.completion_packet_path(workspace), "{invalid")
-    assert match?({:error, %Jason.DecodeError{}}, Artifacts.load_completion_packet(workspace))
+    File.write!(Artifacts.issue_result_path(workspace), "{invalid")
+    assert match?({:error, %Jason.DecodeError{}}, Artifacts.load_issue_result(workspace))
 
     File.rm_rf!(workspace)
   end
@@ -683,32 +640,17 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
     File.rm_rf!(workspace)
   end
 
-  test "load helpers return :enoent for missing completion packet" do
+  test "load helpers return :enoent for missing issue result" do
     write_workflow_file!(Workflow.workflow_file_path(),
       orchestration: %{enabled: true, artifact_dir: ".symphony"}
     )
 
     workspace =
-      Path.join(System.tmp_dir!(), "workflow-artifacts-missing-completion-#{System.unique_integer([:positive])}")
+      Path.join(System.tmp_dir!(), "workflow-artifacts-missing-result-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(Path.join(workspace, ".symphony"))
 
-    assert {:error, :enoent} = Artifacts.load_completion_packet(workspace)
-
-    File.rm_rf!(workspace)
-  end
-
-  test "load helpers return :enoent for missing review decision" do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      orchestration: %{enabled: true, artifact_dir: ".symphony"}
-    )
-
-    workspace =
-      Path.join(System.tmp_dir!(), "workflow-artifacts-missing-review-#{System.unique_integer([:positive])}")
-
-    File.mkdir_p!(Path.join(workspace, ".symphony"))
-
-    assert {:error, :enoent} = Artifacts.load_review_decision(workspace)
+    assert {:error, :enoent} = Artifacts.load_issue_result(workspace)
 
     File.rm_rf!(workspace)
   end
@@ -729,34 +671,18 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
     File.rm_rf!(workspace)
   end
 
-  test "load helpers return decode error for invalid JSON in completion packet" do
+  test "load helpers return decode error for invalid JSON in issue result" do
     write_workflow_file!(Workflow.workflow_file_path(),
       orchestration: %{enabled: true, artifact_dir: ".symphony"}
     )
 
     workspace =
-      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-json-completion-#{System.unique_integer([:positive])}")
+      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-json-result-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(Path.join(workspace, ".symphony"))
-    File.write!(Artifacts.completion_packet_path(workspace), "{invalid json")
+    File.write!(Artifacts.issue_result_path(workspace), "{invalid json")
 
-    assert match?({:error, %Jason.DecodeError{}}, Artifacts.load_completion_packet(workspace))
-
-    File.rm_rf!(workspace)
-  end
-
-  test "load helpers return decode error for invalid JSON in review decision" do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      orchestration: %{enabled: true, artifact_dir: ".symphony"}
-    )
-
-    workspace =
-      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-json-review-#{System.unique_integer([:positive])}")
-
-    File.mkdir_p!(Path.join(workspace, ".symphony"))
-    File.write!(Artifacts.review_decision_path(workspace), "{invalid json")
-
-    assert match?({:error, %Jason.DecodeError{}}, Artifacts.load_review_decision(workspace))
+    assert match?({:error, %Jason.DecodeError{}}, Artifacts.load_issue_result(workspace))
 
     File.rm_rf!(workspace)
   end
@@ -765,18 +691,6 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
     assert {:error, :invalid_workflow_plan} = Artifacts.validate_plan(%{})
     assert {:error, :invalid_workflow_plan} = Artifacts.validate_plan(%{"kind" => "direct_execution"})
     assert {:error, :invalid_workflow_plan} = Artifacts.validate_plan(%{"summary" => "test"})
-  end
-
-  test "validate_completion_packet rejects packet with missing required fields" do
-    assert {:error, :invalid_completion_packet} = Artifacts.validate_completion_packet(%{})
-    assert {:error, :invalid_completion_packet} = Artifacts.validate_completion_packet(%{"outcome" => "completed"})
-    assert {:error, :invalid_completion_packet} = Artifacts.validate_completion_packet(%{"outcome" => "completed", "summary" => "test"})
-  end
-
-  test "validate_review_decision rejects decision with missing required fields" do
-    assert {:error, :invalid_review_decision} = Artifacts.validate_review_decision(%{})
-    assert {:error, :invalid_review_decision} = Artifacts.validate_review_decision(%{"decision" => "pass"})
-    assert {:error, :invalid_review_decision} = Artifacts.validate_review_decision(%{"decision" => "pass", "summary" => "test"})
   end
 
   test "load helpers return validation error for structurally invalid plan" do
@@ -799,42 +713,22 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
     File.rm_rf!(workspace)
   end
 
-  test "load helpers return validation error for structurally invalid completion packet" do
+  test "load helpers return validation error for structurally invalid issue result" do
     write_workflow_file!(Workflow.workflow_file_path(),
       orchestration: %{enabled: true, artifact_dir: ".symphony"}
     )
 
     workspace =
-      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-struct-completion-#{System.unique_integer([:positive])}")
+      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-struct-result-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(Path.join(workspace, ".symphony"))
 
     File.write!(
-      Artifacts.completion_packet_path(workspace),
+      Artifacts.issue_result_path(workspace),
       Jason.encode!(%{"outcome" => "completed", "summary" => "test"})
     )
 
-    assert {:error, :invalid_completion_packet} = Artifacts.load_completion_packet(workspace)
-
-    File.rm_rf!(workspace)
-  end
-
-  test "load helpers return validation error for structurally invalid review decision" do
-    write_workflow_file!(Workflow.workflow_file_path(),
-      orchestration: %{enabled: true, artifact_dir: ".symphony"}
-    )
-
-    workspace =
-      Path.join(System.tmp_dir!(), "workflow-artifacts-invalid-struct-review-#{System.unique_integer([:positive])}")
-
-    File.mkdir_p!(Path.join(workspace, ".symphony"))
-
-    File.write!(
-      Artifacts.review_decision_path(workspace),
-      Jason.encode!(%{"decision" => "unknown", "summary" => "test", "confidence" => "high"})
-    )
-
-    assert {:error, :invalid_review_decision} = Artifacts.load_review_decision(workspace)
+    assert {:error, :invalid_issue_result} = Artifacts.load_issue_result(workspace)
 
     File.rm_rf!(workspace)
   end

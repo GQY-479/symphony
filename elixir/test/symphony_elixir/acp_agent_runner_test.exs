@@ -445,14 +445,14 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
     end
   end
 
-  test "AgentRunner does not continue workflow phase turns after an execution artifact is accepted" do
-    test_root = Path.join(System.tmp_dir!(), "symphony-acp-runner-execution-artifact-stop-#{System.unique_integer([:positive])}")
+  test "AgentRunner does not continue workflow phase turns after an issue result artifact is accepted" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-acp-runner-issue-result-stop-#{System.unique_integer([:positive])}")
     pid_file = Path.join(test_root, "fake-acp.pid")
 
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-920")
-      artifact_path = Path.join([workspace, ".symphony", "completion_packet.json"])
+      artifact_path = Path.join([workspace, ".symphony", "issue_result.json"])
       trace_file = Path.join(test_root, "acp.trace")
       File.mkdir_p!(workspace_root)
 
@@ -465,12 +465,14 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
             "path" => artifact_path,
             "contents" =>
               Jason.encode!(%{
+                schema_version: 1,
+                node_key: "implementation",
+                task_type: "implementation",
                 outcome: "completed",
                 summary: "Implemented the requested behavior",
                 evidence: ["mix test test/symphony_elixir/workflow_orchestrator_test.exs"],
                 decisions: [],
-                open_questions: [],
-                next_handoff: "Ready for review"
+                open_questions: []
               })
           },
           "streamUpdatesBeforePromptResponseMs" => 8_000,
@@ -498,7 +500,7 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
         id: "issue-acp-runner-execution-artifact-stop",
         identifier: "MT-920",
         title: "ACP runner execution artifact stop",
-        description: "Write completion packet and keep streaming",
+        description: "Write issue result and keep streaming",
         state: "In Progress",
         labels: []
       }
@@ -508,14 +510,14 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
                  issue,
                  self(),
                  max_turns: 3,
-                 workflow_phase: :execution,
+                 workflow_phase: :issue,
                  issue_state_fetcher: fn ["issue-acp-runner-execution-artifact-stop"] ->
                    {:ok, [%{issue | state: "In Progress"}]}
                  end
                )
 
       assert {:ok, %{"outcome" => "completed"}} =
-               SymphonyElixir.Workflow.Artifacts.load_completion_packet(workspace)
+               SymphonyElixir.Workflow.Artifacts.load_issue_result(workspace)
 
       trace_lines = trace_file |> File.read!() |> String.split("\n", trim: true)
       assert Enum.count(trace_lines, &(&1 == "session/prompt")) == 1
@@ -532,7 +534,7 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-921")
-      artifact_path = Path.join([workspace, ".symphony", "completion_packet.json"])
+      artifact_path = Path.join([workspace, ".symphony", "issue_result.json"])
       trace_file = Path.join(test_root, "acp.trace")
       File.mkdir_p!(workspace_root)
 
@@ -545,12 +547,14 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
             "path" => artifact_path,
             "contents" =>
               Jason.encode!(%{
+                schema_version: 1,
+                node_key: "implementation",
+                task_type: "implementation",
                 outcome: "completed",
                 summary: "Implemented the requested behavior",
                 evidence: ["mix test test/symphony_elixir/workflow_orchestrator_test.exs"],
                 decisions: [],
-                open_questions: [],
-                next_handoff: "Ready for review"
+                open_questions: []
               })
           }
         })
@@ -576,7 +580,7 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
         id: "issue-acp-runner-post-turn-artifact-stop",
         identifier: "MT-921",
         title: "ACP runner post-turn artifact stop",
-        description: "Write completion packet after the final update",
+        description: "Write issue result after the final update",
         state: "In Progress",
         labels: []
       }
@@ -586,14 +590,14 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
                  issue,
                  self(),
                  max_turns: 3,
-                 workflow_phase: :execution,
+                 workflow_phase: :issue,
                  issue_state_fetcher: fn ["issue-acp-runner-post-turn-artifact-stop"] ->
                    {:ok, [%{issue | state: "In Progress"}]}
                  end
                )
 
       assert {:ok, %{"outcome" => "completed"}} =
-               SymphonyElixir.Workflow.Artifacts.load_completion_packet(workspace)
+               SymphonyElixir.Workflow.Artifacts.load_issue_result(workspace)
 
       trace_lines = trace_file |> File.read!() |> String.split("\n", trim: true)
       assert Enum.count(trace_lines, &(&1 == "session/prompt")) == 1

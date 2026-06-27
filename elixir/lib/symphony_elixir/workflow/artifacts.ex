@@ -7,8 +7,6 @@ defmodule SymphonyElixir.Workflow.Artifacts do
 
   @workflow_plan_filename "workflow_plan.json"
   @issue_result_filename "issue_result.json"
-  @completion_packet_filename "completion_packet.json"
-  @review_decision_filename "review_decision.json"
   @review_outcomes MapSet.new(["pass", "needs_rework", "needs_replan", "needs_human", "fail"])
 
   @spec workflow_plan_path(Path.t()) :: Path.t()
@@ -16,12 +14,6 @@ defmodule SymphonyElixir.Workflow.Artifacts do
 
   @spec issue_result_path(Path.t()) :: Path.t()
   def issue_result_path(workspace), do: artifact_path(workspace, @issue_result_filename)
-
-  @spec completion_packet_path(Path.t()) :: Path.t()
-  def completion_packet_path(workspace), do: artifact_path(workspace, @completion_packet_filename)
-
-  @spec review_decision_path(Path.t()) :: Path.t()
-  def review_decision_path(workspace), do: artifact_path(workspace, @review_decision_filename)
 
   @spec load_plan(Path.t()) :: {:ok, map()} | {:error, term()}
   def load_plan(workspace), do: load_json(workflow_plan_path(workspace), &validate_plan/1)
@@ -32,14 +24,6 @@ defmodule SymphonyElixir.Workflow.Artifacts do
   @spec load_issue_result(Path.t()) :: {:ok, map()} | {:error, term()}
   def load_issue_result(workspace),
     do: load_json(issue_result_path(workspace), &validate_issue_result/1)
-
-  @spec load_completion_packet(Path.t()) :: {:ok, map()} | {:error, term()}
-  def load_completion_packet(workspace),
-    do: load_json(completion_packet_path(workspace), &validate_completion_packet/1)
-
-  @spec load_review_decision(Path.t()) :: {:ok, map()} | {:error, term()}
-  def load_review_decision(workspace),
-    do: load_json(review_decision_path(workspace), &validate_review_decision/1)
 
   @spec validate_plan(term()) :: :ok | {:error, :invalid_workflow_plan}
   def validate_plan(%{"kind" => "direct_execution", "summary" => summary, "confidence" => confidence})
@@ -149,7 +133,7 @@ defmodule SymphonyElixir.Workflow.Artifacts do
         "open_questions" => open_questions
       })
       when is_list(evidence) and is_list(decisions) and is_list(open_questions) do
-    if non_blank?(node_key) and non_blank?(task_type) and non_blank?(outcome) and
+    if task_type != "review" and non_blank?(node_key) and non_blank?(task_type) and non_blank?(outcome) and
          non_blank?(summary) and evidence != [] do
       :ok
     else
@@ -158,69 +142,6 @@ defmodule SymphonyElixir.Workflow.Artifacts do
   end
 
   def validate_issue_result(_result), do: {:error, :invalid_issue_result}
-
-  @spec validate_completion_packet(term()) :: :ok | {:error, :invalid_completion_packet}
-  def validate_completion_packet(%{
-        "outcome" => outcome,
-        "summary" => summary,
-        "evidence" => evidence,
-        "decisions" => decisions,
-        "open_questions" => open_questions,
-        "next_handoff" => next_handoff
-      })
-      when is_list(evidence) and is_list(decisions) and is_list(open_questions) do
-    if non_blank?(outcome) and non_blank?(summary) and non_blank?(next_handoff) and evidence != [] do
-      :ok
-    else
-      {:error, :invalid_completion_packet}
-    end
-  end
-
-  def validate_completion_packet(_packet), do: {:error, :invalid_completion_packet}
-
-  @spec validate_review_decision(term()) :: :ok | {:error, :invalid_review_decision}
-  def validate_review_decision(%{
-        "decision" => "pass",
-        "summary" => summary,
-        "confidence" => confidence
-      }) do
-    if non_blank?(summary) and non_blank?(confidence) do
-      :ok
-    else
-      {:error, :invalid_review_decision}
-    end
-  end
-
-  def validate_review_decision(%{
-        "decision" => "needs_human",
-        "summary" => summary,
-        "confidence" => confidence,
-        "reason" => reason,
-        "requested_input" => requested_input
-      }) do
-    if non_blank?(summary) and non_blank?(confidence) and non_blank?(reason) and
-         non_blank?(requested_input) do
-      :ok
-    else
-      {:error, :invalid_review_decision}
-    end
-  end
-
-  def validate_review_decision(%{
-        "decision" => decision,
-        "summary" => summary,
-        "confidence" => confidence,
-        "reason" => reason
-      })
-      when decision in ["needs_rework", "needs_replan", "fail"] do
-    if non_blank?(summary) and non_blank?(confidence) and non_blank?(reason) do
-      :ok
-    else
-      {:error, :invalid_review_decision}
-    end
-  end
-
-  def validate_review_decision(_decision), do: {:error, :invalid_review_decision}
 
   defp non_blank?(value) when is_binary(value), do: String.trim(value) != ""
   defp non_blank?(_value), do: false

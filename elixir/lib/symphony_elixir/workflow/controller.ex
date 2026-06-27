@@ -28,57 +28,6 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   def handle_planning_completion(_issue, _workspace), do: {:error, :invalid_arguments}
 
-  @spec handle_execution_completion(Issue.t(), Path.t()) :: {:ok, {:queue_review, map()}} | {:error, term()}
-  def handle_execution_completion(%Issue{} = issue, workspace) when is_binary(workspace) do
-    with {:ok, packet} <- Artifacts.load_completion_packet(workspace),
-         :ok <- Tracker.create_comment(issue.id, render_completion_comment(issue, packet)),
-         :ok <- maybe_store_completion_packet(issue, packet) do
-      root_workspace =
-        case Registry.load_by_issue_id(issue.id) do
-          {:ok, registry, _node_key, _node} -> root_workspace_for_registry(registry)
-          _ -> nil
-        end
-
-      {:ok,
-       {:queue_review,
-        %{
-          workflow_phase: :review,
-          workflow_root_issue_id: workflow_root_identifier_for_issue(issue),
-          agent_id: Config.settings!().orchestration.reviewer_agent,
-          max_turns: Config.settings!().orchestration.review_max_turns,
-          workflow_context: %{
-            "issue_id" => issue.id,
-            "issue_identifier" => issue.identifier,
-            "root_issue_identifier" => workflow_root_identifier_for_issue(issue),
-            "root_workspace" => root_workspace,
-            "completion_summary" => packet["summary"],
-            "completion_outcome" => packet["outcome"],
-            "evidence" => packet["evidence"] || []
-          }
-        }}}
-    end
-  end
-
-  def handle_execution_completion(_issue, _workspace), do: {:error, :invalid_arguments}
-
-  @spec handle_review_completion(Issue.t(), Path.t()) ::
-          {:ok,
-           {:pass, String.t()}
-           | {:needs_human, String.t(), String.t()}
-           | {:needs_replan, String.t(), String.t()}
-           | {:needs_rework, String.t(), String.t()}
-           | {:fail, String.t(), String.t()}}
-          | {:error, term()}
-  def handle_review_completion(%Issue{} = issue, workspace) when is_binary(workspace) do
-    with {:ok, decision} <- Artifacts.load_review_decision(workspace),
-         :ok <- Tracker.create_comment(issue.id, render_review_comment(issue, decision)),
-         :ok <- maybe_apply_review_registry_update(issue, decision) do
-      apply_review_decision(issue, decision)
-    end
-  end
-
-  def handle_review_completion(_issue, _workspace), do: {:error, :invalid_arguments}
-
   @spec handle_issue_completion(Issue.t(), Path.t()) ::
           {:ok,
            {:completed, String.t()}
@@ -417,41 +366,6 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp maybe_comment_root(_root_issue, _plan, _registry), do: :ok
 
-  defp render_completion_comment(issue, packet) do
-    """
-    ## Completion Packet
-
-    Issue: #{issue.identifier}
-    Outcome: #{packet["outcome"]}
-    Summary: #{packet["summary"]}
-
-    Evidence:
-    #{format_list(packet["evidence"] || [])}
-
-    Decisions:
-    #{format_list(packet["decisions"] || [])}
-
-    Open questions:
-    #{format_list(packet["open_questions"] || [])}
-
-    Next handoff:
-    #{packet["next_handoff"] || "-"}
-    """
-    |> String.trim()
-  end
-
-  defp render_review_comment(issue, decision) do
-    """
-    ## Review Decision
-
-    Issue: #{issue.identifier}
-    Decision: #{decision["decision"]}
-    Confidence: #{decision["confidence"]}
-    Summary: #{decision["summary"]}
-    """
-    |> String.trim()
-  end
-
   defp render_issue_result_comment(issue, result) do
     """
     ## Issue Result
@@ -500,10 +414,10 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp apply_issue_result(%Issue{} = issue, %{"task_type" => "review"} = result) do
-    decision = review_result_to_decision(result)
+    outcome = review_result_to_outcome(result)
 
-    with :ok <- maybe_apply_review_registry_update(issue, decision) do
-      apply_review_decision(issue, decision)
+    with :ok <- maybe_apply_review_registry_update(issue, outcome) do
+      apply_review_outcome(issue, outcome)
     end
   end
 
@@ -541,7 +455,7 @@ defmodule SymphonyElixir.Workflow.Controller do
     }
   end
 
-  defp review_result_to_decision(result) do
+  defp review_result_to_outcome(result) do
     %{
       "decision" => result["outcome"],
       "summary" => result["summary"],
@@ -553,23 +467,23 @@ defmodule SymphonyElixir.Workflow.Controller do
     }
   end
 
-  defp apply_review_decision(%Issue{} = issue, %{"decision" => "pass"}) do
+  defp apply_review_outcome(%Issue{} = issue, %{"decision" => "pass"}) do
     {:ok, {:pass, issue.id}}
   end
 
-  defp apply_review_decision(%Issue{} = issue, %{"decision" => "needs_human", "summary" => summary}) do
+  defp apply_review_outcome(%Issue{} = issue, %{"decision" => "needs_human", "summary" => summary}) do
     {:ok, {:needs_human, issue.id, summary}}
   end
 
-  defp apply_review_decision(%Issue{} = issue, %{"decision" => "needs_replan", "summary" => summary}) do
+  defp apply_review_outcome(%Issue{} = issue, %{"decision" => "needs_replan", "summary" => summary}) do
     {:ok, {:needs_replan, issue.id, summary}}
   end
 
-  defp apply_review_decision(%Issue{} = issue, %{"decision" => "needs_rework", "summary" => summary}) do
+  defp apply_review_outcome(%Issue{} = issue, %{"decision" => "needs_rework", "summary" => summary}) do
     {:ok, {:needs_rework, issue.id, summary}}
   end
 
-  defp apply_review_decision(%Issue{} = issue, %{"decision" => "fail", "summary" => summary}) do
+  defp apply_review_outcome(%Issue{} = issue, %{"decision" => "fail", "summary" => summary}) do
     {:ok, {:fail, issue.id, summary}}
   end
 
@@ -850,7 +764,7 @@ defmodule SymphonyElixir.Workflow.Controller do
   defp rework_issue_title(_node, _issue), do: "返工任务"
 
   defp rework_issue_description(registry, node_key, node, issue, decision) do
-    packet = node["completion_packet"] || %{}
+    result = node["issue_result"] || %{}
 
     """
     Root issue: #{registry["root_issue_identifier"]}
@@ -865,11 +779,11 @@ defmodule SymphonyElixir.Workflow.Controller do
     Original task:
     #{node["instructions"] || node["title"] || issue.title || "-"}
 
-    Previous completion summary:
-    #{packet["summary"] || "-"}
+    Previous issue result summary:
+    #{result["summary"] || "-"}
 
     Previous evidence:
-    #{format_list(packet["evidence"] || [])}
+    #{format_list(result["evidence"] || [])}
     """
     |> String.trim()
   end
@@ -916,7 +830,7 @@ defmodule SymphonyElixir.Workflow.Controller do
       "title" => rework_issue.title,
       "rework_of" => original_node_key,
       "review_summary" => decision["summary"],
-      "previous_completion_packet" => original_node["completion_packet"]
+      "previous_issue_result" => original_node["issue_result"]
     })
   end
 
@@ -972,28 +886,6 @@ defmodule SymphonyElixir.Workflow.Controller do
 
       edges ->
         edges
-    end)
-  end
-
-  defp maybe_store_completion_packet(%Issue{} = issue, packet) when is_map(packet) do
-    case Registry.load_by_issue_id(issue.id) do
-      {:ok, registry, node_key, _node} ->
-        registry
-        |> put_node_completion_packet(node_key, packet)
-        |> Registry.save!()
-
-      {:error, :not_found} ->
-        :ok
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp put_node_completion_packet(registry, node_key, packet) do
-    update_in(registry, ["nodes", node_key], fn
-      %{} = node -> Map.put(node, "completion_packet", packet)
-      node -> node
     end)
   end
 
@@ -1057,13 +949,6 @@ defmodule SymphonyElixir.Workflow.Controller do
         acc
       end
     end)
-  end
-
-  defp workflow_root_identifier_for_issue(%Issue{id: issue_id, identifier: identifier}) when is_binary(issue_id) do
-    case Registry.load_by_issue_id(issue_id) do
-      {:ok, registry, _node_key, _node} -> registry["root_issue_identifier"] || identifier
-      {:error, _reason} -> identifier
-    end
   end
 
   defp node_description(root_issue, node, dependencies, handoffs, plan) do
@@ -1210,26 +1095,26 @@ defmodule SymphonyElixir.Workflow.Controller do
       "instructions" => node["instructions"],
       "dependencies" => node["dependencies"] || [],
       "handoff" => node["handoff"] || [],
-      "upstream_packets" => upstream_packets(registry, node),
+      "upstream_results" => upstream_results(registry, node),
       "upstream_workspaces" => upstream_workspaces(registry, node),
       "evidence_expectations" => node["evidence_expectations"] || [],
       "issue_identifier" => node["issue_identifier"],
       "rework_of" => node["rework_of"],
       "review_summary" => node["review_summary"],
-      "previous_completion_packet" => node["previous_completion_packet"]
+      "previous_issue_result" => node["previous_issue_result"]
     }
   end
 
   defp root_workspace_for_registry(registry), do: Registry.root_workspace_path(registry)
 
-  defp upstream_packets(registry, node) when is_map(registry) and is_map(node) do
+  defp upstream_results(registry, node) when is_map(registry) and is_map(node) do
     node
     |> Map.get("dependencies", [])
     |> Enum.flat_map(fn dependency ->
       case Registry.node(registry, dependency) do
-        %{"completion_packet" => packet} = upstream_node when is_map(packet) ->
+        %{"issue_result" => result} = upstream_node when is_map(result) ->
           [
-            packet
+            result
             |> Map.put_new("node_key", upstream_node["node_key"] || dependency)
             |> Map.put_new("issue_identifier", upstream_node["issue_identifier"])
           ]
@@ -1240,7 +1125,7 @@ defmodule SymphonyElixir.Workflow.Controller do
     end)
   end
 
-  defp upstream_packets(_registry, _node), do: []
+  defp upstream_results(_registry, _node), do: []
 
   defp upstream_workspaces(registry, node) when is_map(registry) and is_map(node) do
     node

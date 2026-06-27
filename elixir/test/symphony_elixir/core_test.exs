@@ -973,8 +973,7 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.get(orchestration, "reviewer_agent") == "mimocode"
     assert Map.get(orchestration, "planning_max_turns") == 1
     assert Map.get(orchestration, "review_max_turns") == 1
-    assert prompt =~ "Workflow registry and phase artifacts"
-    assert prompt =~ "Completion Packet"
+    assert String.trim(prompt) != ""
     assert prompt =~ "Do not move the current Linear issue to signal completion, handoff, review, or closure"
   end
 
@@ -1425,7 +1424,7 @@ defmodule SymphonyElixir.CoreTest do
             state: "In Progress"
           },
           started_at: DateTime.utc_now(),
-          workflow_phase: :execution,
+          workflow_phase: :issue,
           workspace_path: "/tmp/symphony-workflow-drift/MT-566"
         }
       },
@@ -1453,7 +1452,7 @@ defmodule SymphonyElixir.CoreTest do
 
     refute Process.alive?(agent_pid)
     assert log =~ "Issue moved to non-active state"
-    assert log =~ "workflow_phase=execution"
+    assert log =~ "workflow_phase=issue"
     assert log =~ "artifact handoff may not have been consumed"
   end
 
@@ -2330,7 +2329,7 @@ defmodule SymphonyElixir.CoreTest do
         workflow_context: %{
           node_key: "implementation",
           task_type: "implementation",
-          upstream_packets: [%{"summary" => "上游摘要 A"}, %{"summary" => "上游摘要 B"}],
+          upstream_results: [%{"summary" => "上游摘要 A"}, %{"summary" => "上游摘要 B"}],
           upstream_workspaces: [
             %{
               "node_key" => "research",
@@ -2348,8 +2347,6 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "task_type"
     assert prompt =~ "decisions"
     assert prompt =~ "open_questions"
-    refute prompt =~ "completion_packet.json"
-    refute prompt =~ "review_decision.json"
     assert prompt =~ "上游摘要 A"
     assert prompt =~ "上游摘要 B"
     assert prompt =~ "/tmp/upstream-research"
@@ -2429,7 +2426,6 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "needs_replan"
     assert prompt =~ "needs_human"
     assert prompt =~ "fail"
-    refute prompt =~ "review_decision.json"
   end
 
   test "AgentRunner 将 workflow_phase、workspace 和 workflow_context 传给首轮提示词" do
@@ -2500,7 +2496,7 @@ defmodule SymphonyElixir.CoreTest do
                  workflow_context: %{
                    node_key: "implementation",
                    task_type: "implementation",
-                   upstream_packets: [%{"summary" => "上游交接摘要"}]
+                   upstream_results: [%{"summary" => "上游交接摘要"}]
                  },
                  issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
                )
@@ -2782,14 +2778,13 @@ defmodule SymphonyElixir.CoreTest do
       assert trace =~ "task_type"
       assert trace =~ "decisions"
       assert trace =~ "open_questions"
-      refute trace =~ "completion_packet.json"
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
     end
   end
 
-  test "AgentRunner review artifact repair prompt includes valid review decision schema" do
+  test "AgentRunner review issue artifact repair prompt includes valid issue result schema" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -2848,11 +2843,17 @@ defmodule SymphonyElixir.CoreTest do
 
               if turn_count == 2:
                   os.makedirs(".symphony", exist_ok=True)
-                  with open(".symphony/review_decision.json", "w", encoding="utf-8") as handle:
+                  with open(".symphony/issue_result.json", "w", encoding="utf-8") as handle:
                       json.dump({
-                          "decision": "pass",
-                          "summary": "review repair produced valid decision",
-                          "confidence": "medium"
+                          "schema_version": 1,
+                          "node_key": "implementation_review",
+                          "task_type": "review",
+                          "outcome": "pass",
+                          "reviews": ["implementation"],
+                          "summary": "review repair produced valid issue result",
+                          "evidence": ["fake review evidence"],
+                          "decisions": [],
+                          "open_questions": []
                       }, handle)
 
               send({"id": request_id, "result": {"turn": {"id": f"turn-{turn_count}"}}})
@@ -2898,7 +2899,7 @@ defmodule SymphonyElixir.CoreTest do
         id: "issue-review-repair",
         identifier: "MT-907",
         title: "审查产物修复",
-        description: "第一轮完成但没有写 review_decision.json",
+        description: "第一轮完成但没有写 issue_result.json",
         state: "In Progress",
         url: "https://example.org/issues/MT-907",
         labels: []
@@ -2906,18 +2907,24 @@ defmodule SymphonyElixir.CoreTest do
 
       assert :ok =
                AgentRunner.run(issue, self(),
-                 workflow_phase: :review,
+                 workflow_phase: :issue,
+                 workflow_context: %{
+                   node_key: "implementation_review",
+                   task_type: "review",
+                   reviews: ["implementation"]
+                 },
                  issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
                )
 
       workspace = Path.join(workspace_root, issue.identifier)
-      assert File.exists?(Path.join([workspace, ".symphony", "review_decision.json"]))
+      assert File.exists?(Path.join([workspace, ".symphony", "issue_result.json"]))
 
       trace = File.read!(trace_file)
-      assert trace =~ "上一轮 review 已正常结束，但缺少必需 artifact"
-      assert trace =~ "decision"
+      assert trace =~ "上一轮 issue 已正常结束，但缺少必需 artifact"
+      assert trace =~ "schema_version"
+      assert trace =~ "outcome"
+      assert trace =~ "reviews"
       assert trace =~ "summary"
-      assert trace =~ "confidence"
     after
       System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
