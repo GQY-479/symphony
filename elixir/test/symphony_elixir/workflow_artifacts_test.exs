@@ -6,7 +6,7 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
   alias SymphonyElixir.Workflow.ExecutionSummary
   alias SymphonyElixir.Workflow.Registry
 
-  test "artifact helpers build planning, completion, and review paths" do
+  test "artifact helpers build planning and issue result paths" do
     write_workflow_file!(Workflow.workflow_file_path(),
       orchestration: %{enabled: true, artifact_dir: ".symphony"}
     )
@@ -16,11 +16,8 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
     assert Artifacts.workflow_plan_path(workspace) ==
              Path.join([workspace, ".symphony", "workflow_plan.json"])
 
-    assert Artifacts.completion_packet_path(workspace) ==
-             Path.join([workspace, ".symphony", "completion_packet.json"])
-
-    assert Artifacts.review_decision_path(workspace) ==
-             Path.join([workspace, ".symphony", "review_decision.json"])
+    assert Artifacts.issue_result_path(workspace) ==
+             Path.join([workspace, ".symphony", "issue_result.json"])
   end
 
   test "execution summary path uses the configured artifact directory" do
@@ -317,6 +314,49 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
                  }
                ],
                "edges" => [123]
+             })
+  end
+
+  test "validate_issue_result accepts normal issue result" do
+    assert :ok ==
+             Artifacts.validate_issue_result(%{
+               "schema_version" => 1,
+               "node_key" => "implementation",
+               "task_type" => "implementation",
+               "outcome" => "completed",
+               "summary" => "实现完成",
+               "evidence" => ["mix test"],
+               "decisions" => [],
+               "open_questions" => []
+             })
+  end
+
+  test "validate_issue_result accepts review outcomes" do
+    assert :ok ==
+             Artifacts.validate_issue_result(%{
+               "schema_version" => 1,
+               "node_key" => "implementation_review",
+               "task_type" => "review",
+               "outcome" => "pass",
+               "reviews" => ["implementation"],
+               "summary" => "审查通过",
+               "evidence" => ["mix test"],
+               "decisions" => [],
+               "open_questions" => []
+             })
+
+    assert :ok ==
+             Artifacts.validate_issue_result(%{
+               "schema_version" => 1,
+               "node_key" => "implementation_review",
+               "task_type" => "review",
+               "outcome" => "needs_rework",
+               "reviews" => ["implementation"],
+               "summary" => "需要返工",
+               "reason" => "缺少测试",
+               "evidence" => ["mix test failed"],
+               "decisions" => [],
+               "open_questions" => []
              })
   end
 

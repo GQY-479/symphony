@@ -6,11 +6,16 @@ defmodule SymphonyElixir.Workflow.Artifacts do
   alias SymphonyElixir.Config
 
   @workflow_plan_filename "workflow_plan.json"
+  @issue_result_filename "issue_result.json"
   @completion_packet_filename "completion_packet.json"
   @review_decision_filename "review_decision.json"
+  @review_outcomes MapSet.new(["pass", "needs_rework", "needs_replan", "needs_human", "fail"])
 
   @spec workflow_plan_path(Path.t()) :: Path.t()
   def workflow_plan_path(workspace), do: artifact_path(workspace, @workflow_plan_filename)
+
+  @spec issue_result_path(Path.t()) :: Path.t()
+  def issue_result_path(workspace), do: artifact_path(workspace, @issue_result_filename)
 
   @spec completion_packet_path(Path.t()) :: Path.t()
   def completion_packet_path(workspace), do: artifact_path(workspace, @completion_packet_filename)
@@ -23,6 +28,10 @@ defmodule SymphonyElixir.Workflow.Artifacts do
 
   @spec load_workflow_plan(Path.t()) :: {:ok, map()} | {:error, term()}
   def load_workflow_plan(workspace), do: load_plan(workspace)
+
+  @spec load_issue_result(Path.t()) :: {:ok, map()} | {:error, term()}
+  def load_issue_result(workspace),
+    do: load_json(issue_result_path(workspace), &validate_issue_result/1)
 
   @spec load_completion_packet(Path.t()) :: {:ok, map()} | {:error, term()}
   def load_completion_packet(workspace),
@@ -92,6 +101,63 @@ defmodule SymphonyElixir.Workflow.Artifacts do
   end
 
   def validate_plan(_plan), do: {:error, :invalid_workflow_plan}
+
+  @spec validate_issue_result(term()) :: :ok | {:error, :invalid_issue_result}
+  def validate_issue_result(
+        %{
+          "schema_version" => 1,
+          "node_key" => node_key,
+          "task_type" => "review",
+          "outcome" => outcome,
+          "reviews" => reviews,
+          "summary" => summary,
+          "evidence" => evidence,
+          "decisions" => decisions,
+          "open_questions" => open_questions
+        } = result
+      )
+      when is_list(reviews) and is_list(evidence) and is_list(decisions) and is_list(open_questions) do
+    cond do
+      not non_blank?(node_key) or not non_blank?(summary) ->
+        {:error, :invalid_issue_result}
+
+      not MapSet.member?(@review_outcomes, outcome) ->
+        {:error, :invalid_issue_result}
+
+      reviews == [] or not Enum.all?(reviews, &non_blank?/1) ->
+        {:error, :invalid_issue_result}
+
+      outcome != "pass" and not non_blank?(result["reason"]) ->
+        {:error, :invalid_issue_result}
+
+      outcome == "needs_human" and not non_blank?(result["requested_input"]) ->
+        {:error, :invalid_issue_result}
+
+      true ->
+        :ok
+    end
+  end
+
+  def validate_issue_result(%{
+        "schema_version" => 1,
+        "node_key" => node_key,
+        "task_type" => task_type,
+        "outcome" => outcome,
+        "summary" => summary,
+        "evidence" => evidence,
+        "decisions" => decisions,
+        "open_questions" => open_questions
+      })
+      when is_list(evidence) and is_list(decisions) and is_list(open_questions) do
+    if non_blank?(node_key) and non_blank?(task_type) and non_blank?(outcome) and
+         non_blank?(summary) and evidence != [] do
+      :ok
+    else
+      {:error, :invalid_issue_result}
+    end
+  end
+
+  def validate_issue_result(_result), do: {:error, :invalid_issue_result}
 
   @spec validate_completion_packet(term()) :: :ok | {:error, :invalid_completion_packet}
   def validate_completion_packet(%{
