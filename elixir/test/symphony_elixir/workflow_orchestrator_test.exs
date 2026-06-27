@@ -257,13 +257,13 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     refute Controller.issue_ready?(waiting_issue.id)
 
     assert {:dispatch, ready_metadata} = Orchestrator.workflow_dispatch_decision_for_test(ready_issue, state)
-    assert ready_metadata.workflow_phase == :execution
+    assert ready_metadata.workflow_phase == :issue
     assert ready_metadata.agent_id == "mimocode"
     assert ready_metadata.workflow_root_issue_id == "YQE-701"
     assert ready_metadata.workflow_context["node_key"] == "research"
 
     assert {:block, waiting_metadata} = Orchestrator.workflow_dispatch_decision_for_test(waiting_issue, state)
-    assert waiting_metadata.workflow_phase == :execution
+    assert waiting_metadata.workflow_phase == :issue
     assert waiting_metadata.workflow_root_issue_id == "YQE-701"
     assert waiting_metadata.error =~ "workflow blocked by incomplete dependencies" or waiting_metadata.error =~ "workflow waiting on dependencies"
   end
@@ -461,7 +461,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     refute Map.has_key?(updated_state.retry_attempts, root_issue.id)
   end
 
-  test "execution phase 正常结束但缺少 completion packet 时阻塞并保留可诊断原因" do
+  test "issue phase 正常结束但缺少 issue result 时阻塞并保留可诊断原因" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-missing-completion-#{System.unique_integer([:positive])}")
 
@@ -476,7 +476,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     issue = %Issue{
       id: "derived-missing-completion",
       identifier: "YQE-MISSING-COMPLETION",
-      title: "执行没有产出 completion packet",
+      title: "issue 没有产出 issue result",
       state: "In Progress"
     }
 
@@ -487,7 +487,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
 
     running_entry =
       issue
-      |> running_entry(workspace, :execution)
+      |> running_entry(workspace, :issue)
       |> Map.merge(%{
         agent_id: "codex",
         agent_kind: "codex_app_server",
@@ -499,15 +499,15 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
 
     refute MapSet.member?(updated_state.completed, issue.id)
     assert blocked = Map.fetch!(updated_state.blocked, issue.id)
-    assert blocked.workflow_phase == :execution
-    assert blocked.error =~ "execution phase completed without required artifact"
-    assert blocked.error =~ ".symphony/completion_packet.json"
+    assert blocked.workflow_phase == :issue
+    assert blocked.error =~ "issue phase completed without required artifact"
+    assert blocked.error =~ ".symphony/issue_result.json"
     assert blocked.error =~ "session_id=session-missing-completion"
     assert blocked.error =~ "reason=:enoent"
     refute Map.has_key?(updated_state.retry_attempts, issue.id)
   end
 
-  test "execution phase 结束但 completion packet 是 invalid JSON 时阻塞" do
+  test "issue phase 结束但 issue result 是 invalid JSON 时阻塞" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-invalid-completion-#{System.unique_integer([:positive])}")
 
@@ -522,19 +522,19 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     issue = %Issue{
       id: "derived-invalid-completion",
       identifier: "YQE-INVALID-COMPLETION",
-      title: "执行产出无效 completion packet",
+      title: "issue 产出无效 issue result",
       state: "In Progress"
     }
 
     workspace = Path.join(workspace_root, issue.identifier)
     File.mkdir_p!(Path.join(workspace, ".symphony"))
-    File.write!(Artifacts.completion_packet_path(workspace), "{invalid json")
+    File.write!(Artifacts.issue_result_path(workspace), "{invalid json")
 
     state = %{workflow_state() | claimed: MapSet.new([issue.id])}
 
     running_entry =
       issue
-      |> running_entry(workspace, :execution)
+      |> running_entry(workspace, :issue)
       |> Map.merge(%{
         agent_id: "codex",
         agent_kind: "codex_app_server",
@@ -546,13 +546,13 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
 
     refute MapSet.member?(updated_state.completed, issue.id)
     assert blocked = Map.fetch!(updated_state.blocked, issue.id)
-    assert blocked.workflow_phase == :execution
-    assert blocked.error =~ "execution artifact invalid"
-    assert blocked.error =~ ".symphony/completion_packet.json"
+    assert blocked.workflow_phase == :issue
+    assert blocked.error =~ "issue artifact invalid"
+    assert blocked.error =~ ".symphony/issue_result.json"
     refute Map.has_key?(updated_state.retry_attempts, issue.id)
   end
 
-  test "review phase 正常结束但缺少 review decision 时阻塞并保留可诊断原因" do
+  test "review issue 正常结束但缺少 issue result 时阻塞并保留可诊断原因" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-missing-review-#{System.unique_integer([:positive])}")
 
@@ -567,7 +567,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     issue = %Issue{
       id: "derived-missing-review",
       identifier: "YQE-MISSING-REVIEW",
-      title: "审查没有产出 review decision",
+      title: "review issue 没有产出 issue result",
       state: "In Progress"
     }
 
@@ -578,7 +578,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
 
     running_entry =
       issue
-      |> running_entry(workspace, :review)
+      |> running_entry(workspace, :issue)
       |> Map.merge(%{
         agent_id: "codex",
         agent_kind: "codex_app_server",
@@ -590,15 +590,15 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
 
     refute MapSet.member?(updated_state.completed, issue.id)
     assert blocked = Map.fetch!(updated_state.blocked, issue.id)
-    assert blocked.workflow_phase == :review
-    assert blocked.error =~ "review phase completed without required artifact"
-    assert blocked.error =~ ".symphony/review_decision.json"
+    assert blocked.workflow_phase == :issue
+    assert blocked.error =~ "issue phase completed without required artifact"
+    assert blocked.error =~ ".symphony/issue_result.json"
     assert blocked.error =~ "session_id=session-missing-review"
     assert blocked.error =~ "reason=:enoent"
     refute Map.has_key?(updated_state.retry_attempts, issue.id)
   end
 
-  test "review phase 结束但 review decision 是 invalid JSON 时阻塞" do
+  test "review issue 结束但 issue result 是 invalid JSON 时阻塞" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-invalid-review-#{System.unique_integer([:positive])}")
 
@@ -613,19 +613,19 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     issue = %Issue{
       id: "derived-invalid-review",
       identifier: "YQE-INVALID-REVIEW",
-      title: "审查产出无效 review decision",
+      title: "review issue 产出无效 issue result",
       state: "In Progress"
     }
 
     workspace = Path.join(workspace_root, issue.identifier)
     File.mkdir_p!(Path.join(workspace, ".symphony"))
-    File.write!(Artifacts.review_decision_path(workspace), "{invalid json")
+    File.write!(Artifacts.issue_result_path(workspace), "{invalid json")
 
     state = %{workflow_state() | claimed: MapSet.new([issue.id])}
 
     running_entry =
       issue
-      |> running_entry(workspace, :review)
+      |> running_entry(workspace, :issue)
       |> Map.merge(%{
         agent_id: "codex",
         agent_kind: "codex_app_server",
@@ -637,13 +637,13 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
 
     refute MapSet.member?(updated_state.completed, issue.id)
     assert blocked = Map.fetch!(updated_state.blocked, issue.id)
-    assert blocked.workflow_phase == :review
-    assert blocked.error =~ "review artifact invalid"
-    assert blocked.error =~ ".symphony/review_decision.json"
+    assert blocked.workflow_phase == :issue
+    assert blocked.error =~ "issue artifact invalid"
+    assert blocked.error =~ ".symphony/issue_result.json"
     refute Map.has_key?(updated_state.retry_attempts, issue.id)
   end
 
-  test "workflow artifact repair failed 时阻塞 issue 而不是继续重试" do
+  test "workflow issue artifact repair failed 时阻塞 issue 而不是继续重试" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "memory",
       agents: %{codex: %{kind: "codex_app_server", command: "codex app-server"}},
@@ -665,7 +665,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     state = %{workflow_state() | claimed: MapSet.new([issue.id])}
 
     running_entry =
-      running_entry(issue, workspace, :execution)
+      running_entry(issue, workspace, :issue)
       |> Map.merge(%{
         agent_id: "codex",
         agent_kind: "codex_app_server",
@@ -676,9 +676,9 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
       {%AgentRunner.Error{
          message:
            "Agent run failed for issue_id=#{issue.id} issue_identifier=#{issue.identifier}: " <>
-             "{:workflow_artifact_repair_failed, :execution, " <>
-             "\"#{Path.join([workspace, ".symphony", "completion_packet.json"])}\", :enoent}",
-         reason: {:workflow_artifact_repair_failed, :execution, Path.join([workspace, ".symphony", "completion_packet.json"]), :enoent}
+             "{:workflow_artifact_repair_failed, :issue, " <>
+             "\"#{Path.join([workspace, ".symphony", "issue_result.json"])}\", :enoent}",
+         reason: {:workflow_artifact_repair_failed, :issue, Path.join([workspace, ".symphony", "issue_result.json"]), :enoent}
        }, []}
 
     updated_state =
@@ -687,16 +687,16 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     refute Map.has_key?(updated_state.retry_attempts, issue.id)
     assert MapSet.member?(updated_state.claimed, issue.id)
     assert blocked = Map.fetch!(updated_state.blocked, issue.id)
-    assert blocked.workflow_phase == :execution
+    assert blocked.workflow_phase == :issue
     assert blocked.agent_id == "codex"
     assert blocked.agent_kind == "codex_app_server"
     assert blocked.session_id == "session-repair-failed"
     assert blocked.error =~ "workflow artifact repair failed"
-    assert blocked.error =~ "completion_packet.json"
+    assert blocked.error =~ "issue_result.json"
     assert blocked.error =~ "reason=:enoent"
   end
 
-  test "execution phase 正常结束后读取 completion packet 并排队 review" do
+  test "issue phase 正常结束后读取 issue result 并释放 claim" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-execution-down-#{System.unique_integer([:positive])}")
 
@@ -723,39 +723,34 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     File.mkdir_p!(Path.join(workspace, ".symphony"))
 
     File.write!(
-      Artifacts.completion_packet_path(workspace),
+      Artifacts.issue_result_path(workspace),
       Jason.encode!(%{
+        "schema_version" => 1,
+        "node_key" => "implementation",
+        "task_type" => "implementation",
         "outcome" => "completed",
-        "summary" => "执行完成，等待 review",
+        "summary" => "issue 完成，等待下游",
         "evidence" => ["mix test workflow_orchestrator_test.exs"],
-        "decisions" => ["进入 review 阶段"],
-        "open_questions" => [],
-        "next_handoff" => "请审查执行结果"
+        "decisions" => ["进入下游节点"],
+        "open_questions" => []
       })
     )
 
     state = %{workflow_state() | claimed: MapSet.new([issue.id])}
-    running_entry = running_entry(issue, workspace, :execution)
+    running_entry = running_entry(issue, workspace, :issue)
 
     updated_state =
       Orchestrator.handle_agent_down_for_test(:normal, state, issue.id, running_entry)
 
-    review_entry = updated_state.running[issue.id]
-
-    on_exit(fn ->
-      if is_map(review_entry) do
-        pid = Map.get(review_entry, :pid)
-        if is_pid(pid) and Process.alive?(pid), do: Process.exit(pid, :shutdown)
-      end
-    end)
-
     assert MapSet.member?(updated_state.completed, issue.id)
-    assert %{workflow_phase: :review, agent_id: "codex"} = review_entry
+    refute MapSet.member?(updated_state.claimed, issue.id)
+    refute Map.has_key?(updated_state.running, issue.id)
     assert_receive {:memory_tracker_comment, "derived-execution-down", body}
-    assert body =~ "Completion Packet"
+    assert body =~ "Issue Result"
+    refute_receive {:queued_review, _}
   end
 
-  test "review phase pass 后释放 claim 并推进下游 readiness" do
+  test "review issue pass 后释放 claim 并推进下游 readiness" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-review-down-#{System.unique_integer([:positive])}")
 
@@ -768,7 +763,8 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     )
 
     root_issue = %Issue{id: "root-review-down", identifier: "YQE-712", title: "root", state: "In Progress"}
-    reviewed_issue = %Issue{id: "derived-review-down", identifier: "YQE-713", title: "调研", state: "In Progress"}
+    reviewed_issue = %Issue{id: "derived-review-down", identifier: "YQE-713", title: "调研", state: "Done"}
+    review_issue = %Issue{id: "derived-review-node", identifier: "YQE-713-R", title: "审查调研", state: "In Progress"}
     waiting_issue = %Issue{id: "derived-after-review", identifier: "YQE-714", title: "实现", state: "Todo"}
 
     root_issue
@@ -779,8 +775,19 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
       "issue_identifier" => reviewed_issue.identifier,
       "agent_id" => "codex",
       "task_type" => "research",
-      "status" => "ready",
+      "status" => "completed",
       "dependencies" => []
+    })
+    |> Registry.put_node("research_review", %{
+      "node_key" => "research_review",
+      "issue_id" => review_issue.id,
+      "issue_identifier" => review_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "review",
+      "status" => "ready",
+      "dependencies" => ["research"],
+      "reviews" => ["research"],
+      "subject_selector" => %{"type" => "candidate_range"}
     })
     |> Registry.put_node("implementation", %{
       "node_key" => "implementation",
@@ -789,42 +796,49 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
       "agent_id" => "codex",
       "task_type" => "implementation",
       "status" => "waiting",
-      "dependencies" => ["research"]
+      "dependencies" => ["research_review"]
     })
-    |> Registry.add_edge(%{"from" => "research", "to" => "implementation"})
+    |> Registry.add_edge(%{"from" => "research", "to" => "research_review"})
+    |> Registry.add_edge(%{"from" => "research_review", "to" => "implementation"})
     |> Map.put("status", "planning_complete")
     |> Registry.save!()
 
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
-    workspace = Path.join(workspace_root, reviewed_issue.identifier)
+    workspace = Path.join(workspace_root, review_issue.identifier)
     File.mkdir_p!(Path.join(workspace, ".symphony"))
 
     File.write!(
-      Artifacts.review_decision_path(workspace),
+      Artifacts.issue_result_path(workspace),
       Jason.encode!(%{
-        "decision" => "pass",
+        "schema_version" => 1,
+        "node_key" => "research_review",
+        "task_type" => "review",
+        "outcome" => "pass",
+        "reviews" => ["research"],
         "summary" => "可以进入实现",
-        "confidence" => "high"
+        "evidence" => ["mix test"],
+        "decisions" => [],
+        "open_questions" => []
       })
     )
 
-    state = %{workflow_state() | claimed: MapSet.new([reviewed_issue.id])}
-    running_entry = running_entry(reviewed_issue, workspace, :review)
+    state = %{workflow_state() | claimed: MapSet.new([review_issue.id])}
+    running_entry = running_entry(review_issue, workspace, :issue)
 
     updated_state =
-      Orchestrator.handle_agent_down_for_test(:normal, state, reviewed_issue.id, running_entry)
+      Orchestrator.handle_agent_down_for_test(:normal, state, review_issue.id, running_entry)
 
-    assert MapSet.member?(updated_state.completed, reviewed_issue.id)
-    refute MapSet.member?(updated_state.claimed, reviewed_issue.id)
-    refute Map.has_key?(updated_state.running, reviewed_issue.id)
-    refute Map.has_key?(updated_state.blocked, reviewed_issue.id)
+    assert MapSet.member?(updated_state.completed, review_issue.id)
+    refute MapSet.member?(updated_state.claimed, review_issue.id)
+    refute Map.has_key?(updated_state.running, review_issue.id)
+    refute Map.has_key?(updated_state.blocked, review_issue.id)
     assert Controller.issue_ready?(waiting_issue.id)
-    assert_receive {:memory_tracker_comment, "derived-review-down", body}
-    assert body =~ "Review Decision"
+    assert_receive {:memory_tracker_comment, "derived-review-node", body}
+    assert body =~ "Issue Result"
   end
 
-  test "review phase needs_rework 后创建返工 issue 并释放当前 claim" do
+  test "review issue needs_rework 后创建返工 issue 并释放当前 claim" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-review-rework-#{System.unique_integer([:positive])}")
 
@@ -881,17 +895,23 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     File.mkdir_p!(Path.join(workspace, ".symphony"))
 
     File.write!(
-      Artifacts.review_decision_path(workspace),
+      Artifacts.issue_result_path(workspace),
       Jason.encode!(%{
-        "decision" => "needs_rework",
+        "schema_version" => 1,
+        "node_key" => "implementation_review",
+        "task_type" => "review",
+        "outcome" => "needs_rework",
+        "reviews" => ["implementation"],
         "summary" => "补齐失败路径测试后再验收",
-        "confidence" => "high",
-        "reason" => "缺少失败路径测试"
+        "reason" => "缺少失败路径测试",
+        "evidence" => ["mix test"],
+        "decisions" => [],
+        "open_questions" => []
       })
     )
 
     state = %{workflow_state() | claimed: MapSet.new([reviewed_issue.id])}
-    running_entry = running_entry(reviewed_issue, workspace, :review)
+    running_entry = running_entry(reviewed_issue, workspace, :issue)
 
     updated_state =
       Orchestrator.handle_agent_down_for_test(:normal, state, reviewed_issue.id, running_entry)
@@ -903,7 +923,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     refute Map.has_key?(updated_state.blocked, reviewed_issue.id)
 
     assert {:dispatch, metadata} = Orchestrator.workflow_dispatch_decision_for_test(rework_issue, updated_state)
-    assert metadata.workflow_phase == :execution
+    assert metadata.workflow_phase == :issue
     assert metadata.agent_id == "mimocode"
     assert metadata.workflow_context["rework_of"] == "implementation"
     assert metadata.workflow_context["review_summary"] == "补齐失败路径测试后再验收"
@@ -912,7 +932,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert Enum.find(issues, &(&1.id == reviewed_issue.id)).state == "Done"
   end
 
-  test "review phase needs_replan 后调度 root issue 重新 planning" do
+  test "review issue needs_replan 后调度 root issue 重新 planning" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-review-replan-#{System.unique_integer([:positive])}")
 
@@ -970,12 +990,18 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     File.mkdir_p!(Path.join(workspace, ".symphony"))
 
     File.write!(
-      Artifacts.review_decision_path(workspace),
+      Artifacts.issue_result_path(workspace),
       Jason.encode!(%{
-        "decision" => "needs_replan",
+        "schema_version" => 1,
+        "node_key" => "implementation_review",
+        "task_type" => "review",
+        "outcome" => "needs_replan",
+        "reviews" => ["implementation"],
         "summary" => "需要重新拆分 root issue 的后续任务",
-        "confidence" => "high",
-        "reason" => "当前拆分无法覆盖后续任务"
+        "reason" => "当前拆分无法覆盖后续任务",
+        "evidence" => ["mix test"],
+        "decisions" => [],
+        "open_questions" => []
       })
     )
 
@@ -993,7 +1019,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
           }
       }
 
-    running_entry = running_entry(reviewed_issue, workspace, :review)
+    running_entry = running_entry(reviewed_issue, workspace, :issue)
 
     updated_state =
       Orchestrator.handle_agent_down_for_test(:normal, state, reviewed_issue.id, running_entry)
@@ -1075,7 +1101,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
   end
 
-  test "direct execution root issue 使用普通路由进入 execution dispatch" do
+  test "direct execution root issue 使用普通路由进入 issue dispatch" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-orchestrator-direct-#{System.unique_integer([:positive])}")
 
@@ -1113,7 +1139,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     |> Registry.save!()
 
     assert {:dispatch, metadata} = Orchestrator.workflow_dispatch_decision_for_test(issue, workflow_state())
-    assert metadata.workflow_phase == :execution
+    assert metadata.workflow_phase == :issue
     assert metadata.workflow_root_issue_id == "YQE-705"
     assert metadata.agent_id == nil
   end

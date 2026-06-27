@@ -112,7 +112,7 @@ defmodule SymphonyElixir.Workflow.Controller do
       {:ok, registry, node_key, node} ->
         {:ok,
          %{
-           workflow_phase: :execution,
+           workflow_phase: :issue,
            workflow_root_issue_id: registry["root_issue_identifier"],
            agent_id: node["agent_id"],
            max_turns: Config.settings!().agent.max_turns,

@@ -1459,7 +1459,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert blocked.error =~ "attempt=4"
   end
 
-  test "stalled workflow review retries keep the issue claimed during backoff" do
+  test "stalled workflow issue retries keep the issue claimed during backoff" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
       codex_stall_timeout_ms: 1_000
@@ -1501,8 +1501,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       agent_stall_timeout_ms: 1_000,
       worker_host: "local",
       workspace_path: "/workspaces/MT-REVIEW-STALL",
-      session_id: "thread-review-turn-review",
-      workflow_phase: :review,
+      session_id: "thread-issue-turn",
+      workflow_phase: :issue,
       workflow_root_issue_id: "MT-ROOT",
       workflow_context: %{"issue_id" => issue_id},
       max_turns: 3,
@@ -1527,7 +1527,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert MapSet.member?(state.claimed, issue_id)
 
     assert %{
-             workflow_phase: :review,
+             workflow_phase: :issue,
              workflow_root_issue_id: "MT-ROOT",
              workflow_context: %{"issue_id" => ^issue_id},
              max_turns: 3

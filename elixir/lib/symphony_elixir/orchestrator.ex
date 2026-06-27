@@ -234,11 +234,8 @@ defmodule SymphonyElixir.Orchestrator do
       :planning ->
         handle_workflow_phase_down(state, issue_id, running_entry, :planning)
 
-      :execution ->
-        handle_workflow_phase_down(state, issue_id, running_entry, :execution)
-
-      :review ->
-        handle_workflow_phase_down(state, issue_id, running_entry, :review)
+      :issue ->
+        handle_workflow_phase_down(state, issue_id, running_entry, :issue)
 
       _ ->
         handle_legacy_normal_agent_down(state, issue_id, running_entry, session_id, terminal_state_set())
@@ -299,30 +296,14 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp handle_workflow_phase_down(state, issue_id, running_entry, :execution) do
+  defp handle_workflow_phase_down(state, issue_id, running_entry, :issue) do
     with {:ok, workspace} <- running_workspace(running_entry),
-         {:ok, {:queue_review, metadata}} <- Controller.handle_execution_completion(running_entry.issue, workspace) do
-      dispatch_issue(
-        complete_issue(state, issue_id),
-        running_entry.issue,
-        nil,
-        Map.get(running_entry, :worker_host),
-        metadata
-      )
+         {:ok, result} <- Controller.handle_issue_completion(running_entry.issue, workspace) do
+      apply_workflow_issue_result(state, issue_id, running_entry, result)
     else
       {:error, reason} ->
-        error_msg = workflow_artifact_error(:execution, running_entry, reason)
+        error_msg = workflow_artifact_error(:issue, running_entry, reason)
         block_issue_from_entry(state, issue_id, running_entry, error_msg)
-    end
-  end
-
-  defp handle_workflow_phase_down(state, issue_id, running_entry, :review) do
-    with {:ok, workspace} <- running_workspace(running_entry),
-         {:ok, decision} <- Controller.handle_review_completion(running_entry.issue, workspace) do
-      apply_workflow_review_decision(state, issue_id, running_entry, decision)
-    else
-      {:error, reason} ->
-        block_issue_from_entry(state, issue_id, running_entry, workflow_artifact_error(:review, running_entry, reason))
     end
   end
 
@@ -335,11 +316,13 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp phase_label(:planning), do: "planning"
+  defp phase_label(:issue), do: "issue"
   defp phase_label(:execution), do: "execution"
   defp phase_label(:review), do: "review"
   defp phase_label(phase), do: to_string(phase)
 
   defp artifact_path_for_phase(:planning, running_entry), do: artifact_path(running_entry, &Artifacts.workflow_plan_path/1)
+  defp artifact_path_for_phase(:issue, running_entry), do: artifact_path(running_entry, &Artifacts.issue_result_path/1)
   defp artifact_path_for_phase(:execution, running_entry), do: artifact_path(running_entry, &Artifacts.completion_packet_path/1)
   defp artifact_path_for_phase(:review, running_entry), do: artifact_path(running_entry, &Artifacts.review_decision_path/1)
   defp artifact_path_for_phase(_phase, running_entry), do: Map.get(running_entry, :workspace_path) || "unknown"
@@ -404,6 +387,16 @@ defmodule SymphonyElixir.Orchestrator do
     state
     |> complete_issue(issue_id)
     |> release_issue_claim(issue_id)
+  end
+
+  defp apply_workflow_issue_result(state, issue_id, _running_entry, {:completed, _completed_issue_id}) do
+    state
+    |> complete_issue(issue_id)
+    |> release_issue_claim(issue_id)
+  end
+
+  defp apply_workflow_issue_result(state, issue_id, running_entry, decision) do
+    apply_workflow_review_decision(state, issue_id, running_entry, decision)
   end
 
   defp running_workspace(%{workspace_path: workspace}) when is_binary(workspace) and workspace != "" do
@@ -567,12 +560,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp workflow_artifact_repair_failure(_reason), do: :error
 
   defp normalize_workflow_phase("planning"), do: :planning
+  defp normalize_workflow_phase("issue"), do: :issue
   defp normalize_workflow_phase("execution"), do: :execution
   defp normalize_workflow_phase("review"), do: :review
   defp normalize_workflow_phase(phase), do: phase
 
   defp normalize_repair_reason(":enoent"), do: :enoent
   defp normalize_repair_reason(":invalid_workflow_plan"), do: :invalid_workflow_plan
+  defp normalize_repair_reason(":invalid_issue_result"), do: :invalid_issue_result
   defp normalize_repair_reason(":invalid_completion_packet"), do: :invalid_completion_packet
   defp normalize_repair_reason(":invalid_review_decision"), do: :invalid_review_decision
   defp normalize_repair_reason(reason), do: reason
@@ -1088,8 +1083,8 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp artifact_workflow_phase?(phase) when phase in [:planning, :execution, :review], do: true
-  defp artifact_workflow_phase?(phase) when phase in ["planning", "execution", "review"], do: true
+  defp artifact_workflow_phase?(phase) when phase in [:planning, :issue], do: true
+  defp artifact_workflow_phase?(phase) when phase in ["planning", "issue"], do: true
   defp artifact_workflow_phase?(_phase), do: false
 
   defp stall_elapsed_ms(running_entry, now) do
