@@ -41,6 +41,30 @@ defmodule SymphonyElixir.Workflow.Prompts do
     - 最终回复不能替代 artifact 文件；完成前必须读回该文件，确认它是合法 JSON，且符合下面三种结构之一。
     - 写入并读回 `workflow_plan.json` 后立即结束，等待控制层进入 execution、创建派生 issue 或请求人工输入。
     - 只允许输出一种规划形态：`direct_execution`、`issue_graph` 或 `needs_human_input`。
+
+    业务编排策略:
+
+    - 先判断任务形态，再选择最小可靠 workflow；不要先按固定模板凑 node。
+    - 单点、低风险、验收清楚，且不需要独立调研、方案选择或审查门禁时，使用 `direct_execution`。
+    - 原因、现状、影响范围不清楚时，先创建 `research` node；不要直接规划 implementation。research 必须交付事实、证据、建议路径、风险和未解问题。
+    - 存在方案选择或跨模块设计时，创建 `design` node；implementation 应依赖 design。design 必须冻结关键决策、接口边界、迁移策略和验收方式。
+    - 多个子任务可独立完成且文件或模块边界清楚时，使用 fanout：并行创建多个同层 node，再用 synthesis、integration、design 或 final review 汇合。不要并行拆分会互相改同一文件、共享状态或存在顺序依赖的任务。
+    - 高风险实现、核心行为、数据、权限、调度或安全相关改动，必须在 implementation 后创建 `review` node；下游需要已认可结果时必须依赖 review node，而不是依赖 implementation node。
+    - 大型或低置信度任务，不要一次规划完整大图；只规划下一批能降低最大风险的 node，并让后续根据 issue result 动态重规划。
+    - 审核、巡检、修复 review 意见、稳定性排查这类任务，优先使用 audit/research -> fix_plan/design -> implementation -> review 的形状。
+    - 需要用户做业务决策、授权、凭据、目标选择、发布窗口或高风险确认时，使用 `needs_human_input`；代码未知、影响范围未知或原因未知时，优先创建 research node，而不是直接问人。
+    - 优先少拆 issue，但不能跨越风险边界。一个 node 应该代表一个可独立完成、可独立验收、失败后可明确返工的业务单元。
+
+    框架合规要求:
+
+    - issue 是唯一任务单位；research、design、implementation、review、rework、merge_resolution、synthesis、integration、audit 都应表达为普通 issue node。
+    - review 是普通 issue node，不是隐藏 phase；需要审查时必须显式建 review node。
+    - planner 不要填写 Git branch、sha、checkpoint 或 diff range；这些事实由 Symphony 控制层或 Git adapter 生成。
+    - 每个 node 必须有明确交付物、证据预期和完成条件；不要创建“继续处理”“看一下”“完善一下”这类无边界 node。
+    - 每个 node 的 `instructions` 应说明范围、禁止事项、上游输入和下游交接；`evidence_expectations` 应说明期望看到的命令、文件、测试、来源、截图或审查结论。
+    - review node 必须说明 `reviews` 对象和 `subject_selector`；如果下游依赖审查认可，应让下游 edge 指向 review node。
+    - root workflow 最终必须有 final review；如果你显式创建，使用 `node_key` 为 `final_review`、`task_type` 为 `review`，并让它审查 root candidate 的最终结果。
+    - 不要让 agent 通过 Linear 状态、comment、workpad 或最终回复来代替 artifact；控制层只消费结构化 artifact 和 registry。
     - 若任务足够简单，可写入 `direct_execution`:
 
       ```json
