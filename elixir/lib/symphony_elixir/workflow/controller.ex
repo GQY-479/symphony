@@ -178,18 +178,31 @@ defmodule SymphonyElixir.Workflow.Controller do
     end
   end
 
-  defp valid_node?(%{
-         "node_key" => node_key,
-         "task_type" => task_type,
-         "title" => title,
-         "goal" => goal,
-         "agent_id" => agent_id
-       })
+  defp valid_node?(
+         %{
+           "node_key" => node_key,
+           "task_type" => task_type,
+           "title" => title,
+           "goal" => goal,
+           "agent_id" => agent_id
+         } = node
+       )
        when is_binary(node_key) and is_binary(task_type) and is_binary(title) and
-              is_binary(goal) and is_binary(agent_id),
-       do: true
+              is_binary(goal) and is_binary(agent_id) do
+    valid_review_node?(node)
+  end
 
   defp valid_node?(_node), do: false
+
+  defp valid_review_node?(%{"task_type" => "review"} = node) do
+    reviews = Map.get(node, "reviews")
+    subject_selector = Map.get(node, "subject_selector")
+
+    is_list(reviews) and reviews != [] and Enum.all?(reviews, &non_blank?/1) and
+      is_map(subject_selector)
+  end
+
+  defp valid_review_node?(_node), do: true
 
   defp valid_edge?(%{"from" => from, "to" => to}) when is_binary(from) and is_binary(to), do: true
   defp valid_edge?(%{from: from, to: to}) when is_binary(from) and is_binary(to), do: true
@@ -212,6 +225,8 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp materialize_plan(registry, root_issue, %{"kind" => "issue_graph", "nodes" => nodes, "edges" => edges} = plan) do
+    {nodes, edges} = ensure_final_review_node(nodes, edges)
+
     with {:ok, registry} <- create_derived_nodes(registry, root_issue, nodes, edges, plan),
          {:ok, registry} <- attach_edges(registry, edges) do
       {:ok, Registry.put_status(registry, "planning_complete", %{})}
@@ -310,10 +325,46 @@ defmodule SymphonyElixir.Workflow.Controller do
       "handoff_summary" => handoffs,
       "evidence_expectations" => node["evidence_expectations"] || [],
       "completion_conditions" => node["completion_conditions"] || [],
+      "reviews" => node["reviews"],
+      "subject_selector" => node["subject_selector"],
       "workflow_semantics" => "executable",
       "status" => readiness_for(dependencies),
       "title" => node["title"]
     })
+  end
+
+  defp ensure_final_review_node(nodes, edges) do
+    if Enum.any?(nodes, &(&1["node_key"] == "final_review")) do
+      {nodes, edges}
+    else
+      final_node = %{
+        "node_key" => "final_review",
+        "task_type" => "review",
+        "title" => "Final workflow review",
+        "goal" => "审查 root candidate 相对目标分支的最终结果",
+        "agent_id" => Config.settings!().orchestration.reviewer_agent,
+        "reviews" => ["__root_candidate__"],
+        "subject_selector" => %{"type" => "final_candidate_range"}
+      }
+
+      final_edges =
+        nodes
+        |> leaf_node_keys(edges)
+        |> Enum.map(&%{"from" => &1, "to" => "final_review", "kind" => "review"})
+
+      {nodes ++ [final_node], edges ++ final_edges}
+    end
+  end
+
+  defp leaf_node_keys(nodes, edges) do
+    sources =
+      edges
+      |> Enum.map(&(&1["from"] || &1[:from]))
+      |> MapSet.new()
+
+    nodes
+    |> Enum.map(& &1["node_key"])
+    |> Enum.reject(&MapSet.member?(sources, &1))
   end
 
   defp attach_edges(registry, edges) do
@@ -628,6 +679,9 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp blank?(value), do: is_nil(value) or value == ""
+
+  defp non_blank?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_blank?(_value), do: false
 
   defp next_rework_node_key(registry, node_key) do
     existing_keys =

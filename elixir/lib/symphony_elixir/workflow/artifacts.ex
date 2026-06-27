@@ -298,14 +298,28 @@ defmodule SymphonyElixir.Workflow.Artifacts do
          } = node
        )
        when is_binary(task_type) and is_binary(title) and is_binary(goal) and is_binary(agent_id) do
+    non_blank?(node_key) and valid_completion_conditions?(node) and valid_review_node?(node)
+  end
+
+  defp valid_node?(_node), do: false
+
+  defp valid_completion_conditions?(node) do
     case Map.get(node, "completion_conditions") do
-      nil -> non_blank?(node_key)
-      conditions when is_list(conditions) -> non_blank?(node_key) and Enum.all?(conditions, &is_binary/1)
+      nil -> true
+      conditions when is_list(conditions) -> Enum.all?(conditions, &is_binary/1)
       _ -> false
     end
   end
 
-  defp valid_node?(_node), do: false
+  defp valid_review_node?(%{"task_type" => "review"} = node) do
+    reviews = Map.get(node, "reviews")
+    subject_selector = Map.get(node, "subject_selector")
+
+    is_list(reviews) and reviews != [] and Enum.all?(reviews, &non_blank?/1) and
+      is_map(subject_selector)
+  end
+
+  defp valid_review_node?(_node), do: true
 
   defp valid_edge?(%{"from" => from_node, "to" => to_node})
        when is_binary(from_node) and is_binary(to_node),

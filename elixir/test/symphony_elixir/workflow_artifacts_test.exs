@@ -128,6 +128,77 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
              })
   end
 
+  test "validate_plan accepts review nodes with subject selector" do
+    assert :ok ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "实现后审查",
+               "confidence" => "high",
+               "nodes" => [
+                 %{
+                   "node_key" => "implementation",
+                   "task_type" => "implementation",
+                   "title" => "实现",
+                   "goal" => "实现功能",
+                   "agent_id" => "codex"
+                 },
+                 %{
+                   "node_key" => "implementation_review",
+                   "task_type" => "review",
+                   "title" => "审查实现",
+                   "goal" => "审查实现结果",
+                   "agent_id" => "codex",
+                   "reviews" => ["implementation"],
+                   "subject_selector" => %{
+                     "type" => "candidate_range",
+                     "from" => "implementation.candidate_before_sha",
+                     "to" => "implementation.candidate_after_sha"
+                   }
+                 }
+               ],
+               "edges" => [%{"from" => "implementation", "to" => "implementation_review"}]
+             })
+  end
+
+  test "validate_plan rejects review nodes without review subjects" do
+    base_review_node = %{
+      "node_key" => "implementation_review",
+      "task_type" => "review",
+      "title" => "审查实现",
+      "goal" => "审查实现结果",
+      "agent_id" => "codex",
+      "reviews" => ["implementation"],
+      "subject_selector" => %{"type" => "candidate_range"}
+    }
+
+    assert {:error, :invalid_workflow_plan} ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "无 reviews",
+               "confidence" => "medium",
+               "nodes" => [Map.delete(base_review_node, "reviews")],
+               "edges" => []
+             })
+
+    assert {:error, :invalid_workflow_plan} ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "无 subject selector",
+               "confidence" => "medium",
+               "nodes" => [Map.delete(base_review_node, "subject_selector")],
+               "edges" => []
+             })
+
+    assert {:error, :invalid_workflow_plan} ==
+             Artifacts.validate_plan(%{
+               "kind" => "issue_graph",
+               "summary" => "空 reviews",
+               "confidence" => "medium",
+               "nodes" => [%{base_review_node | "reviews" => []}],
+               "edges" => []
+             })
+  end
+
   test "validate_plan rejects issue_graph with unknown edge references" do
     assert {:error, :invalid_workflow_plan} ==
              Artifacts.validate_plan(%{

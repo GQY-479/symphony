@@ -187,6 +187,109 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert implementation_issue.description =~ "调研结论供实现任务消费"
   end
 
+  test "issue_graph materialization auto creates final review when missing" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-final-review-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-final-review", identifier: "YQE-FINAL", title: "root", state: "In Progress"}
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.workflow_plan_path(workspace),
+      Jason.encode!(%{
+        "kind" => "issue_graph",
+        "summary" => "只有实现节点",
+        "confidence" => "high",
+        "nodes" => [
+          %{
+            "node_key" => "implementation",
+            "task_type" => "implementation",
+            "title" => "实现",
+            "goal" => "实现功能",
+            "agent_id" => "codex"
+          }
+        ],
+        "edges" => []
+      })
+    )
+
+    assert {:ok, registry} = Controller.handle_planning_completion(root_issue, workspace)
+
+    assert Registry.node(registry, "final_review")["task_type"] == "review"
+    assert Registry.node(registry, "final_review")["reviews"] == ["__root_candidate__"]
+    assert Registry.node(registry, "final_review")["subject_selector"] == %{"type" => "final_candidate_range"}
+
+    assert Enum.any?(registry["edges"], fn edge ->
+             edge["from"] == "implementation" and edge["to"] == "final_review"
+           end)
+  end
+
+  test "auto final review depends on existing review leaves" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-final-after-review-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-final-after-review", identifier: "YQE-FINAL-AFTER", title: "root", state: "In Progress"}
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.workflow_plan_path(workspace),
+      Jason.encode!(%{
+        "kind" => "issue_graph",
+        "summary" => "实现后审查",
+        "confidence" => "high",
+        "nodes" => [
+          %{
+            "node_key" => "implementation",
+            "task_type" => "implementation",
+            "title" => "实现",
+            "goal" => "实现功能",
+            "agent_id" => "codex"
+          },
+          %{
+            "node_key" => "implementation_review",
+            "task_type" => "review",
+            "title" => "审查实现",
+            "goal" => "审查实现结果",
+            "agent_id" => "codex",
+            "reviews" => ["implementation"],
+            "subject_selector" => %{"type" => "candidate_range"}
+          }
+        ],
+        "edges" => [%{"from" => "implementation", "to" => "implementation_review"}]
+      })
+    )
+
+    assert {:ok, registry} = Controller.handle_planning_completion(root_issue, workspace)
+
+    assert Enum.any?(registry["edges"], fn edge ->
+             edge["from"] == "implementation_review" and edge["to"] == "final_review"
+           end)
+
+    refute Enum.any?(registry["edges"], fn edge ->
+             edge["from"] == "implementation" and edge["to"] == "final_review"
+           end)
+  end
+
   test "issue_graph plan comment shows dependency relationships and completion conditions" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-deps-comment-#{System.unique_integer([:positive])}")
@@ -564,13 +667,16 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert {:ok, registry} = Controller.handle_planning_completion(root_issue, workspace)
 
     assert_receive {:memory_tracker_issue_created, %Issue{} = second_issue}
+    assert_receive {:memory_tracker_issue_created, %Issue{} = final_review_issue}
     refute_receive {:memory_tracker_issue_created, _}
     assert_receive {:memory_tracker_comment, "root-6", _comment_body}
 
     assert Registry.node(registry, "research-1")["issue_id"] == first_issue.id
     assert Registry.node(registry, "implementation-1")["issue_id"] == second_issue.id
+    assert Registry.node(registry, "final_review")["issue_id"] == final_review_issue.id
+    assert Registry.node(registry, "final_review")["dependencies"] == ["implementation-1"]
 
-    assert Enum.count(Application.get_env(:symphony_elixir, :memory_tracker_issues, [])) == 2
+    assert Enum.count(Application.get_env(:symphony_elixir, :memory_tracker_issues, [])) == 3
   end
 
   test "dispatch metadata uses root workspace path without running workspace hooks" do
