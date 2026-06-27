@@ -117,7 +117,7 @@ artifact         # 某个 issue result、设计文档或计划对象的内容哈
 
 ## 统一 Issue Result
 
-每个 issue 完成时输出同一种结果文件。建议命名为：
+每个 issue 完成时输出同一种结果文件。文件名固定为：
 
 ```text
 .symphony/issue_result.json
@@ -156,6 +156,92 @@ review issue 仍然输出同一个文件：
 
 `subject` 可以出现在 review issue 的任务输入、registry 记录和 controller 补齐后的结果中。agent 不应手写未校验的 Git sha 作为事实来源。
 
+## Registry 字段
+
+registry 必须显式记录 root workflow、issue node、checkpoint、subject 和 review 状态。第一版采用以下最小结构。
+
+root workflow 字段：
+
+```json
+{
+  "root_issue_id": "...",
+  "target_branch": "main",
+  "target_base_sha": "...",
+  "candidate_branch": "symphony/<root>/candidate",
+  "candidate_head_sha": "...",
+  "final_review_node": "final_review",
+  "status": "running"
+}
+```
+
+issue node 字段：
+
+```json
+{
+  "node_key": "implementation",
+  "issue_id": "...",
+  "task_type": "implementation",
+  "status": "completed",
+  "result_ref": ".symphony/issue_result.json",
+  "branch": "symphony/<root>/<issue>",
+  "base_candidate_sha": "...",
+  "head_sha": "...",
+  "checkpoint_id": "checkpoint-001"
+}
+```
+
+checkpoint 字段：
+
+```json
+{
+  "id": "checkpoint-001",
+  "node_key": "implementation",
+  "issue_branch": "symphony/<root>/<issue>",
+  "issue_base_sha": "...",
+  "issue_head_sha": "...",
+  "candidate_before_sha": "...",
+  "candidate_after_sha": "...",
+  "merge_commit_sha": "..."
+}
+```
+
+subject 字段：
+
+```json
+{
+  "id": "subject-001",
+  "type": "candidate_range",
+  "base_sha": "...",
+  "head_sha": "...",
+  "paths": [],
+  "artifact_ref": null,
+  "status": "pending"
+}
+```
+
+review 状态字段：
+
+```json
+{
+  "review_node": "implementation_review",
+  "subject_id": "subject-001",
+  "decision": "pass",
+  "status": "accepted",
+  "decided_at": "..."
+}
+```
+
+`subject.status` 只使用以下值：
+
+```text
+pending
+accepted
+failed
+stale
+```
+
+`node.status` 继续表达任务执行状态；`subject.status` 表达审查对象是否被接受。两者不能混用。
+
 ## Review Result Semantics
 
 controller 根据 `task_type=review` 解释 review issue 的 `outcome`：
@@ -168,6 +254,28 @@ needs_human  -> 转人工输入
 ```
 
 review 不直接移动其他 issue。controller 校验 result 来源、subject 和 workflow graph 后，确定性更新 registry。
+
+## Git Adapter 边界
+
+Git adapter 提供确定性的 Git 操作接口，controller 调用它，agent 不直接承担这些职责。
+
+必须提供的接口：
+
+```text
+create_candidate_branch(root_issue, target_branch)
+create_issue_branch(root_issue, issue, candidate_head_sha)
+commit_issue_workspace(issue, workspace)
+push_branch(branch)
+merge_issue_to_candidate(issue_branch, candidate_branch)
+merge_candidate_to_target(candidate_branch, target_branch, expected_head_sha)
+build_issue_diff_subject(issue_branch, base_sha, head_sha)
+build_candidate_range_subject(candidate_branch, base_sha, head_sha)
+hash_artifact(path)
+```
+
+Git adapter 返回 branch、sha、merge commit、dirty state 和冲突信息。controller 负责把这些结果写入 registry。
+
+如果 `merge_issue_to_candidate` 发生冲突，Git adapter 只能返回 conflict result，不能自动解决冲突。
 
 ## 已通过 Subject 的失效
 
@@ -206,9 +314,41 @@ task_type = merge_resolution
 
 merge resolution issue 由 agent 或人工解决冲突，输出 `issue_result.json`，提交后再合入 candidate。冲突解决产生的 diff 也必须成为可审查 subject。
 
+## Planner 输出 Review 节点
+
+planner 输出 workflow graph 时，review issue 必须声明它审查哪些 node。字段固定为：
+
+```json
+{
+  "node_key": "implementation_review",
+  "task_type": "review",
+  "reviews": ["implementation"],
+  "subject_selector": {
+    "type": "candidate_range",
+    "from": "implementation.candidate_before_sha",
+    "to": "implementation.candidate_after_sha"
+  }
+}
+```
+
+`reviews` 表达语义对象，供 agent 和用户理解。`subject_selector` 表达 controller 如何生成不可漂移 subject。
+
+第一版只允许以下 selector：
+
+```text
+issue_diff(node_key)
+candidate_range(from_checkpoint, to_checkpoint)
+artifact(node_key, artifact_name)
+final_candidate_range
+```
+
+planner 不直接输出 Git sha。controller 在相关 checkpoint 或 artifact 出现后，将 selector 解析为具体 subject。
+
 ## 最终收口
 
-root issue 完成前必须存在 final review issue。final review 的 subject 是 candidate 相对目标分支的固定范围：
+root issue 完成前必须存在 final review issue。这是强制规则，不由 planner 关闭。planner 可以显式创建 final review；如果 planner 没有创建，controller 必须补建。
+
+final review 的 subject 是 candidate 相对目标分支的固定范围：
 
 ```text
 target_base_sha..candidate_head_sha
@@ -224,10 +364,10 @@ final review pass 后，controller 校验 candidate HEAD 未漂移，然后将 c
 4. 不让 agent 决定 Git branch、sha 或最终合并动作。
 5. 不用额外 gate policy 表达是否审查；是否审查由 workflow graph 中的 review issue 和依赖边表达。
 
-## 待实现决策
+## 已定实现决策
 
-1. 结果文件名最终采用 `issue_result.json`，还是改为 `node_result.json`。
-2. registry 中 checkpoint、subject、accepted/stale/failed 状态的具体字段。
-3. Git adapter 的接口边界：创建分支、提交、push、合入 candidate、合入 target、生成 subject。
-4. planner 输出 graph 时如何声明 review issue 的 `reviews` 和 subject 选择。
-5. final review 是否作为所有 root workflow 的强制节点。
+1. 统一结果文件固定为 `.symphony/issue_result.json`。不用 `node_result.json`。
+2. registry 明确拆分 root workflow、issue node、checkpoint、subject 和 review 状态。
+3. Git adapter 只负责确定性 Git 操作和事实生成；controller 负责写 registry；agent 不写 Git 事实。
+4. planner 使用 `reviews` 声明 review 的语义对象，使用 `subject_selector` 声明 subject 生成规则。
+5. final review 是所有 root workflow 的强制节点；缺失时由 controller 补建。
