@@ -6,6 +6,29 @@ defmodule SymphonyElixirWeb.Presenter do
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
   alias SymphonyElixir.Workflow.Registry
 
+  @registry_atom_keys %{
+    "blocked_reason" => :blocked_reason,
+    "completion_summary" => :completion_summary,
+    "edges" => :edges,
+    "evidence" => :evidence,
+    "evidence_count" => :evidence_count,
+    "from" => :from,
+    "issue_id" => :issue_id,
+    "issue_identifier" => :issue_identifier,
+    "node_key" => :node_key,
+    "nodes" => :nodes,
+    "review_summary" => :review_summary,
+    "root_issue_id" => :root_issue_id,
+    "root_issue_identifier" => :root_issue_identifier,
+    "root_title" => :root_title,
+    "status" => :status,
+    "task_type" => :task_type,
+    "title" => :title,
+    "to" => :to,
+    "type" => :type,
+    "workflow_semantics" => :workflow_semantics
+  }
+
   @spec state_payload(GenServer.name() | {:snapshot, map()}, timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
     generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
@@ -430,30 +453,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp registry_value(_map, _key, default), do: default
 
-  defp registry_atom_key(key) do
-    case key do
-      "blocked_reason" -> :blocked_reason
-      "completion_summary" -> :completion_summary
-      "edges" -> :edges
-      "evidence" -> :evidence
-      "evidence_count" -> :evidence_count
-      "from" -> :from
-      "issue_id" -> :issue_id
-      "issue_identifier" -> :issue_identifier
-      "node_key" -> :node_key
-      "nodes" -> :nodes
-      "review_summary" -> :review_summary
-      "root_issue_id" -> :root_issue_id
-      "root_issue_identifier" -> :root_issue_identifier
-      "root_title" -> :root_title
-      "status" -> :status
-      "task_type" -> :task_type
-      "title" -> :title
-      "to" -> :to
-      "type" -> :type
-      "workflow_semantics" -> :workflow_semantics
-    end
-  end
+  defp registry_atom_key(key), do: Map.fetch!(@registry_atom_keys, key)
 
   defp active_entry_payload(%{state: state, entry: entry}) do
     %{
@@ -573,8 +573,7 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp recent_event(entries) do
     entries
-    |> Enum.filter(&(&1.state in ["running", "blocked"]))
-    |> Enum.filter(&Map.get(&1.entry, :last_event_at))
+    |> Enum.filter(&(&1.state in ["running", "blocked"] and Map.get(&1.entry, :last_event_at)))
     |> Enum.max_by(&Map.get(&1.entry, :last_event_at), &>=/2, fn -> nil end)
     |> recent_event_payload()
   end
