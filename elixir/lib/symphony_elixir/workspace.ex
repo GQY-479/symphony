@@ -10,24 +10,35 @@ defmodule SymphonyElixir.Workspace do
 
   @type worker_host :: String.t() | nil
 
+  @type project_context :: %{
+          project_slug: String.t() | nil,
+          project_key: String.t() | nil,
+          repository_url: String.t() | nil,
+          repository_path: String.t() | nil,
+          repository_ref: String.t() | nil,
+          project_repository: String.t() | nil,
+          issue_id: String.t() | nil,
+          issue_identifier: String.t()
+        }
+
   @spec create_for_issue(map() | String.t() | nil, worker_host()) ::
           {:ok, Path.t()} | {:error, term()}
   def create_for_issue(issue_or_identifier, worker_host \\ nil) do
-    issue_context = issue_context(issue_or_identifier)
+    with {:ok, issue_context} <- issue_or_identifier |> issue_context() |> resolve_project_context() do
+      try do
+        safe_id = safe_identifier(issue_context.issue_identifier)
 
-    try do
-      safe_id = safe_identifier(issue_context.issue_identifier)
-
-      with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
-           :ok <- validate_workspace_path(workspace, worker_host),
-           {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
-           :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
-        {:ok, workspace}
+        with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
+             :ok <- validate_workspace_path(workspace, worker_host),
+             {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
+             :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
+          {:ok, workspace}
+        end
+      rescue
+        error in [ArgumentError, ErlangError, File.Error] ->
+          Logger.error("Workspace creation failed #{issue_log_context(issue_context)} worker_host=#{worker_host_for_log(worker_host)} error=#{Exception.message(error)}")
+          {:error, error}
       end
-    rescue
-      error in [ArgumentError, ErlangError, File.Error] ->
-        Logger.error("Workspace creation failed #{issue_log_context(issue_context)} worker_host=#{worker_host_for_log(worker_host)} error=#{Exception.message(error)}")
-        {:error, error}
     end
   end
 
@@ -166,30 +177,32 @@ defmodule SymphonyElixir.Workspace do
   @spec run_before_run_hook(Path.t(), map() | String.t() | nil, worker_host()) ::
           :ok | {:error, term()}
   def run_before_run_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
-    issue_context = issue_context(issue_or_identifier)
-    hooks = Config.settings!().hooks
+    with {:ok, issue_context} <- issue_or_identifier |> issue_context() |> resolve_project_context() do
+      hooks = Config.settings!().hooks
 
-    case hooks.before_run do
-      nil ->
-        :ok
+      case hooks.before_run do
+        nil ->
+          :ok
 
-      command ->
-        run_hook(command, workspace, issue_context, "before_run", worker_host)
+        command ->
+          run_hook(command, workspace, issue_context, "before_run", worker_host)
+      end
     end
   end
 
-  @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok
+  @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok | {:error, term()}
   def run_after_run_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
-    issue_context = issue_context(issue_or_identifier)
-    hooks = Config.settings!().hooks
+    with {:ok, issue_context} <- issue_or_identifier |> issue_context() |> resolve_project_context() do
+      hooks = Config.settings!().hooks
 
-    case hooks.after_run do
-      nil ->
-        :ok
+      case hooks.after_run do
+        nil ->
+          :ok
 
-      command ->
-        run_hook(command, workspace, issue_context, "after_run", worker_host)
-        |> ignore_hook_failure()
+        command ->
+          run_hook(command, workspace, issue_context, "after_run", worker_host)
+          |> ignore_hook_failure()
+      end
     end
   end
 
@@ -293,12 +306,13 @@ defmodule SymphonyElixir.Workspace do
 
   defp run_hook(command, workspace, issue_context, hook_name, nil) do
     timeout_ms = Config.settings!().hooks.timeout_ms
+    env = hook_env(issue_context)
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local")
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true, env: env)
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -316,10 +330,18 @@ defmodule SymphonyElixir.Workspace do
 
   defp run_hook(command, workspace, issue_context, hook_name, worker_host) when is_binary(worker_host) do
     timeout_ms = Config.settings!().hooks.timeout_ms
+    env = hook_env(issue_context)
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    env_exports =
+      env
+      |> Enum.map(fn {k, v} -> "export #{k}='#{shell_escape(v)}'" end)
+      |> Enum.join(" && ")
+
+    script = "#{env_exports} && cd #{shell_escape(workspace)} && #{command}"
+
+    case run_remote_command(worker_host, script, timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -330,6 +352,49 @@ defmodule SymphonyElixir.Workspace do
         {:error, reason}
     end
   end
+
+  defp hook_env(issue_context) do
+    base_env = System.get_env()
+    project_repository = issue_context[:project_repository] || ""
+
+    project_env =
+      issue_context
+      |> canonical_hook_env(project_repository)
+      |> Map.merge(legacy_hook_env(issue_context, project_repository))
+
+    Map.merge(base_env, project_env)
+  end
+
+  defp canonical_hook_env(issue_context, project_repository) do
+    %{
+      "SYMPHONY_ISSUE_ID" => issue_context.issue_id || "",
+      "SYMPHONY_ISSUE_IDENTIFIER" => issue_context.issue_identifier || "",
+      "SYMPHONY_LINEAR_PROJECT_SLUG" => issue_context[:project_slug] || "",
+      "SYMPHONY_PROJECT_SLUG" => issue_context[:project_slug] || "",
+      "SYMPHONY_PROJECT_KEY" => issue_context[:project_key] || "",
+      "SYMPHONY_REPOSITORY_URL" => issue_context[:repository_url] || "",
+      "SYMPHONY_REPOSITORY_PATH" => issue_context[:repository_path] || "",
+      "SYMPHONY_REPOSITORY_REF" => issue_context[:repository_ref] || "",
+      "SYMPHONY_REPOSITORY" => project_repository,
+      "SYMPHONY_PROJECT_REPOSITORY" => project_repository,
+      "SYMPHONY_PROJECT_REPOSITORIES" => project_repository
+    }
+  end
+
+  defp legacy_hook_env(issue_context, project_repository) do
+    %{
+      "SYMP_ISSUE_ID" => issue_context.issue_id || "",
+      "SYMP_ISSUE_IDENTIFIER" => issue_context.issue_identifier || "",
+      "SYMP_PROJECT_SLUG" => issue_context[:project_slug] || "",
+      "SYMP_PROJECT_KEY" => issue_context[:project_key] || "",
+      "SYMP_PROJECT_REPOSITORY" => project_repository,
+      "SYMP_PROJECT_REPOSITORIES" => project_repository
+    }
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, _key, ""), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp handle_hook_command_result({_output, 0}, _workspace, _issue_id, _hook_name) do
     :ok
@@ -456,11 +521,19 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
-    %{
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue) do
+    base = %{
       issue_id: issue_id,
       issue_identifier: identifier || "issue"
     }
+
+    base
+    |> maybe_put(:project_slug, Map.get(issue, :project_slug))
+    |> maybe_put(:project_key, Map.get(issue, :project_key))
+    |> maybe_put(:repository_url, Map.get(issue, :repository_url))
+    |> maybe_put(:repository_path, Map.get(issue, :repository_path))
+    |> maybe_put(:repository_ref, Map.get(issue, :repository_ref))
+    |> maybe_put(:project_repository, Map.get(issue, :project_repository))
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
@@ -479,5 +552,137 @@ defmodule SymphonyElixir.Workspace do
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
     "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"
+  end
+
+  defp resolve_project_context(issue_context) do
+    settings = Config.settings!()
+
+    case configured_project_entries(settings) do
+      [] ->
+        validate_issue_repository_context(issue_context)
+
+      entries ->
+        project_slug = normalize_context_string(issue_context[:project_slug])
+        project_key = normalize_context_string(issue_context[:project_key])
+
+        case find_project_entry(entries, project_slug, project_key) do
+          nil ->
+            {:error, {:unmapped_linear_project, project_slug || project_key || issue_context.issue_identifier}}
+
+          entry ->
+            issue_context
+            |> Map.merge(entry)
+            |> validate_issue_repository_context()
+        end
+    end
+  end
+
+  defp configured_project_entries(settings) do
+    projects = settings.tracker.projects || %{}
+
+    if is_map(projects) and map_size(projects) > 0 do
+      Config.tracker_project_entries(settings)
+    else
+      []
+    end
+  end
+
+  defp find_project_entry(entries, project_slug, project_key) do
+    Enum.find(entries, fn entry ->
+      (is_binary(project_slug) and entry.project_slug == project_slug) or
+        (is_binary(project_key) and entry.project_key == project_key)
+    end)
+  end
+
+  defp validate_issue_repository_context(issue_context) do
+    with :ok <- validate_repository_paths(issue_context) do
+      {:ok, issue_context}
+    end
+  end
+
+  defp validate_repository_paths(issue_context) do
+    issue_context
+    |> repositories_from_context()
+    |> Enum.reduce_while(:ok, fn repository, :ok ->
+      case validate_repository_path(repository) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp repositories_from_context(issue_context) do
+    [issue_context[:repository_path], issue_context[:repository_url]]
+    |> Enum.concat(split_project_repository(issue_context[:project_repository]))
+    |> Enum.reject(&blank_string?/1)
+    |> Enum.uniq()
+  end
+
+  defp split_project_repository(repository) when is_binary(repository) do
+    repository
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp split_project_repository(_repository), do: []
+
+  defp normalize_context_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_context_string(_value), do: nil
+
+  defp blank_string?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_string?(_value), do: true
+
+  @doc """
+  Validates that a repository path is safe and does not escape the configured workspace root.
+
+  Returns :ok if the path is safe, or {:error, reason} if it's not.
+  This prevents hook inputs or repository paths from escaping configured workspace roots.
+  """
+  @spec validate_repository_path(String.t()) :: :ok | {:error, term()}
+  def validate_repository_path(repository) when is_binary(repository) do
+    workspace_root = Config.settings!().workspace.root
+
+    case repository do
+      "http://" <> _rest ->
+        :ok
+
+      "https://" <> _rest ->
+        :ok
+
+      "git@" <> _rest ->
+        :ok
+
+      "file://" <> _rest ->
+        validate_local_repository_path(String.trim_leading(repository, "file://"), workspace_root)
+
+      path when is_binary(path) ->
+        validate_local_repository_path(path, workspace_root)
+    end
+  end
+
+  def validate_repository_path(_), do: :ok
+
+  defp validate_local_repository_path(path, workspace_root) do
+    expanded_repo = Path.expand(path)
+    expanded_root = Path.expand(workspace_root)
+    expanded_root_prefix = expanded_root <> "/"
+
+    cond do
+      String.starts_with?(expanded_repo, expanded_root_prefix) or expanded_repo == expanded_root ->
+        {:error, {:repository_path_inside_workspace, expanded_repo, expanded_root}}
+
+      String.contains?(path, "..") ->
+        {:error, {:repository_path_traversal, path}}
+
+      true ->
+        :ok
+    end
   end
 end

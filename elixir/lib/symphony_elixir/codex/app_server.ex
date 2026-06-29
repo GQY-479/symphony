@@ -11,6 +11,17 @@ defmodule SymphonyElixir.Codex.AppServer do
   @turn_start_id 3
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
+  @max_notification_log_bytes 4_000
+  @sensitive_log_keys ~w(
+    api_key
+    apikey
+    authorization
+    bearer
+    client_secret
+    password
+    secret
+    token
+  )
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
 
   @type session :: %{
@@ -117,7 +128,10 @@ defmodule SymphonyElixir.Codex.AppServer do
              }}
 
           {:error, reason} ->
-            Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
+            Logger.warning(
+              "Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: " <>
+                inspect(redact_log_value(reason))
+            )
 
             emit_message(
               on_message,
@@ -264,13 +278,13 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp session_policies(workspace, nil, opts) do
     workspace
-    |> Config.codex_runtime_settings()
+    |> Config.codex_runtime_settings(extra_writable_roots: extra_writable_roots(opts))
     |> maybe_overlay_agent_policies(opts)
   end
 
   defp session_policies(workspace, worker_host, opts) when is_binary(worker_host) do
     workspace
-    |> Config.codex_runtime_settings(remote: true)
+    |> Config.codex_runtime_settings(remote: true, extra_writable_roots: extra_writable_roots(opts))
     |> maybe_overlay_agent_policies(opts)
   end
 
@@ -501,28 +515,44 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:approval_required, payload}}
 
       :unhandled ->
-        if needs_input?(method, payload) do
-          emit_message(
-            on_message,
-            :turn_input_required,
-            %{payload: payload, raw: payload_string},
-            metadata
-          )
+        cond do
+          terminal_error_notification?(method, payload) ->
+            emit_message(
+              on_message,
+              :notification,
+              %{
+                payload: payload,
+                raw: payload_string
+              },
+              metadata
+            )
 
-          {:error, {:turn_input_required, payload}}
-        else
-          emit_message(
-            on_message,
-            :notification,
-            %{
-              payload: payload,
-              raw: payload_string
-            },
-            metadata
-          )
+            log_notification(method, payload)
+            {:error, {:turn_error_notification, payload}}
 
-          Logger.debug("Codex notification: #{inspect(method)}")
-          receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+          needs_input?(method, payload) ->
+            emit_message(
+              on_message,
+              :turn_input_required,
+              %{payload: payload, raw: payload_string},
+              metadata
+            )
+
+            {:error, {:turn_input_required, payload}}
+
+          true ->
+            emit_message(
+              on_message,
+              :notification,
+              %{
+                payload: payload,
+                raw: payload_string
+              },
+              metadata
+            )
+
+            log_notification(method, payload)
+            receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
         end
     end
   end
@@ -983,6 +1013,56 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
+  defp notification_payload_for_log(payload) do
+    payload
+    |> redact_log_value()
+    |> inspect(limit: 50, printable_limit: @max_notification_log_bytes)
+    |> String.slice(0, @max_notification_log_bytes)
+  end
+
+  defp log_notification("error" = method, payload) do
+    Logger.debug("Codex notification: #{inspect(method)} payload=#{notification_payload_for_log(payload)}")
+  end
+
+  defp log_notification(method, _payload) do
+    Logger.debug("Codex notification: #{inspect(method)}")
+  end
+
+  defp redact_log_value(%{} = value) do
+    Map.new(value, fn {key, nested_value} ->
+      if sensitive_log_key?(key) do
+        {key, "[REDACTED]"}
+      else
+        {key, redact_log_value(nested_value)}
+      end
+    end)
+  end
+
+  defp redact_log_value(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&redact_log_value/1)
+    |> List.to_tuple()
+  end
+
+  defp redact_log_value(values) when is_list(values), do: Enum.map(values, &redact_log_value/1)
+  defp redact_log_value(value), do: value
+
+  defp sensitive_log_key?(key) when is_atom(key), do: key |> Atom.to_string() |> sensitive_log_key?()
+
+  defp sensitive_log_key?(key) when is_binary(key) do
+    normalized =
+      key
+      |> String.downcase()
+      |> String.replace(~r/[^a-z0-9]/, "")
+
+    Enum.any?(@sensitive_log_keys, fn sensitive_key ->
+      String.contains?(normalized, String.replace(sensitive_key, "_", ""))
+    end)
+  end
+
+  defp sensitive_log_key?(_key), do: false
+
   defp protocol_message_candidate?(data) do
     data
     |> to_string()
@@ -1078,6 +1158,17 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp agent_config_atom_key("timeout_ms"), do: :timeout_ms
   defp agent_config_atom_key(_key), do: nil
 
+  defp extra_writable_roots(opts) do
+    workflow_context = Keyword.get(opts, :workflow_context, %{})
+
+    workflow_context
+    |> Map.get("root_workspace", Map.get(workflow_context, :root_workspace))
+    |> case do
+      workspace when is_binary(workspace) and workspace != "" -> [workspace]
+      _ -> []
+    end
+  end
+
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
@@ -1118,6 +1209,10 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp needs_input?(_method, _payload), do: false
+
+  defp terminal_error_notification?("error", %{"params" => %{"willRetry" => false}}), do: true
+  defp terminal_error_notification?("error", %{"params" => %{"willRetry" => "false"}}), do: true
+  defp terminal_error_notification?(_method, _payload), do: false
 
   defp input_required_method?(method, payload) when is_binary(method) do
     method in [

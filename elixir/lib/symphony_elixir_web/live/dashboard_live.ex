@@ -218,7 +218,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
   attr(:url, :string, default: nil)
 
   defp issue_identifier(assigns) do
-    assigns = assign(assigns, :href, external_issue_url(assigns.url))
+    assigns = assign(assigns, :href, extenal_issue_url(assigns.url))
 
     ~H"""
     <%= if @href do %>
@@ -235,7 +235,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     """
   end
 
-  defp external_issue_url(url) when is_binary(url) do
+  defp extenal_issue_url(url) when is_binary(url) do
     url = String.trim(url)
 
     case URI.parse(url) do
@@ -248,7 +248,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
   end
 
-  defp external_issue_url(_url), do: nil
+  defp extenal_issue_url(_url), do: nil
 
   defp completed_runtime_seconds(payload) do
     payload.codex_totals.seconds_running || 0
@@ -328,7 +328,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
     cond do
       String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
       String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
-      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
+      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-waning"
       true -> base
     end
   end

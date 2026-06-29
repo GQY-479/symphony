@@ -28,44 +28,22 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   def handle_planning_completion(_issue, _workspace), do: {:error, :invalid_arguments}
 
-  @spec handle_execution_completion(Issue.t(), Path.t()) :: {:ok, {:queue_review, map()}} | {:error, term()}
-  def handle_execution_completion(%Issue{} = issue, workspace) when is_binary(workspace) do
-    with {:ok, packet} <- Artifacts.load_completion_packet(workspace),
-         :ok <- Tracker.create_comment(issue.id, render_completion_comment(issue, packet)),
-         :ok <- maybe_store_completion_packet(issue, packet) do
-      {:ok,
-       {:queue_review,
-        %{
-          workflow_phase: :review,
-          workflow_root_issue_id: workflow_root_identifier_for_issue(issue),
-          agent_id: Config.settings!().orchestration.reviewer_agent,
-          max_turns: Config.settings!().orchestration.review_max_turns,
-          workflow_context: %{
-            "issue_id" => issue.id,
-            "issue_identifier" => issue.identifier,
-            "root_issue_identifier" => workflow_root_identifier_for_issue(issue),
-            "completion_summary" => packet["summary"],
-            "completion_outcome" => packet["outcome"],
-            "evidence" => packet["evidence"] || []
-          }
-        }}}
-    end
-  end
-
-  def handle_execution_completion(_issue, _workspace), do: {:error, :invalid_arguments}
-
-  @spec handle_review_completion(Issue.t(), Path.t()) ::
-          {:ok, {:pass, String.t()} | {:needs_human, String.t(), String.t()} | {:needs_replan, String.t(), String.t()} | {:needs_rework, String.t(), String.t()} | {:fail, String.t(), String.t()}}
+  @spec handle_issue_completion(Issue.t(), Path.t()) ::
+          {:ok,
+           {:completed, String.t()}
+           | {:needs_human, String.t(), String.t()}
+           | {:needs_replan, String.t(), String.t()}
+           | {:needs_rework, String.t(), String.t()}
+           | {:fail, String.t(), String.t()}}
           | {:error, term()}
-  def handle_review_completion(%Issue{} = issue, workspace) when is_binary(workspace) do
-    with {:ok, decision} <- Artifacts.load_review_decision(workspace),
-         :ok <- Tracker.create_comment(issue.id, render_review_comment(issue, decision)),
-         :ok <- maybe_apply_review_registry_update(issue, decision) do
-      apply_review_decision(issue, decision)
+  def handle_issue_completion(%Issue{} = issue, workspace) when is_binary(workspace) do
+    with {:ok, result} <- Artifacts.load_issue_result(workspace),
+         :ok <- Tracker.create_comment(issue.id, render_issue_result_comment(issue, result)) do
+      apply_issue_result(issue, result)
     end
   end
 
-  def handle_review_completion(_issue, _workspace), do: {:error, :invalid_arguments}
+  def handle_issue_completion(_issue, _workspace), do: {:error, :invalid_arguments}
 
   @spec issue_ready?(String.t()) :: boolean()
   def issue_ready?(issue_id) when is_binary(issue_id) do
@@ -83,7 +61,7 @@ defmodule SymphonyElixir.Workflow.Controller do
       {:ok, registry, node_key, node} ->
         {:ok,
          %{
-           workflow_phase: :execution,
+           workflow_phase: :issue,
            workflow_root_issue_id: registry["root_issue_identifier"],
            agent_id: node["agent_id"],
            max_turns: Config.settings!().agent.max_turns,
@@ -106,19 +84,17 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp validate_materialization_plan(%{"kind" => kind} = plan)
-       when kind in ["direct_execution", "issue_graph", "needs_human_input"] do
+       when kind in ["issue_graph", "needs_human_input"] do
     validate_plan_nodes(plan)
   end
 
   defp validate_materialization_plan(%{"mode" => mode} = plan)
-       when mode in ["direct_execution", "issue_graph", "needs_human_input"] do
+       when mode in ["issue_graph", "needs_human_input"] do
     validate_plan_nodes(plan)
   end
 
   defp validate_materialization_plan(_plan), do: {:error, :invalid_workflow_plan}
 
-  defp validate_plan_nodes(%{"kind" => "direct_execution"}), do: :ok
-  defp validate_plan_nodes(%{"mode" => "direct_execution"}), do: :ok
   defp validate_plan_nodes(%{"kind" => "needs_human_input", "request" => request}) when is_binary(request), do: :ok
   defp validate_plan_nodes(%{"mode" => "needs_human_input", "request" => request}) when is_binary(request), do: :ok
 
@@ -135,19 +111,20 @@ defmodule SymphonyElixir.Workflow.Controller do
   defp validate_graph_nodes(nodes, edges) do
     with :ok <- validate_nodes(nodes),
          :ok <- validate_edges(edges),
-         :ok <- validate_edge_references(nodes, edges) do
+         :ok <- validate_edge_references(nodes, edges),
+         :ok <- validate_final_review(nodes) do
       :ok
     end
   end
 
   defp validate_nodes(nodes) when is_list(nodes) do
-    if Enum.all?(nodes, &is_valid_node?/1), do: :ok, else: {:error, :invalid_workflow_plan}
+    if Enum.all?(nodes, &valid_node?/1), do: :ok, else: {:error, :invalid_workflow_plan}
   end
 
   defp validate_nodes(_nodes), do: {:error, :invalid_workflow_plan}
 
   defp validate_edges(edges) when is_list(edges) do
-    if Enum.all?(edges, &is_valid_edge?/1), do: :ok, else: {:error, :invalid_workflow_plan}
+    if Enum.all?(edges, &valid_edge?/1), do: :ok, else: {:error, :invalid_workflow_plan}
   end
 
   defp validate_edges(_edges), do: {:error, :invalid_workflow_plan}
@@ -166,50 +143,65 @@ defmodule SymphonyElixir.Workflow.Controller do
     end
   end
 
-  defp is_valid_node?(%{"node_key" => node_key, "task_type" => task_type, "title" => title, "goal" => goal, "agent_id" => agent_id})
-       when is_binary(node_key) and is_binary(task_type) and is_binary(title) and is_binary(goal) and is_binary(agent_id),
-       do: true
+  defp validate_final_review(nodes) do
+    case Enum.find(nodes, &(&1["node_key"] == "final_review")) do
+      %{
+        "task_type" => "review",
+        "reviews" => ["__root_candidate__"],
+        "subject_selector" => %{"type" => "final_candidate_range"}
+      } ->
+        :ok
 
-  defp is_valid_node?(_node), do: false
-
-  defp is_valid_edge?(%{"from" => from, "to" => to}) when is_binary(from) and is_binary(to), do: true
-  defp is_valid_edge?(%{from: from, to: to}) when is_binary(from) and is_binary(to), do: true
-  defp is_valid_edge?(_edge), do: false
-
-  defp materialize_plan(registry, root_issue, %{"kind" => "direct_execution"} = plan) do
-    {:ok,
-     registry
-     |> Registry.put_node("root", %{
-       "issue_id" => root_issue.id,
-       "issue_identifier" => root_issue.identifier,
-       "agent_id" => plan["agent_id"],
-       "node_key" => "root",
-       "task_type" => "direct_execution",
-       "workflow_semantics" => "executable",
-       "status" => "ready",
-       "summary" => plan["summary"]
-     })
-     |> Map.put("status", "planning_complete")}
+      _other ->
+        {:error, :invalid_workflow_plan}
+    end
   end
+
+  defp valid_node?(
+         %{
+           "node_key" => node_key,
+           "task_type" => task_type,
+           "title" => title,
+           "goal" => goal,
+           "agent_id" => agent_id
+         } = node
+       )
+       when is_binary(node_key) and is_binary(task_type) and is_binary(title) and
+              is_binary(goal) and is_binary(agent_id) do
+    valid_review_node?(node)
+  end
+
+  defp valid_node?(_node), do: false
+
+  defp valid_review_node?(%{"task_type" => "review"} = node) do
+    reviews = Map.get(node, "reviews")
+    subject_selector = Map.get(node, "subject_selector")
+
+    is_list(reviews) and reviews != [] and Enum.all?(reviews, &non_blank?/1) and
+      is_map(subject_selector)
+  end
+
+  defp valid_review_node?(_node), do: true
+
+  defp valid_edge?(%{"from" => from, "to" => to}) when is_binary(from) and is_binary(to), do: true
+  defp valid_edge?(%{from: from, to: to}) when is_binary(from) and is_binary(to), do: true
+  defp valid_edge?(_edge), do: false
 
   defp materialize_plan(registry, root_issue, %{"kind" => "issue_graph", "nodes" => nodes, "edges" => edges} = plan) do
     with {:ok, registry} <- create_derived_nodes(registry, root_issue, nodes, edges, plan),
          {:ok, registry} <- attach_edges(registry, edges) do
-      {:ok, Map.put(registry, "status", "planning_complete")}
+      {:ok, Registry.put_status(registry, "planning_complete", %{})}
     end
   end
 
   defp materialize_plan(registry, _root_issue, %{"kind" => "needs_human_input"} = plan) do
     {:ok,
      registry
-     |> Map.put("status", "needs_human_input")
-     |> Map.put("human_input_request", plan["request"])
-     |> Map.put("human_input_summary", plan["summary"])
-     |> Map.put("human_input_confidence", plan["confidence"])}
-  end
-
-  defp materialize_plan(registry, root_issue, %{"mode" => "direct_execution"} = plan) do
-    materialize_plan(registry, root_issue, Map.put(plan, "kind", "direct_execution"))
+     |> Registry.put_status("needs_human_input", %{
+       "human_input_request" => plan["request"],
+       "human_input_summary" => plan["summary"],
+       "human_input_confidence" => plan["confidence"]
+     })}
   end
 
   defp materialize_plan(registry, root_issue, %{"mode" => "issue_graph"} = plan) do
@@ -221,7 +213,7 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp materialize_plan(registry, _root_issue, _plan) do
-    {:ok, Map.put(registry, "status", "planning_complete")}
+    {:ok, Registry.put_status(registry, "planning_complete", %{})}
   end
 
   defp create_derived_nodes(registry, root_issue, nodes, edges, plan) do
@@ -239,13 +231,16 @@ defmodule SymphonyElixir.Workflow.Controller do
           {:cont, {:ok, updated_registry}}
 
         :error ->
-          case Tracker.create_issue(%{
-                 title: node["title"],
-                 description: node_description(root_issue, node, dependencies, handoffs, plan),
-                 state: "Todo",
-                 assignee_id: root_issue.assignee_id,
-                 labels: inherited_labels(root_issue)
-               }) do
+          case Tracker.create_issue(
+                 %{
+                   title: node["title"],
+                   description: node_description(root_issue, node, dependencies, handoffs, plan),
+                   state: "Todo",
+                   assignee_id: root_issue.assignee_id,
+                   labels: inherited_labels(root_issue)
+                 }
+                 |> Map.merge(issue_tracker_context(root_issue))
+               ) do
             {:ok, %Issue{} = issue} ->
               updated_registry =
                 put_derived_node(
@@ -267,6 +262,9 @@ defmodule SymphonyElixir.Workflow.Controller do
     end)
   end
 
+  defp reusable_node_issue(%{"status" => "superseded"}), do: :error
+  defp reusable_node_issue(%{"workflow_semantics" => "superseded"}), do: :error
+
   defp reusable_node_issue(%{"issue_id" => issue_id, "issue_identifier" => issue_identifier})
        when is_binary(issue_id) and is_binary(issue_identifier) do
     {:ok, %{"issue_id" => issue_id, "issue_identifier" => issue_identifier}}
@@ -286,6 +284,9 @@ defmodule SymphonyElixir.Workflow.Controller do
       "handoff" => handoffs,
       "handoff_summary" => handoffs,
       "evidence_expectations" => node["evidence_expectations"] || [],
+      "completion_conditions" => node["completion_conditions"] || [],
+      "reviews" => node["reviews"],
+      "subject_selector" => node["subject_selector"],
       "workflow_semantics" => "executable",
       "status" => readiness_for(dependencies),
       "title" => node["title"]
@@ -315,58 +316,124 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp maybe_comment_root(_root_issue, _plan, _registry), do: :ok
 
-  defp render_completion_comment(issue, packet) do
+  defp render_issue_result_comment(issue, result) do
     """
-    ## Completion Packet
+    ## Issue Result
 
     Issue: #{issue.identifier}
-    Outcome: #{packet["outcome"]}
-    Summary: #{packet["summary"]}
+    Node: #{result["node_key"]}
+    Task type: #{result["task_type"]}
+    Outcome: #{result["outcome"]}
+    Summary: #{result["summary"]}
 
     Evidence:
-    #{format_list(packet["evidence"] || [])}
+    #{format_list(result["evidence"] || [])}
 
     Decisions:
-    #{format_list(packet["decisions"] || [])}
+    #{format_list(result["decisions"] || [])}
 
     Open questions:
-    #{format_list(packet["open_questions"] || [])}
-
-    Next handoff:
-    #{packet["next_handoff"] || "-"}
+    #{format_list(result["open_questions"] || [])}
     """
     |> String.trim()
   end
 
-  defp render_review_comment(issue, decision) do
-    """
-    ## Review Decision
+  defp apply_issue_result(%Issue{} = issue, %{"task_type" => "review", "outcome" => "pass"} = result) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, _node} ->
+        updated_registry =
+          registry
+          |> put_node_issue_result(node_key, result)
+          |> put_node_status(node_key, "completed")
+          |> Registry.put_review_state(node_key, review_state(result, "accepted"))
+          |> unlock_ready_nodes()
+          |> maybe_complete_registry()
 
-    Issue: #{issue.identifier}
-    Decision: #{decision["decision"]}
-    Confidence: #{decision["confidence"]}
-    Summary: #{decision["summary"]}
-    """
-    |> String.trim()
+        with :ok <- Registry.save!(updated_registry),
+             :ok <- Tracker.update_issue_state(issue.id, workflow_terminal_state()),
+             :ok <- maybe_close_root_issue(updated_registry, issue.id) do
+          {:ok, {:completed, issue.id}}
+        end
+
+      {:error, :not_found} ->
+        {:ok, {:completed, issue.id}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
-  defp apply_review_decision(%Issue{} = issue, %{"decision" => "pass"}) do
+  defp apply_issue_result(%Issue{} = issue, %{"task_type" => "review"} = result) do
+    outcome = review_result_to_outcome(result)
+
+    with :ok <- maybe_apply_review_registry_update(issue, outcome) do
+      apply_review_outcome(issue, outcome)
+    end
+  end
+
+  defp apply_issue_result(%Issue{} = issue, result) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, _node} ->
+        updated_registry =
+          registry
+          |> put_node_issue_result(node_key, result)
+          |> put_node_status(node_key, "completed")
+          |> unlock_ready_nodes()
+          |> maybe_complete_registry()
+
+        with :ok <- Registry.save!(updated_registry),
+             :ok <- Tracker.update_issue_state(issue.id, workflow_terminal_state()),
+             :ok <- maybe_close_root_issue(updated_registry, issue.id) do
+          {:ok, {:completed, issue.id}}
+        end
+
+      {:error, :not_found} ->
+        {:ok, {:completed, issue.id}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp review_state(result, status) do
+    %{
+      "decision" => result["outcome"],
+      "status" => status,
+      "summary" => result["summary"],
+      "reviews" => result["reviews"] || [],
+      "decided_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+  end
+
+  defp review_result_to_outcome(result) do
+    %{
+      "decision" => result["outcome"],
+      "summary" => result["summary"],
+      "reason" => result["reason"],
+      "requested_input" => result["requested_input"],
+      "confidence" => result["confidence"] || "not_applicable",
+      "reviews" => result["reviews"] || [],
+      "issue_result" => result
+    }
+  end
+
+  defp apply_review_outcome(%Issue{} = issue, %{"decision" => "pass"}) do
     {:ok, {:pass, issue.id}}
   end
 
-  defp apply_review_decision(%Issue{} = issue, %{"decision" => "needs_human", "summary" => summary}) do
+  defp apply_review_outcome(%Issue{} = issue, %{"decision" => "needs_human", "summary" => summary}) do
     {:ok, {:needs_human, issue.id, summary}}
   end
 
-  defp apply_review_decision(%Issue{} = issue, %{"decision" => "needs_replan", "summary" => summary}) do
+  defp apply_review_outcome(%Issue{} = issue, %{"decision" => "needs_replan", "summary" => summary}) do
     {:ok, {:needs_replan, issue.id, summary}}
   end
 
-  defp apply_review_decision(%Issue{} = issue, %{"decision" => "needs_rework", "summary" => summary}) do
+  defp apply_review_outcome(%Issue{} = issue, %{"decision" => "needs_rework", "summary" => summary}) do
     {:ok, {:needs_rework, issue.id, summary}}
   end
 
-  defp apply_review_decision(%Issue{} = issue, %{"decision" => "fail", "summary" => summary}) do
+  defp apply_review_outcome(%Issue{} = issue, %{"decision" => "fail", "summary" => summary}) do
     {:ok, {:fail, issue.id, summary}}
   end
 
@@ -395,7 +462,11 @@ defmodule SymphonyElixir.Workflow.Controller do
   defp maybe_apply_review_registry_update(%Issue{} = issue, %{"decision" => "needs_rework"} = decision) do
     case Registry.load_by_issue_id(issue.id) do
       {:ok, registry, node_key, node} ->
-        materialize_rework_issue(registry, node_key, node, issue, decision)
+        target_key = review_rework_target_node_key(registry, node_key, decision)
+        target_node = Registry.node(registry, target_key) || node
+        review_node_key = if target_key == node_key, do: nil, else: node_key
+
+        materialize_rework_issue(registry, target_key, target_node, issue, decision, review_node_key)
 
       {:error, :not_found} ->
         :ok
@@ -423,16 +494,86 @@ defmodule SymphonyElixir.Workflow.Controller do
     end
   end
 
+  defp maybe_apply_review_registry_update(%Issue{} = issue, %{"decision" => "needs_human"} = decision) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, _node} ->
+        registry
+        |> mark_registry_blocked_by_review(node_key, decision)
+        |> Registry.save!()
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_apply_review_registry_update(%Issue{} = issue, %{"decision" => "fail"} = decision) do
+    case Registry.load_by_issue_id(issue.id) do
+      {:ok, registry, node_key, _node} ->
+        registry
+        |> mark_registry_failed_by_review(node_key, decision)
+        |> Registry.save!()
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp maybe_apply_review_registry_update(_issue, _decision), do: :ok
+
+  defp review_rework_target_node_key(registry, fallback_node_key, %{"reviews" => [reviewed_node_key | []]})
+       when is_binary(reviewed_node_key) do
+    if reviewed_node_key != "__root_candidate__" and Registry.node(registry, reviewed_node_key) do
+      reviewed_node_key
+    else
+      fallback_node_key
+    end
+  end
+
+  defp review_rework_target_node_key(_registry, fallback_node_key, _decision), do: fallback_node_key
 
   defp mark_registry_for_replanning(registry, node_key, %Issue{} = issue, decision) do
     registry
-    |> Map.put("status", "replanning")
-    |> Map.put("replan_request", decision["summary"])
-    |> Map.put("replan_source_node_key", node_key)
-    |> Map.put("replan_source_issue_id", issue.id)
-    |> Map.put("replan_source_issue_identifier", issue.identifier)
+    |> Registry.put_status("replanning", %{
+      "replan_request" => decision["summary"],
+      "replan_source_node_key" => node_key,
+      "replan_source_issue_id" => issue.id,
+      "replan_source_issue_identifier" => issue.identifier
+    })
     |> supersede_unfinished_executable_nodes_for_replan(decision)
+  end
+
+  defp mark_registry_blocked_by_review(registry, node_key, decision) do
+    registry
+    |> put_node_review_outcome(node_key, "blocked", decision)
+    |> Registry.put_status("blocked", %{
+      "blocked_reason" => decision["summary"],
+      "human_input_request" => decision["requested_input"] || decision["reason"]
+    })
+  end
+
+  defp mark_registry_failed_by_review(registry, node_key, decision) do
+    registry
+    |> put_node_review_outcome(node_key, "failed", decision)
+    |> Registry.put_status("failed", %{"failure_reason" => decision["summary"]})
+  end
+
+  defp put_node_review_outcome(registry, node_key, status, decision) do
+    update_in(registry, ["nodes", node_key], fn
+      %{} = node ->
+        node
+        |> Map.put("status", status)
+        |> Map.put("review_summary", decision["summary"])
+        |> maybe_put_issue_result(decision["issue_result"])
+
+      node ->
+        node
+    end)
   end
 
   defp supersede_unfinished_executable_nodes_for_replan(registry, decision) do
@@ -477,34 +618,39 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp replan_superseded_issue?(_node, _registry), do: false
 
-  defp materialize_rework_issue(registry, node_key, node, issue, decision) do
+  defp materialize_rework_issue(registry, node_key, node, issue, decision, review_node_key) do
     rework_key = next_rework_node_key(registry, node_key)
     title = rework_issue_title(node, issue)
     description = rework_issue_description(registry, node_key, node, issue, decision)
 
     with {:ok, %Issue{} = rework_issue} <-
-           Tracker.create_issue(%{
-             title: title,
-             description: description,
-             state: "Todo",
-             assignee_id: issue.assignee_id,
-             labels: inherited_labels(issue)
-           }) do
+           Tracker.create_issue(
+             %{
+               title: title,
+               description: description,
+               state: "Todo",
+               assignee_id: issue.assignee_id,
+               labels: inherited_labels(issue)
+             }
+             |> Map.merge(issue_tracker_context(issue))
+           ) do
       dependencies = node["dependencies"] || []
+      downstream_source_key = review_node_key || node_key
 
       updated_registry =
         registry
         |> supersede_node(node_key, rework_key, decision)
+        |> maybe_supersede_review_node(review_node_key, rework_key, decision)
         |> put_rework_node(rework_key, node_key, node, rework_issue, decision, dependencies)
-        |> rewire_downstream_dependencies(node_key, rework_key)
-        |> rewire_downstream_edges(node_key, rework_key)
+        |> rewire_downstream_dependencies(downstream_source_key, rework_key)
+        |> rewire_downstream_edges(downstream_source_key, rework_key)
         |> Registry.add_edge(%{
-          "from" => node_key,
+          "from" => downstream_source_key,
           "to" => rework_key,
           "kind" => "rework",
           "handoff_summary" => decision["summary"]
         })
-        |> Map.put("status", "planning_complete")
+        |> Registry.put_status("planning_complete", %{})
 
       with :ok <- Registry.save!(updated_registry),
            :ok <- maybe_close_superseded_issue(registry, issue) do
@@ -529,6 +675,24 @@ defmodule SymphonyElixir.Workflow.Controller do
     |> Enum.uniq_by(&String.downcase/1)
   end
 
+  defp issue_tracker_context(%Issue{} = issue) do
+    %{
+      project_id: issue.project_id,
+      project_slug: issue.project_slug,
+      project_name: issue.project_name,
+      team_id: issue.team_id,
+      team_key: issue.team_key,
+      team_name: issue.team_name
+    }
+    |> Enum.reject(fn {_key, value} -> blank?(value) end)
+    |> Map.new()
+  end
+
+  defp blank?(value), do: is_nil(value) or value == ""
+
+  defp non_blank?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_blank?(_value), do: false
+
   defp next_rework_node_key(registry, node_key) do
     existing_keys =
       registry
@@ -550,7 +714,7 @@ defmodule SymphonyElixir.Workflow.Controller do
   defp rework_issue_title(_node, _issue), do: "返工任务"
 
   defp rework_issue_description(registry, node_key, node, issue, decision) do
-    packet = node["completion_packet"] || %{}
+    result = node["issue_result"] || %{}
 
     """
     Root issue: #{registry["root_issue_identifier"]}
@@ -565,11 +729,11 @@ defmodule SymphonyElixir.Workflow.Controller do
     Original task:
     #{node["instructions"] || node["title"] || issue.title || "-"}
 
-    Previous completion summary:
-    #{packet["summary"] || "-"}
+    Previous issue result summary:
+    #{result["summary"] || "-"}
 
     Previous evidence:
-    #{format_list(packet["evidence"] || [])}
+    #{format_list(result["evidence"] || [])}
     """
     |> String.trim()
   end
@@ -582,11 +746,22 @@ defmodule SymphonyElixir.Workflow.Controller do
         |> Map.put("workflow_semantics", "superseded")
         |> Map.put("superseded_by", rework_key)
         |> Map.put("review_summary", decision["summary"])
+        |> maybe_put_issue_result(decision["issue_result"])
 
       node ->
         node
     end)
   end
+
+  defp maybe_supersede_review_node(registry, nil, _rework_key, _decision), do: registry
+
+  defp maybe_supersede_review_node(registry, review_node_key, rework_key, decision) do
+    supersede_node(registry, review_node_key, rework_key, decision)
+  end
+
+  defp maybe_put_issue_result(node, nil), do: node
+  defp maybe_put_issue_result(node, issue_result) when is_map(issue_result), do: Map.put(node, "issue_result", issue_result)
+  defp maybe_put_issue_result(node, _issue_result), do: node
 
   defp put_rework_node(registry, rework_key, original_node_key, original_node, rework_issue, decision, dependencies) do
     Registry.put_node(registry, rework_key, %{
@@ -605,7 +780,7 @@ defmodule SymphonyElixir.Workflow.Controller do
       "title" => rework_issue.title,
       "rework_of" => original_node_key,
       "review_summary" => decision["summary"],
-      "previous_completion_packet" => original_node["completion_packet"]
+      "previous_issue_result" => original_node["issue_result"]
     })
   end
 
@@ -664,24 +839,9 @@ defmodule SymphonyElixir.Workflow.Controller do
     end)
   end
 
-  defp maybe_store_completion_packet(%Issue{} = issue, packet) when is_map(packet) do
-    case Registry.load_by_issue_id(issue.id) do
-      {:ok, registry, node_key, _node} ->
-        registry
-        |> put_node_completion_packet(node_key, packet)
-        |> Registry.save!()
-
-      {:error, :not_found} ->
-        :ok
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp put_node_completion_packet(registry, node_key, packet) do
+  defp put_node_issue_result(registry, node_key, result) do
     update_in(registry, ["nodes", node_key], fn
-      %{} = node -> Map.put(node, "completion_packet", packet)
+      %{} = node -> Map.put(node, "issue_result", result)
       node -> node
     end)
   end
@@ -695,7 +855,7 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp maybe_complete_registry(registry) do
     if workflow_completed?(registry) do
-      Map.put(registry, "status", "completed")
+      Registry.put_status(registry, "completed", %{})
     else
       registry
     end
@@ -741,14 +901,9 @@ defmodule SymphonyElixir.Workflow.Controller do
     end)
   end
 
-  defp workflow_root_identifier_for_issue(%Issue{id: issue_id, identifier: identifier}) when is_binary(issue_id) do
-    case Registry.load_by_issue_id(issue_id) do
-      {:ok, registry, _node_key, _node} -> registry["root_issue_identifier"] || identifier
-      {:error, _reason} -> identifier
-    end
-  end
-
   defp node_description(root_issue, node, dependencies, handoffs, plan) do
+    completion_conditions = node["completion_conditions"] || []
+
     """
     Root issue: #{root_issue.identifier}
     Root issue id: #{root_issue.id}
@@ -762,6 +917,9 @@ defmodule SymphonyElixir.Workflow.Controller do
     Dependencies:
     #{format_list(dependencies)}
 
+    Completion conditions:
+    #{format_list(completion_conditions)}
+
     Handoff:
     #{format_list(handoffs)}
 
@@ -772,13 +930,50 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp render_plan_comment(root_issue, plan, registry) do
+    edges = registry["edges"] || []
+    dependency_map = dependency_map(edges)
+
     derived_lines =
       registry["nodes"]
       |> Enum.reject(fn {node_key, _node} -> node_key == "root" end)
       |> Enum.map(fn {node_key, node} ->
-        "- #{node_key}: #{node["issue_identifier"]} #{node["task_type"]} #{node["status"]}"
+        deps = Map.get(dependency_map, node_key, [])
+
+        dep_info =
+          case deps do
+            [] -> " (no dependencies)"
+            _ -> " (depends on: #{Enum.join(deps, ", ")})"
+          end
+
+        conditions = node["completion_conditions"] || []
+
+        cond_info =
+          case conditions do
+            [] -> ""
+            _ -> " (completion: #{Enum.join(conditions, "; ")})"
+          end
+
+        "- #{node_key}: #{node["issue_identifier"]} #{node["task_type"]} #{node["status"]}#{dep_info}#{cond_info}"
       end)
       |> Enum.join("\n")
+
+    edge_lines =
+      case edges do
+        [] ->
+          ""
+
+        _ ->
+          formatted_edges =
+            edges
+            |> Enum.map(fn edge ->
+              from = edge["from"] || edge[:from]
+              to = edge["to"] || edge[:to]
+              "- #{from} -> #{to}"
+            end)
+            |> Enum.join("\n")
+
+          "\n\nDependencies (edges):\n#{formatted_edges}"
+      end
 
     """
     ## 规划摘要
@@ -789,7 +984,7 @@ defmodule SymphonyElixir.Workflow.Controller do
     Summary: #{plan["summary"]}
 
     Derived issues:
-    #{derived_lines}
+    #{derived_lines}#{edge_lines}
     """
     |> String.trim()
   end
@@ -844,28 +1039,32 @@ defmodule SymphonyElixir.Workflow.Controller do
     %{
       "root_issue_id" => registry["root_issue_id"],
       "root_issue_identifier" => registry["root_issue_identifier"],
+      "root_workspace" => root_workspace_for_registry(registry),
       "node_key" => node_key,
       "task_type" => node["task_type"],
       "instructions" => node["instructions"],
       "dependencies" => node["dependencies"] || [],
       "handoff" => node["handoff"] || [],
-      "upstream_packets" => upstream_packets(registry, node),
+      "upstream_results" => upstream_results(registry, node),
+      "upstream_workspaces" => upstream_workspaces(registry, node),
       "evidence_expectations" => node["evidence_expectations"] || [],
       "issue_identifier" => node["issue_identifier"],
       "rework_of" => node["rework_of"],
       "review_summary" => node["review_summary"],
-      "previous_completion_packet" => node["previous_completion_packet"]
+      "previous_issue_result" => node["previous_issue_result"]
     }
   end
 
-  defp upstream_packets(registry, node) when is_map(registry) and is_map(node) do
+  defp root_workspace_for_registry(registry), do: Registry.root_workspace_path(registry)
+
+  defp upstream_results(registry, node) when is_map(registry) and is_map(node) do
     node
     |> Map.get("dependencies", [])
     |> Enum.flat_map(fn dependency ->
       case Registry.node(registry, dependency) do
-        %{"completion_packet" => packet} = upstream_node when is_map(packet) ->
+        %{"issue_result" => result} = upstream_node when is_map(result) ->
           [
-            packet
+            result
             |> Map.put_new("node_key", upstream_node["node_key"] || dependency)
             |> Map.put_new("issue_identifier", upstream_node["issue_identifier"])
           ]
@@ -876,7 +1075,41 @@ defmodule SymphonyElixir.Workflow.Controller do
     end)
   end
 
-  defp upstream_packets(_registry, _node), do: []
+  defp upstream_results(_registry, _node), do: []
+
+  defp upstream_workspaces(registry, node) when is_map(registry) and is_map(node) do
+    node
+    |> Map.get("dependencies", [])
+    |> Enum.flat_map(fn dependency ->
+      case Registry.node(registry, dependency) do
+        %{} = upstream_node ->
+          upstream_workspace(dependency, upstream_node)
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp upstream_workspaces(_registry, _node), do: []
+
+  defp upstream_workspace(dependency, upstream_node) do
+    issue_identifier = upstream_node["issue_identifier"]
+    workspace = Registry.issue_workspace_path(issue_identifier)
+
+    if is_binary(issue_identifier) and is_binary(workspace) do
+      [
+        %{
+          "node_key" => upstream_node["node_key"] || dependency,
+          "issue_id" => upstream_node["issue_id"],
+          "issue_identifier" => issue_identifier,
+          "workspace" => workspace
+        }
+      ]
+    else
+      []
+    end
+  end
 
   defp dependency_map(edges) do
     Enum.reduce(edges, %{}, fn edge, acc ->
@@ -906,10 +1139,23 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp format_list(values) when is_list(values) and values != [] do
-    Enum.map_join(values, "\n", &"- #{&1}")
+    Enum.map_join(values, "\n", &"- #{format_list_item(&1)}")
   end
 
   defp format_list([]), do: "-"
   defp format_list(value) when is_binary(value), do: value
-  defp format_list(_value), do: "-"
+  defp format_list(value), do: format_list_item(value)
+
+  defp format_list_item(value) when is_binary(value), do: value
+  defp format_list_item(value) when is_number(value) or is_boolean(value), do: to_string(value)
+  defp format_list_item(nil), do: "null"
+
+  defp format_list_item(value) when is_map(value) or is_list(value) do
+    case Jason.encode(value) do
+      {:ok, encoded} -> encoded
+      {:error, _reason} -> inspect(value)
+    end
+  end
+
+  defp format_list_item(value), do: inspect(value)
 end

@@ -49,11 +49,14 @@ defmodule SymphonyElixir.Workflow do
     load(workflow_file_path())
   end
 
-  @spec load(Path.t()) :: {:ok, loaded_workflow()} | {:error, term()}
-  def load(path) when is_binary(path) do
+  @spec load(Path.t(), keyword()) :: {:ok, loaded_workflow()} | {:error, term()}
+  def load(path, opts \\ []) when is_binary(path) do
     case File.read(path) do
       {:ok, content} ->
-        parse(content)
+        with {:ok, workflow} <- parse(content),
+             {:ok, workflow} <- apply_local_overlay(path, workflow, opts) do
+          {:ok, workflow}
+        end
 
       {:error, reason} ->
         {:error, {:missing_workflow_file, path, reason}}
@@ -85,6 +88,53 @@ defmodule SymphonyElixir.Workflow do
     end
   end
 
+  defp apply_local_overlay(path, %{config: config} = workflow, opts) do
+    overlay_path = local_overlay_path(path)
+
+    cond do
+      not local_overlay_enabled?(opts) ->
+        {:ok, workflow}
+
+      legacy_local_workflow?(path) ->
+        {:ok, workflow}
+
+      not File.regular?(overlay_path) ->
+        {:ok, workflow}
+
+      true ->
+        case File.read(overlay_path) do
+          {:ok, content} ->
+            case yaml_to_map(content) do
+              {:ok, overlay} ->
+                {:ok, %{workflow | config: deep_merge(config, overlay)}}
+
+              {:error, :workflow_front_matter_not_a_map} ->
+                {:error, {:workflow_local_overlay_not_a_map, overlay_path}}
+
+              {:error, reason} ->
+                {:error, {:workflow_local_overlay_parse_error, overlay_path, reason}}
+            end
+
+          {:error, reason} ->
+            {:error, {:workflow_local_overlay_read_error, overlay_path, reason}}
+        end
+    end
+  end
+
+  defp local_overlay_path(path) do
+    Path.join(Path.dirname(path), "WORKFLOW.local.yml")
+  end
+
+  defp local_overlay_enabled?(opts) do
+    Keyword.get_lazy(opts, :local_overlay, fn ->
+      Application.get_env(:symphony_elixir, :local_workflow_overlay, true)
+    end)
+  end
+
+  defp legacy_local_workflow?(path) do
+    Path.basename(path) == "WORKFLOW.local.md"
+  end
+
   defp strip_utf8_bom(<<0xEF, 0xBB, 0xBF, rest::binary>>), do: rest
   defp strip_utf8_bom(content), do: content
 
@@ -106,8 +156,12 @@ defmodule SymphonyElixir.Workflow do
   end
 
   defp front_matter_yaml_to_map(lines) do
-    yaml = Enum.join(lines, "\n")
+    lines
+    |> Enum.join("\n")
+    |> yaml_to_map()
+  end
 
+  defp yaml_to_map(yaml) do
     if String.trim(yaml) == "" do
       {:ok, %{}}
     else
@@ -118,6 +172,14 @@ defmodule SymphonyElixir.Workflow do
       end
     end
   end
+
+  defp deep_merge(left, right) when is_map(left) and is_map(right) do
+    Map.merge(left, right, fn _key, left_value, right_value ->
+      deep_merge(left_value, right_value)
+    end)
+  end
+
+  defp deep_merge(_left, right), do: right
 
   defp maybe_reload_store do
     if Process.whereis(WorkflowStore) do

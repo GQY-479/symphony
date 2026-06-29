@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  import ExUnit.CaptureLog
+
   alias SymphonyElixir.Agent.Router
   alias SymphonyElixir.Config.Schema
 
@@ -11,7 +13,7 @@ defmodule SymphonyElixir.CoreTest do
       poll_interval_ms: nil,
       tracker_active_states: nil,
       tracker_terminal_states: nil,
-      codex_command: nil
+      codex_command: "codex app-server"
     )
 
     config = Config.settings!()
@@ -21,9 +23,10 @@ defmodule SymphonyElixir.CoreTest do
     assert config.tracker.assignee == nil
     assert config.workspace.preserve_terminal == false
     assert config.agent.max_turns == 20
-    assert config.orchestration.enabled == false
-    assert config.orchestration.planner_agent == "codex"
-    assert config.orchestration.reviewer_agent == "codex"
+    assert config.orchestration.enabled == true
+    assert config.orchestration.mode == "workflow"
+    assert config.orchestration.planner_agent == "mimocode"
+    assert config.orchestration.reviewer_agent == "mimocode"
     assert config.orchestration.artifact_dir == ".symphony"
     assert config.orchestration.planning_max_turns == 1
     assert config.orchestration.review_max_turns == 1
@@ -101,16 +104,17 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
   end
 
-  test "orchestration config defaults to disabled and codex planner/reviewer" do
+  test "orchestration config defaults to workflow mode and mimocode planner/reviewer" do
     write_workflow_file!(Workflow.workflow_file_path(),
       orchestration: nil
     )
 
     settings = Config.settings!()
 
-    assert settings.orchestration.enabled == false
-    assert settings.orchestration.planner_agent == "codex"
-    assert settings.orchestration.reviewer_agent == "codex"
+    assert settings.orchestration.enabled == true
+    assert settings.orchestration.mode == "workflow"
+    assert settings.orchestration.planner_agent == "mimocode"
+    assert settings.orchestration.reviewer_agent == "mimocode"
     assert settings.orchestration.artifact_dir == ".symphony"
     assert settings.orchestration.planning_max_turns == 1
     assert settings.orchestration.review_max_turns == 1
@@ -144,6 +148,15 @@ defmodule SymphonyElixir.CoreTest do
     assert settings.orchestration.artifact_dir == ".symphony"
     assert settings.orchestration.planning_max_turns == 1
     assert settings.orchestration.review_max_turns == 1
+  end
+
+  test "orchestration config rejects invalid mode" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, mode: "invalid"}
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "orchestration.mode"
   end
 
   test "orchestration config rejects unknown planner or reviewer agent" do
@@ -242,7 +255,7 @@ defmodule SymphonyElixir.CoreTest do
     assert message =~ "orchestration.review_max_turns"
   end
 
-  test "legacy codex config synthesizes the default codex agent" do
+  test "default config synthesizes mimocode as the default agent and preserves codex opt-in config" do
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_command: "custom-codex app-server",
       codex_approval_policy: "never",
@@ -252,7 +265,16 @@ defmodule SymphonyElixir.CoreTest do
 
     settings = Config.settings!()
 
-    assert settings.routing.default_agent == "codex"
+    assert settings.routing.default_agent == "mimocode"
+    assert settings.orchestration.planner_agent == "mimocode"
+    assert settings.orchestration.reviewer_agent == "mimocode"
+    assert settings.agents["mimocode"]["kind"] == "acp_stdio"
+    assert settings.agents["mimocode"]["command"] == "mimo-code"
+    assert settings.agents["mimocode"]["args"] == ["acp", "--cwd", "{{workspace}}"]
+    assert settings.agents["mimocode"]["permission_policy"] == "reject"
+    assert settings.agents["mimocode"]["config_options"] == %{"model" => "mimo/mimo-auto"}
+    assert settings.agents["mimocode"]["mcp"] == %{"linear_tools" => true}
+
     assert settings.agents["codex"]["kind"] == "codex_app_server"
     assert settings.agents["codex"]["command"] == "custom-codex app-server"
     assert settings.agents["codex"]["approval_policy"] == "never"
@@ -314,7 +336,8 @@ defmodule SymphonyElixir.CoreTest do
       routing: %{
         default_agent: "codex",
         by_label: %{"agent:omnigent" => "omnigent"}
-      }
+      },
+      orchestration: %{planner_agent: "codex", reviewer_agent: "codex"}
     )
 
     settings = Config.settings!()
@@ -728,7 +751,7 @@ defmodule SymphonyElixir.CoreTest do
       assignee_id: "codex-user"
     }
 
-    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+    assert {:ok, %{id: "mimocode", kind: "cli_run", routing_reason: %{source: :label, matched: "agent:mimo"}}} =
              Router.resolve(issue, Config.settings!())
   end
 
@@ -746,10 +769,10 @@ defmodule SymphonyElixir.CoreTest do
 
     settings = Config.settings!()
 
-    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+    assert {:ok, %{id: "mimocode", kind: "cli_run", routing_reason: %{source: :assignee, matched: "mimo-user"}}} =
              Router.resolve(%Issue{assignee_id: "mimo-user"}, settings)
 
-    assert {:ok, %{id: "codex", kind: "codex_app_server"}} =
+    assert {:ok, %{id: "codex", kind: "codex_app_server", routing_reason: %{source: :default}}} =
              Router.resolve(%Issue{assignee_id: "someone-else"}, settings)
   end
 
@@ -768,10 +791,10 @@ defmodule SymphonyElixir.CoreTest do
         }
       })
 
-    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+    assert {:ok, %{id: "mimocode", kind: "cli_run", routing_reason: %{source: :label}}} =
              Router.resolve(%Issue{labels: ["agent:mimo"]}, settings)
 
-    assert {:ok, %{id: "mimocode", kind: "cli_run"}} =
+    assert {:ok, %{id: "mimocode", kind: "cli_run", routing_reason: %{source: :assignee, matched: "mimo-user"}}} =
              Router.resolve(%Issue{labels: nil, assignee_id: "mimo-user"}, settings)
   end
 
@@ -906,13 +929,20 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    projects = Map.get(tracker, "projects")
+    assert is_map(projects)
+    assert Map.get(projects, "symphony") |> Map.get("slug") |> is_binary()
+    assert Map.get(projects, "deepquest") |> Map.get("slug") |> is_binary()
+    assert Map.get(projects, "symphony") |> Map.get("repository") |> is_binary()
+    assert Map.get(projects, "deepquest") |> Map.get("repository") |> is_list()
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
+    assert Map.get(hooks, "after_create") =~ "SYMPHONY_PROJECT_REPOSITORIES"
+    assert Map.get(hooks, "after_create") =~ "SYMP_PROJECT_REPOSITORY"
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 \"$repo\" ."
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
@@ -920,6 +950,46 @@ defmodule SymphonyElixir.CoreTest do
     assert String.trim(prompt) != ""
     assert is_binary(Config.workflow_prompt())
     assert Config.workflow_prompt() == prompt
+  end
+
+  test "WORKFLOW.local.example.yml overlays runtime config without replacing workflow prompt" do
+    original_workflow_path = Workflow.workflow_file_path()
+
+    workflow_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-local-overlay-example-#{System.unique_integer([:positive])}"
+      )
+
+    workflow_path = Path.join(workflow_root, "WORKFLOW.md")
+    overlay_path = Path.join(workflow_root, "WORKFLOW.local.yml")
+
+    on_exit(fn ->
+      Workflow.set_workflow_file_path(original_workflow_path)
+      if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+      File.rm_rf(workflow_root)
+    end)
+
+    File.mkdir_p!(workflow_root)
+    File.cp!(Path.expand("../../WORKFLOW.md", __DIR__), workflow_path)
+    File.cp!(Path.expand("../../WORKFLOW.local.example.yml", __DIR__), overlay_path)
+
+    Workflow.set_workflow_file_path(workflow_path)
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+    assert {:ok, %{config: config, prompt: prompt}} = Workflow.load(workflow_path, local_overlay: true)
+
+    orchestration = Map.get(config, "orchestration", %{})
+
+    assert Map.get(orchestration, "enabled") == true
+    assert Map.get(orchestration, "planner_agent") == "mimocode"
+    assert Map.get(orchestration, "reviewer_agent") == "mimocode"
+    assert Map.get(orchestration, "planning_max_turns") == 1
+    assert Map.get(orchestration, "review_max_turns") == 1
+    assert get_in(config, ["tracker", "projects", "symphony", "slug"]) == "your-linear-project-slug"
+    assert get_in(config, ["workspace", "root"]) == "~/code/symphony-workspaces-local"
+    assert String.trim(prompt) != ""
+    assert prompt =~ "Do not move the current Linear issue to signal completion, handoff, review, or closure"
   end
 
   test "linear api token resolves from LINEAR_API_KEY env var" do
@@ -978,6 +1048,89 @@ defmodule SymphonyElixir.CoreTest do
     Workflow.set_workflow_file_path(app_workflow_path)
 
     assert Workflow.workflow_file_path() == app_workflow_path
+  end
+
+  test "workflow load applies local yaml overlay to config while keeping base prompt" do
+    workflow_path = Workflow.workflow_file_path()
+
+    write_workflow_file!(workflow_path,
+      tracker_project_slug: nil,
+      tracker_projects: %{
+        "symphony" => %{
+          "slug" => "shared-symphony",
+          "repository" => "https://github.com/openai/symphony"
+        }
+      },
+      max_concurrent_agents: 10,
+      codex_command: "codex app-server",
+      prompt: "Shared prompt only"
+    )
+
+    overlay_path = Path.join(Path.dirname(workflow_path), "WORKFLOW.local.yml")
+
+    File.write!(overlay_path, """
+    tracker:
+      assignee: me
+      projects:
+        symphony:
+          slug: local-symphony
+        deepquest:
+          slug: local-deepquest
+          repository:
+            - /mnt/c/Users/GQY47/coding/DeepQuest
+            - https://github.com/GQY-479/DeepQuest
+    agent:
+      max_concurrent_agents: 2
+    agents:
+      codex:
+        command: local-codex app-server
+    """)
+
+    assert {:ok, %{config: config, prompt: "Shared prompt only", prompt_template: "Shared prompt only"}} =
+             Workflow.load(workflow_path, local_overlay: true)
+
+    assert get_in(config, ["tracker", "assignee"]) == "me"
+    assert get_in(config, ["tracker", "projects", "symphony", "slug"]) == "local-symphony"
+
+    assert get_in(config, ["tracker", "projects", "symphony", "repository"]) ==
+             "https://github.com/openai/symphony"
+
+    assert get_in(config, ["tracker", "projects", "deepquest", "repository"]) == [
+             "/mnt/c/Users/GQY47/coding/DeepQuest",
+             "https://github.com/GQY-479/DeepQuest"
+           ]
+
+    assert get_in(config, ["agent", "max_concurrent_agents"]) == 2
+    assert get_in(config, ["agents", "codex", "command"]) == "local-codex app-server"
+  end
+
+  test "workflow load reports invalid local yaml overlay" do
+    workflow_path = Workflow.workflow_file_path()
+    overlay_path = Path.join(Path.dirname(workflow_path), "WORKFLOW.local.yml")
+
+    File.write!(overlay_path, "tracker:\n  projects: \"unterminated\n")
+
+    assert {:error, {:workflow_local_overlay_parse_error, ^overlay_path, _reason}} =
+             Workflow.load(workflow_path, local_overlay: true)
+  end
+
+  test "workflow load can skip local yaml overlay" do
+    workflow_path = Workflow.workflow_file_path()
+
+    write_workflow_file!(workflow_path,
+      tracker_assignee: nil,
+      max_concurrent_agents: 10,
+      prompt: "Base prompt"
+    )
+
+    overlay_path = Path.join(Path.dirname(workflow_path), "WORKFLOW.local.yml")
+    File.write!(overlay_path, "tracker:\n  assignee: me\nagent:\n  max_concurrent_agents: 2\n")
+
+    assert {:ok, %{config: config, prompt: "Base prompt"}} =
+             Workflow.load(workflow_path, local_overlay: false)
+
+    assert get_in(config, ["tracker", "assignee"]) == nil
+    assert get_in(config, ["agent", "max_concurrent_agents"]) == 10
   end
 
   test "workflow load accepts prompt-only files without front matter" do
@@ -1347,6 +1500,60 @@ defmodule SymphonyElixir.CoreTest do
     assert updated_entry.issue.state == "In Progress"
   end
 
+  test "workflow running issue logs artifact guidance when non-active state stops it" do
+    issue_id = "issue-workflow-review-drift"
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: "MT-566",
+          issue: %Issue{
+            id: issue_id,
+            identifier: "MT-566",
+            state: "In Progress"
+          },
+          started_at: DateTime.utc_now(),
+          workflow_phase: :issue,
+          workspace_path: "/tmp/symphony-workflow-drift/MT-566"
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-566",
+      state: "In Review",
+      title: "Moved to review",
+      description: "Agent should have used an artifact",
+      labels: []
+    }
+
+    log =
+      capture_log(fn ->
+        updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+        refute Map.has_key?(updated_state.running, issue_id)
+        refute MapSet.member?(updated_state.claimed, issue_id)
+      end)
+
+    refute Process.alive?(agent_pid)
+    assert log =~ "Issue moved to non-active state"
+    assert log =~ "workflow_phase=issue"
+    assert log =~ "artifact handoff may not have been consumed"
+  end
+
   test "reconcile stops running issue when it is reassigned away from this worker" do
     issue_id = "issue-reassigned"
 
@@ -1653,6 +1860,7 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    before_down_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
     Process.sleep(50)
     state = :sys.get_state(pid)
@@ -1660,7 +1868,7 @@ defmodule SymphonyElixir.CoreTest do
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 39_500, 40_500)
+    assert_due_in_range(due_at_ms, before_down_ms, 39_500, 40_500)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -1692,6 +1900,7 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    before_down_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
     Process.sleep(50)
     state = :sys.get_state(pid)
@@ -1699,7 +1908,7 @@ defmodule SymphonyElixir.CoreTest do
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 9_000, 10_500)
+    assert_due_in_range(due_at_ms, before_down_ms, 9_000, 10_500)
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -1820,7 +2029,11 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+    assert_due_in_range(due_at_ms, System.monotonic_time(:millisecond), min_remaining_ms, max_remaining_ms)
+  end
+
+  defp assert_due_in_range(due_at_ms, baseline_ms, min_remaining_ms, max_remaining_ms) do
+    remaining_ms = due_at_ms - baseline_ms
 
     assert remaining_ms >= min_remaining_ms
     assert remaining_ms <= max_remaining_ms
@@ -1930,6 +2143,52 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Ticket MT-697"
     assert prompt =~ "created=2026-02-26T18:06:48Z"
     assert prompt =~ "updated=2026-02-26T18:07:03Z"
+  end
+
+  test "prompt builder appends rich issue snapshot when available" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
+
+    issue = %Issue{
+      identifier: "MT-702",
+      title: "Use complete issue context",
+      description: "Prompt should include Linear context beyond description.",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-702",
+      labels: ["workflow"],
+      snapshot: %{
+        "comments" => %{
+          "nodes" => [
+            %{
+              "id" => "comment-1",
+              "body" => "Reviewer asked for edge-case coverage.",
+              "createdAt" => "2026-06-20T01:00:00Z",
+              "user" => %{"name" => "Reviewer"}
+            }
+          ],
+          "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+        },
+        "attachments" => %{
+          "nodes" => [
+            %{"id" => "attachment-1", "title" => "Pull Request", "url" => "https://example.org/pr/1"}
+          ],
+          "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+        },
+        "history" => %{
+          "nodes" => [
+            %{"id" => "history-1", "createdAt" => "2026-06-20T00:00:00Z", "actor" => %{"name" => "Maintainer"}}
+          ],
+          "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+        }
+      }
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert prompt =~ "Ticket MT-702"
+    assert prompt =~ "Linear issue snapshot:"
+    assert prompt =~ "Reviewer asked for edge-case coverage."
+    assert prompt =~ "Pull Request"
+    assert prompt =~ "\"hasNextPage\": false"
   end
 
   test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do
@@ -2114,8 +2373,15 @@ defmodule SymphonyElixir.CoreTest do
       )
 
     assert prompt =~ "workflow_plan.json"
-    assert prompt =~ "direct_execution"
+    assert prompt =~ "/tmp/workspace/.symphony/workflow_plan.json"
+    assert prompt =~ "mkdir -p /tmp/workspace/.symphony"
+    retired_kind = "direct" <> "_execution"
+    refute prompt =~ retired_kind
     assert prompt =~ "issue_graph"
+    assert prompt =~ "\"kind\": \"issue_graph\""
+    assert prompt =~ "\"nodes\""
+    assert prompt =~ "\"edges\""
+    assert prompt =~ "最终回复不能替代 artifact 文件"
   end
 
   test "提示词构建器在重规划时附加 replan 上下文" do
@@ -2144,13 +2410,13 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "MT-903"
   end
 
-  test "提示词构建器附加执行阶段完成包合约" do
+  test "提示词构建器附加 issue result 合约" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
 
     issue = %Issue{
       identifier: "MT-901",
-      title: "执行阶段提示",
-      description: "确认 completion packet 合约",
+      title: "Issue 阶段提示",
+      description: "确认 issue result 合约",
       state: "In Progress",
       url: "https://example.org/issues/MT-901",
       labels: []
@@ -2158,17 +2424,78 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt =
       PromptBuilder.build_prompt(issue,
-        workflow_phase: :execution,
-        workflow_context: %{upstream_packets: [%{"summary" => "上游摘要 A"}, %{"summary" => "上游摘要 B"}]},
+        workflow_phase: :issue,
+        workflow_context: %{
+          node_key: "implementation",
+          task_type: "implementation",
+          upstream_results: [%{"summary" => "上游摘要 A"}, %{"summary" => "上游摘要 B"}],
+          upstream_workspaces: [
+            %{
+              "node_key" => "research",
+              "issue_identifier" => "MT-RESEARCH",
+              "workspace" => "/tmp/upstream-research"
+            }
+          ]
+        },
         workspace: "/tmp/workspace"
       )
 
-    assert prompt =~ "completion_packet.json"
+    assert prompt =~ "issue_result.json"
+    assert prompt =~ "schema_version"
+    assert prompt =~ "node_key"
+    assert prompt =~ "task_type"
+    assert prompt =~ "decisions"
+    assert prompt =~ "open_questions"
     assert prompt =~ "上游摘要 A"
     assert prompt =~ "上游摘要 B"
+    assert prompt =~ "/tmp/upstream-research"
+    assert prompt =~ "先检查依赖节点 workspace"
   end
 
-  test "提示词构建器附加审查阶段决策合约" do
+  test "提示词构建器在 issue 阶段附加 root workflow workspace 上下文" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
+
+    issue = %Issue{
+      identifier: "MT-ROOT-CTX",
+      title: "root workspace context",
+      description: "确认 root workflow workspace 会传给派生阶段",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-ROOT-CTX",
+      labels: []
+    }
+
+    issue_prompt =
+      PromptBuilder.build_prompt(issue,
+        workflow_phase: :issue,
+        workflow_context: %{
+          node_key: "implementation",
+          task_type: "implementation",
+          root_workspace: "/tmp/root-workspace",
+          root_issue_identifier: "ROOT-1"
+        },
+        workspace: "/tmp/derived-workspace"
+      )
+
+    review_prompt =
+      PromptBuilder.build_prompt(issue,
+        workflow_phase: :issue,
+        workflow_context: %{
+          node_key: "implementation_review",
+          task_type: "review",
+          reviews: ["implementation"],
+          root_workspace: "/tmp/root-workspace",
+          root_issue_identifier: "ROOT-1"
+        },
+        workspace: "/tmp/derived-workspace"
+      )
+
+    assert issue_prompt =~ "/tmp/root-workspace"
+    assert issue_prompt =~ "ROOT-1"
+    assert review_prompt =~ "/tmp/root-workspace"
+    assert review_prompt =~ "ROOT-1"
+  end
+
+  test "提示词构建器为 review issue 附加审查结果合约" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Base prompt")
 
     issue = %Issue{
@@ -2182,12 +2509,17 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt =
       PromptBuilder.build_prompt(issue,
-        workflow_phase: :review,
-        workflow_context: %{},
+        workflow_phase: :issue,
+        workflow_context: %{
+          node_key: "implementation_review",
+          task_type: "review",
+          reviews: ["implementation"],
+          subject_selector: %{"type" => "candidate_range"}
+        },
         workspace: "/tmp/workspace"
       )
 
-    assert prompt =~ "review_decision.json"
+    assert prompt =~ "issue_result.json"
     assert prompt =~ "pass"
     assert prompt =~ "needs_rework"
     assert prompt =~ "needs_replan"
@@ -2221,6 +2553,8 @@ defmodule SymphonyElixir.CoreTest do
       trace_file="${SYMP_TEST_CLI_TRACE:-/tmp/cli.trace}"
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
       printf 'CWD:%s\\n' "$PWD" >> "$trace_file"
+      mkdir -p .symphony
+      printf '%s\\n' '{"schema_version":1,"node_key":"implementation","task_type":"implementation","outcome":"completed","summary":"fake cli completed issue","evidence":["fake cli wrote issue result"],"decisions":["fake cli completed issue"],"open_questions":[]}' > .symphony/issue_result.json
       printf '%s\\n' '{"kind":"runner-progress"}'
       """)
 
@@ -2257,17 +2591,460 @@ defmodule SymphonyElixir.CoreTest do
       assert :ok =
                AgentRunner.run(issue, self(),
                  agent_id: "mimocode",
-                 workflow_phase: :execution,
-                 workflow_context: %{upstream_packets: [%{"summary" => "上游交接摘要"}]},
+                 workflow_phase: :issue,
+                 workflow_context: %{
+                   node_key: "implementation",
+                   task_type: "implementation",
+                   upstream_results: [%{"summary" => "上游交接摘要"}]
+                 },
                  issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
                )
 
       trace = File.read!(trace_file)
-      assert trace =~ "completion_packet.json"
+      assert trace =~ "issue_result.json"
       assert trace =~ "上游交接摘要"
       assert trace =~ Path.join(workspace_root, "MT-903")
     after
       System.delete_env("SYMP_TEST_CLI_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "AgentRunner 在 planning 产物缺失时追加 artifact 修复回合并写出 workflow_plan" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-planning-artifact-repair-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      codex_script = Path.join(test_root, "fake_codex.py")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_script, """
+      import json
+      import os
+      import sys
+
+      trace_file = os.environ["SYMP_TEST_CODEx_TRACE"]
+      turn_count = 0
+
+      def send(message):
+          print(json.dumps(message), flush=True)
+
+      def prompt_text(message):
+          return "\\n".join(
+              part.get("text", "")
+              for part in message.get("params", {}).get("input", [])
+              if isinstance(part, dict)
+          )
+
+      for line in sys.stdin:
+          message = json.loads(line)
+          method = message.get("method")
+          request_id = message.get("id")
+
+          if method == "initialize":
+              send({"id": request_id, "result": {}})
+          elif method == "initialized":
+              pass
+          elif method == "thread/start":
+              send({"id": request_id, "result": {"thread": {"id": "thread-repair"}}})
+          elif method == "turn/start":
+              turn_count += 1
+              text = prompt_text(message)
+              with open(trace_file, "a", encoding="utf-8") as handle:
+                  handle.write(f"TURN:{turn_count}\\n{text}\\n")
+
+              if turn_count == 2:
+                  os.makedirs(".symphony", exist_ok=True)
+                  with open(".symphony/workflow_plan.json", "w", encoding="utf-8") as handle:
+                      json.dump({
+                          "kind": "issue_graph",
+                          "summary": "artifact repair produced an issue graph plan",
+                          "confidence": "medium",
+                          "nodes": [
+                              {
+                                  "node_key": "implementation",
+                                  "task_type": "implementation",
+                                  "title": "Repair implementation",
+                                  "goal": "Complete the repaired planning workflow",
+                                  "agent_id": "codex"
+                              },
+                              {
+                                  "node_key": "final_review",
+                                  "task_type": "review",
+                                  "title": "Final review",
+                                  "goal": "Review the root candidate result",
+                                  "agent_id": "codex",
+                                  "reviews": ["__root_candidate__"],
+                                  "subject_selector": {"type": "final_candidate_range"}
+                              }
+                          ],
+                          "edges": [{"from": "implementation", "to": "final_review"}]
+                      }, handle)
+
+              send({"id": request_id, "result": {"turn": {"id": f"turn-{turn_count}"}}})
+              send({"method": "turn/completed"})
+          elif request_id is not None:
+              send({"id": request_id, "result": {}})
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      exec python3 -u "#{codex_script}"
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        agents: %{
+          codex: %{
+            kind: "codex_app_server",
+            command: "#{codex_binary} app-server",
+            timeout_ms: 10_000,
+            read_timeout_ms: 5_000
+          }
+        },
+        routing: %{default_agent: "codex"},
+        orchestration: %{
+          enabled: true,
+          planner_agent: "codex",
+          reviewer_agent: "codex",
+          artifact_dir: ".symphony",
+          planning_max_turns: 1,
+          review_max_turns: 1
+        },
+        max_turns: 1
+      )
+
+      issue = %Issue{
+        id: "issue-planning-repair",
+        identifier: "MT-905",
+        title: "规划产物修复",
+        description: "第一轮完成但没有写 workflow_plan.json",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-905",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 workflow_phase: :planning,
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      workspace = Path.join(workspace_root, issue.identifier)
+      assert File.exists?(Path.join([workspace, ".symphony", "workflow_plan.json"]))
+      assert File.read!(trace_file) =~ "上一轮 planning 已正常结束，但缺少必需 artifact"
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "AgentRunner issue artifact repair prompt includes full issue result schema" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-issue-artifact-repair-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      codex_script = Path.join(test_root, "fake_codex.py")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_script, """
+      import json
+      import os
+      import sys
+
+      trace_file = os.environ["SYMP_TEST_CODEx_TRACE"]
+      turn_count = 0
+
+      def send(message):
+          print(json.dumps(message), flush=True)
+
+      def prompt_text(message):
+          return "\\n".join(
+              part.get("text", "")
+              for part in message.get("params", {}).get("input", [])
+              if isinstance(part, dict)
+          )
+
+      for line in sys.stdin:
+          message = json.loads(line)
+          method = message.get("method")
+          request_id = message.get("id")
+
+          if method == "initialize":
+              send({"id": request_id, "result": {}})
+          elif method == "initialized":
+              pass
+          elif method == "thread/start":
+              send({"id": request_id, "result": {"thread": {"id": "thread-issue-repair"}}})
+          elif method == "turn/start":
+              turn_count += 1
+              text = prompt_text(message)
+              with open(trace_file, "a", encoding="utf-8") as handle:
+                  handle.write(f"TURN:{turn_count}\\n{text}\\n")
+
+              if turn_count == 2:
+                  os.makedirs(".symphony", exist_ok=True)
+                  with open(".symphony/issue_result.json", "w", encoding="utf-8") as handle:
+                      json.dump({
+                          "schema_version": 1,
+                          "node_key": "implementation",
+                          "task_type": "implementation",
+                          "outcome": "completed",
+                          "summary": "issue repair produced issue result",
+                          "evidence": ["repair prompt listed issue schema"],
+                          "decisions": [],
+                          "open_questions": []
+                      }, handle)
+
+              send({"id": request_id, "result": {"turn": {"id": f"turn-{turn_count}"}}})
+              send({"method": "turn/completed"})
+          elif request_id is not None:
+              send({"id": request_id, "result": {}})
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      exec python3 -u "#{codex_script}"
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        agents: %{
+          codex: %{
+            kind: "codex_app_server",
+            command: "#{codex_binary} app-server",
+            timeout_ms: 10_000,
+            read_timeout_ms: 5_000
+          }
+        },
+        routing: %{default_agent: "codex"},
+        orchestration: %{
+          enabled: true,
+          planner_agent: "codex",
+          reviewer_agent: "codex",
+          artifact_dir: ".symphony",
+          planning_max_turns: 1,
+          review_max_turns: 1
+        },
+        max_turns: 1
+      )
+
+      issue = %Issue{
+        id: "issue-execution-repair",
+        identifier: "MT-906",
+        title: "Issue 产物修复",
+        description: "第一轮完成但没有写 issue_result.json",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-906",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 workflow_phase: :issue,
+                 workflow_context: %{node_key: "implementation", task_type: "implementation"},
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      workspace = Path.join(workspace_root, issue.identifier)
+      assert File.exists?(Path.join([workspace, ".symphony", "issue_result.json"]))
+
+      trace = File.read!(trace_file)
+      assert trace =~ "上一轮 issue 已正常结束，但缺少必需 artifact"
+      assert trace =~ "schema_version"
+      assert trace =~ "node_key"
+      assert trace =~ "task_type"
+      assert trace =~ "decisions"
+      assert trace =~ "open_questions"
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "AgentRunner review issue artifact repair prompt includes valid issue result schema" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-agent-runner-review-artifact-repair-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      codex_binary = Path.join(test_root, "fake-codex")
+      codex_script = Path.join(test_root, "fake_codex.py")
+      trace_file = Path.join(test_root, "codex.trace")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "# test")
+      System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+
+      File.write!(codex_script, """
+      import json
+      import os
+      import sys
+
+      trace_file = os.environ["SYMP_TEST_CODEx_TRACE"]
+      turn_count = 0
+
+      def send(message):
+          print(json.dumps(message), flush=True)
+
+      def prompt_text(message):
+          return "\\n".join(
+              part.get("text", "")
+              for part in message.get("params", {}).get("input", [])
+              if isinstance(part, dict)
+          )
+
+      for line in sys.stdin:
+          message = json.loads(line)
+          method = message.get("method")
+          request_id = message.get("id")
+
+          if method == "initialize":
+              send({"id": request_id, "result": {}})
+          elif method == "initialized":
+              pass
+          elif method == "thread/start":
+              send({"id": request_id, "result": {"thread": {"id": "thread-review-repair"}}})
+          elif method == "turn/start":
+              turn_count += 1
+              text = prompt_text(message)
+              with open(trace_file, "a", encoding="utf-8") as handle:
+                  handle.write(f"TURN:{turn_count}\\n{text}\\n")
+
+              if turn_count == 2:
+                  os.makedirs(".symphony", exist_ok=True)
+                  with open(".symphony/issue_result.json", "w", encoding="utf-8") as handle:
+                      json.dump({
+                          "schema_version": 1,
+                          "node_key": "implementation_review",
+                          "task_type": "review",
+                          "outcome": "pass",
+                          "reviews": ["implementation"],
+                          "summary": "review repair produced valid issue result",
+                          "evidence": ["fake review evidence"],
+                          "decisions": [],
+                          "open_questions": []
+                      }, handle)
+
+              send({"id": request_id, "result": {"turn": {"id": f"turn-{turn_count}"}}})
+              send({"method": "turn/completed"})
+          elif request_id is not None:
+              send({"id": request_id, "result": {}})
+      """)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      exec python3 -u "#{codex_script}"
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+      System.put_env("SYMP_TEST_CODEx_TRACE", trace_file)
+
+      on_exit(fn -> System.delete_env("SYMP_TEST_CODEx_TRACE") end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
+        agents: %{
+          codex: %{
+            kind: "codex_app_server",
+            command: "#{codex_binary} app-server",
+            timeout_ms: 10_000,
+            read_timeout_ms: 5_000
+          }
+        },
+        routing: %{default_agent: "codex"},
+        orchestration: %{
+          enabled: true,
+          planner_agent: "codex",
+          reviewer_agent: "codex",
+          artifact_dir: ".symphony",
+          planning_max_turns: 1,
+          review_max_turns: 1
+        },
+        max_turns: 1
+      )
+
+      issue = %Issue{
+        id: "issue-review-repair",
+        identifier: "MT-907",
+        title: "审查产物修复",
+        description: "第一轮完成但没有写 issue_result.json",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-907",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(issue, self(),
+                 workflow_phase: :issue,
+                 workflow_context: %{
+                   node_key: "implementation_review",
+                   task_type: "review",
+                   reviews: ["implementation"]
+                 },
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
+
+      workspace = Path.join(workspace_root, issue.identifier)
+      assert File.exists?(Path.join([workspace, ".symphony", "issue_result.json"]))
+
+      trace = File.read!(trace_file)
+      assert trace =~ "上一轮 issue 已正常结束，但缺少必需 artifact"
+      assert trace =~ "schema_version"
+      assert trace =~ "outcome"
+      assert trace =~ "reviews"
+      assert trace =~ "summary"
+    after
+      System.delete_env("SYMP_TEST_CODEx_TRACE")
       File.rm_rf(test_root)
     end
   end
@@ -2341,7 +3118,9 @@ defmodule SymphonyElixir.CoreTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server"
+        codex_command: "#{codex_binary} app-server",
+        routing: %{default_agent: "codex"},
+        orchestration: %{planner_agent: "codex", reviewer_agent: "codex"}
       )
 
       issue = %Issue{
@@ -2426,7 +3205,9 @@ defmodule SymphonyElixir.CoreTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
-        codex_command: "#{codex_binary} app-server"
+        codex_command: "#{codex_binary} app-server",
+        routing: %{default_agent: "codex"},
+        orchestration: %{planner_agent: "codex", reviewer_agent: "codex"}
       )
 
       issue = %Issue{
@@ -2599,7 +3380,7 @@ defmodule SymphonyElixir.CoreTest do
         state: "In Progress"
       }
 
-      assert_raise RuntimeError, ~r/workspace_prepare_failed/, fn ->
+      assert_raise AgentRunner.Error, ~r/workspace_prepare_failed/, fn ->
         AgentRunner.run(issue, nil, worker_host: "worker-a")
       end
 
@@ -2672,6 +3453,8 @@ defmodule SymphonyElixir.CoreTest do
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         codex_command: "#{codex_binary} app-server",
+        routing: %{default_agent: "codex"},
+        orchestration: %{planner_agent: "codex", reviewer_agent: "codex"},
         max_turns: 3
       )
 
@@ -2802,6 +3585,8 @@ defmodule SymphonyElixir.CoreTest do
         workspace_root: workspace_root,
         hook_after_create: "cp #{Path.join(template_repo, "README.md")} README.md",
         codex_command: "#{codex_binary} app-server",
+        routing: %{default_agent: "codex"},
+        orchestration: %{planner_agent: "codex", reviewer_agent: "codex"},
         max_turns: 2
       )
 

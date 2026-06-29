@@ -199,7 +199,7 @@ defmodule SymphonyElixir.McpServerTest do
     assert {:error, error} = McpServer.handle(%{"id" => 5, "method" => "not/real", "params" => %{}})
 
     assert error == %{
-             "code" => -32601,
+             "code" => -32_601,
              "message" => "Unsupported MCP method: not/real"
            }
   end
@@ -214,7 +214,7 @@ defmodule SymphonyElixir.McpServerTest do
 
   test "stdio handle_line returns parse errors for malformed json" do
     assert {:reply, encoded} = Stdio.handle_line("{not json")
-    assert %{"error" => %{"code" => -32700}, "jsonrpc" => "2.0"} = Jason.decode!(encoded)
+    assert %{"error" => %{"code" => -32_700}, "jsonrpc" => "2.0"} = Jason.decode!(encoded)
   end
 
   test "stdio runtime prepares workflow path before serving tool calls" do

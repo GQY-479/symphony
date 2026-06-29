@@ -43,6 +43,33 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("idle_with_dashboard_url", render_snapshot(snapshot_data, 0.0))
   end
 
+  test "dashboard renders all configured Linear projects" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_project_slug: nil,
+      tracker_projects: %{
+        "api" => %{"project_slug" => "api-project"},
+        "web" => %{"project_slug" => "web-project"}
+      }
+    )
+
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0)
+    plain = Snapshot.strip_ansi(rendered)
+
+    assert plain =~
+             "│ Projects: api=https://linear.app/project/api-project/issues, web=https://linear.app/project/web-project/issues"
+
+    Snapshot.assert_dashboard_snapshot!("multi_project", rendered)
+  end
+
   test "snapshot fixture: super busy dashboard" do
     snapshot_data =
       {:ok,

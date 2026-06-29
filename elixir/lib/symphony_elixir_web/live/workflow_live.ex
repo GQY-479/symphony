@@ -124,7 +124,7 @@ defmodule SymphonyElixirWeb.WorkflowLive do
     cond do
       String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
       String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
-      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
+      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-waning"
       true -> base
     end
   end

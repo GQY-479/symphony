@@ -4,7 +4,7 @@ defmodule SymphonyElixirWeb.Presenter do
   """
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
-  alias SymphonyElixir.Workflow.Registry
+  alias SymphonyElixir.Workflow.{Artifacts, Registry}
 
   @registry_atom_keys %{
     "blocked_reason" => :blocked_reason,
@@ -122,8 +122,8 @@ defmodule SymphonyElixirWeb.Presenter do
         host: workspace_host(running, retry, blocked)
       },
       attempts: %{
-        restart_count: restart_count(retry),
-        current_retry_attempt: retry_attempt(retry)
+        restart_count: restart_count(running, retry),
+        current_retry_attempt: current_retry_attempt(running, retry)
       },
       running: running && running_issue_payload(running),
       retry: retry && retry_issue_payload(retry),
@@ -140,7 +140,15 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_id_from_entries(running, retry, blocked),
     do: (running && running.issue_id) || (retry && retry.issue_id) || (blocked && blocked.issue_id)
 
-  defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
+  defp restart_count(running, retry), do: max(current_retry_attempt(running, retry) - 1, 0)
+
+  defp current_retry_attempt(running, retry) do
+    case running && Map.get(running, :retry_attempt) do
+      attempt when is_integer(attempt) and attempt > 0 -> attempt
+      _ -> retry_attempt(retry)
+    end
+  end
+
   defp retry_attempt(nil), do: 0
   defp retry_attempt(retry), do: retry.attempt || 0
 
@@ -161,6 +169,7 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
       workflow_phase: Map.get(entry, :workflow_phase),
+      workflow_artifact_path: workflow_artifact_path(entry),
       workflow_root_issue_id: Map.get(entry, :workflow_root_issue_id),
       workflow_blocked_reason: workflow_blocked_reason(entry),
       last_event: entry.last_codex_event,
@@ -201,6 +210,8 @@ defmodule SymphonyElixirWeb.Presenter do
       issue_url: Map.get(entry, :issue_url),
       state: entry.state,
       error: entry.error,
+      reason_category: Map.get(entry, :reason_category),
+      reason: Map.get(entry, :reason),
       agent_id: Map.get(entry, :agent_id),
       agent_kind: Map.get(entry, :agent_kind),
       worker_host: Map.get(entry, :worker_host),
@@ -262,6 +273,8 @@ defmodule SymphonyElixirWeb.Presenter do
       session_id: blocked.session_id,
       state: blocked.state,
       error: blocked.error,
+      reason_category: Map.get(blocked, :reason_category),
+      reason: Map.get(blocked, :reason),
       agent_id: Map.get(blocked, :agent_id),
       agent_kind: Map.get(blocked, :agent_kind),
       workflow_phase: Map.get(blocked, :workflow_phase),
@@ -286,6 +299,16 @@ defmodule SymphonyElixirWeb.Presenter do
       (retry && Map.get(retry, :worker_host)) ||
       (blocked && Map.get(blocked, :worker_host))
   end
+
+  defp workflow_artifact_path(%{workflow_phase: :planning, workspace_path: workspace})
+       when is_binary(workspace) and workspace != "",
+       do: Artifacts.workflow_plan_path(workspace)
+
+  defp workflow_artifact_path(%{workflow_phase: :issue, workspace_path: workspace})
+       when is_binary(workspace) and workspace != "",
+       do: Artifacts.issue_result_path(workspace)
+
+  defp workflow_artifact_path(_entry), do: nil
 
   defp recent_events_payload(nil), do: []
 
@@ -455,36 +478,38 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp registry_atom_key(key), do: Map.fetch!(@registry_atom_keys, key)
 
-  defp active_entry_payload(%{state: state, entry: entry}) do
+  defp active_entry_payload(%{state: state, entry: entry} = group_entry) do
     %{
       status: state,
       issue_id: Map.get(entry, :issue_id),
       issue_identifier: entry.issue_identifier,
       issue_url: Map.get(entry, :issue_url),
       session_id: Map.get(entry, :session_id),
-      phase: Map.get(entry, :workflow_phase),
+      phase: workflow_display_phase(group_entry),
       last_event: Map.get(entry, :last_event),
       last_message: Map.get(entry, :last_message)
     }
   end
 
-  defp workflow_attention_items(%{state: "blocked", entry: entry, root_issue_identifier: root_issue_identifier}) do
+  defp workflow_attention_items(%{state: "blocked", entry: entry, root_issue_identifier: root_issue_identifier} = group_entry) do
     [
       %{
         kind: "blocked",
         root_issue_identifier: root_issue_identifier,
         issue_identifier: entry.issue_identifier,
         reason: Map.get(entry, :workflow_blocked_reason) || Map.get(entry, :error),
-        phase: Map.get(entry, :workflow_phase)
+        phase: workflow_display_phase(group_entry)
       }
     ]
   end
 
-  defp workflow_attention_items(%{
-         state: "retrying",
-         entry: %{attempt: attempt} = entry,
-         root_issue_identifier: root_issue_identifier
-       })
+  defp workflow_attention_items(
+         %{
+           state: "retrying",
+           entry: %{attempt: attempt} = entry,
+           root_issue_identifier: root_issue_identifier
+         } = group_entry
+       )
        when is_integer(attempt) and attempt > 1 do
     [
       %{
@@ -493,7 +518,7 @@ defmodule SymphonyElixirWeb.Presenter do
         issue_identifier: entry.issue_identifier,
         attempt: attempt,
         reason: Map.get(entry, :error),
-        phase: Map.get(entry, :workflow_phase)
+        phase: workflow_display_phase(group_entry)
       }
     ]
   end
@@ -547,10 +572,14 @@ defmodule SymphonyElixirWeb.Presenter do
     else
       entries
       |> Enum.sort_by(&status_rank(&1.state))
-      |> Enum.find_value(&Map.get(&1.entry, :workflow_phase))
+      |> Enum.find_value(&workflow_display_phase/1)
       |> phase_label()
     end
   end
+
+  defp workflow_display_phase(%{state: "blocked", entry: %{workflow_phase: :issue}}), do: :execution
+  defp workflow_display_phase(%{state: "running", entry: %{workflow_phase: :issue}}), do: :review
+  defp workflow_display_phase(%{entry: entry}), do: Map.get(entry, :workflow_phase)
 
   defp status_rank("blocked"), do: 0
   defp status_rank("running"), do: 1

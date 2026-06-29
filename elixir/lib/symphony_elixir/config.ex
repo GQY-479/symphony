@@ -29,6 +29,15 @@ defmodule SymphonyElixir.Config do
           turn_sandbox_policy: map()
         }
 
+  @type tracker_project_entry :: %{
+          project_key: String.t(),
+          project_slug: String.t(),
+          repository_url: String.t() | nil,
+          repository_path: String.t() | nil,
+          repository_ref: String.t() | nil,
+          project_repository: String.t() | nil
+        }
+
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     case Workflow.current() do
@@ -72,6 +81,14 @@ defmodule SymphonyElixir.Config do
 
       {:error, reason} ->
         raise ArgumentError, message: "Invalid codex turn sandbox policy: #{inspect(reason)}"
+    end
+  end
+
+  @spec tracker_project_entries(Schema.t()) :: [tracker_project_entry()]
+  def tracker_project_entries(%Schema{} = settings) do
+    case configured_tracker_project_entries(settings.tracker.projects) do
+      [] -> legacy_tracker_project_entries(settings.tracker.project_slug)
+      entries -> entries
     end
   end
 
@@ -120,7 +137,8 @@ defmodule SymphonyElixir.Config do
   defp validate_semantics(settings) do
     with :ok <- validate_agents(settings),
          :ok <- validate_routing(settings),
-         :ok <- validate_orchestration(settings) do
+         :ok <- validate_orchestration(settings),
+         :ok <- validate_tracker_projects(settings.tracker.projects) do
       cond do
         is_nil(settings.tracker.kind) ->
           {:error, :missing_tracker_kind}
@@ -131,7 +149,7 @@ defmodule SymphonyElixir.Config do
         settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
           {:error, :missing_linear_api_token}
 
-        settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
+        settings.tracker.kind == "linear" and tracker_project_entries(settings) == [] ->
           {:error, :missing_linear_project_slug}
 
         true ->
@@ -162,6 +180,89 @@ defmodule SymphonyElixir.Config do
              ) do
         validate_non_blank_string("orchestration.artifact_dir", orchestration.artifact_dir)
       end
+    end
+  end
+
+  defp validate_tracker_projects(projects) when projects in [nil, %{}], do: :ok
+
+  defp validate_tracker_projects(projects) when is_map(projects) do
+    with :ok <- validate_tracker_project_entries(projects) do
+      validate_unique_tracker_project_slugs(projects)
+    end
+  end
+
+  defp validate_tracker_projects(projects) do
+    invalid_config("tracker.projects must be a map, got #{inspect(projects)}")
+  end
+
+  defp validate_tracker_project_entries(projects) do
+    Enum.reduce_while(projects, :ok, fn {project_key, project}, :ok ->
+      case validate_tracker_project_entry(project_key, project) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_tracker_project_entry(project_key, project) do
+    normalized_key = normalize_config_project_key(project_key)
+
+    cond do
+      normalized_key == nil ->
+        invalid_config("tracker.projects contains a blank project key")
+
+      not is_map(project) ->
+        invalid_config("tracker.projects[#{normalized_key}] must be a map")
+
+      not non_blank_string?(configured_project_slug(project)) ->
+        invalid_config("tracker.projects[#{normalized_key}].slug must be a non-empty string")
+
+      project_repository_source_count(project) > 1 ->
+        invalid_config("tracker.projects[#{normalized_key}] must set only one of repository_url, repository_path, or repository")
+
+      true ->
+        validate_tracker_project_repository(normalized_key, project_repository(project))
+    end
+  end
+
+  defp validate_tracker_project_repository(_project_key, nil), do: :ok
+
+  defp validate_tracker_project_repository(project_key, repository) when is_binary(repository) do
+    if String.trim(repository) == "" do
+      invalid_config("tracker.projects[#{project_key}].repository must not be blank")
+    else
+      :ok
+    end
+  end
+
+  defp validate_tracker_project_repository(project_key, repositories) when is_list(repositories) do
+    if Enum.all?(repositories, &(is_binary(&1) and String.trim(&1) != "")) do
+      :ok
+    else
+      invalid_config("tracker.projects[#{project_key}].repository must be a non-empty string or list of non-empty strings")
+    end
+  end
+
+  defp validate_tracker_project_repository(project_key, repository) do
+    invalid_config("tracker.projects[#{project_key}].repository must be a string or list of strings, got #{inspect(repository)}")
+  end
+
+  defp validate_unique_tracker_project_slugs(projects) do
+    projects
+    |> Enum.reduce_while(%{}, fn {project_key, project}, slugs ->
+      slug = normalize_config_project_slug(configured_project_slug(project))
+
+      case Map.fetch(slugs, slug) do
+        {:ok, existing_key} ->
+          {:halt, invalid_config("tracker.projects contains duplicate Linear project slug #{inspect(slug)} for #{existing_key} and #{normalize_config_project_key(project_key)}")}
+
+        :error ->
+          {:cont, Map.put(slugs, slug, normalize_config_project_key(project_key))}
+      end
+    end)
+    |> case do
+      %{} -> :ok
+      {:error, _reason} = error -> error
     end
   end
 
@@ -445,8 +546,15 @@ defmodule SymphonyElixir.Config do
           invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string values")
         end
 
+      {:ok, value} when is_list(value) ->
+        if Enum.all?(value, &is_binary/1) do
+          :ok
+        else
+          invalid_config("agents.#{agent_id}.#{field} must be a list of strings")
+        end
+
       {:ok, value} ->
-        invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string values, got #{inspect(value)}")
+        invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string values or a list of strings, got #{inspect(value)}")
     end
   end
 
@@ -608,6 +716,174 @@ defmodule SymphonyElixir.Config do
   end
 
   defp invalid_config(message), do: {:error, {:invalid_workflow_config, message}}
+
+  defp configured_tracker_project_entries(projects) when is_map(projects) do
+    projects
+    |> Enum.map(fn {project_key, project} ->
+      repository_url = project_repository_url(project)
+      repository_path = project_repository_path(project)
+      repository = project_repository(project)
+
+      %{
+        project_key: normalize_config_project_key(project_key),
+        project_slug: normalize_config_project_slug(configured_project_slug(project)),
+        repository_url: repository_url || single_repository_url(repository),
+        repository_path: repository_path || single_repository_path(repository),
+        repository_ref: project_repository_ref(project),
+        project_repository: repository_url || repository_path || normalize_config_project_repository(repository)
+      }
+    end)
+    |> Enum.reject(fn entry -> blank_string?(entry.project_key) or blank_string?(entry.project_slug) end)
+    |> Enum.sort_by(& &1.project_key)
+  end
+
+  defp configured_tracker_project_entries(_projects), do: []
+
+  defp legacy_tracker_project_entries(project_slug) do
+    case normalize_config_project_slug(project_slug) do
+      nil ->
+        []
+
+      slug ->
+        [
+          %{
+            project_key: slug,
+            project_slug: slug,
+            repository_url: nil,
+            repository_path: nil,
+            repository_ref: nil,
+            project_repository: nil
+          }
+        ]
+    end
+  end
+
+  defp configured_project_slug(%{} = project) do
+    Map.get(project, "slug") || Map.get(project, "project_slug")
+  end
+
+  defp configured_project_slug(_project), do: nil
+
+  defp project_repository_url(project) when is_map(project) do
+    normalize_optional_config_string(Map.get(project, "repository_url"))
+  end
+
+  defp project_repository_url(_project), do: nil
+
+  defp project_repository_path(project) when is_map(project) do
+    normalize_optional_config_string(Map.get(project, "repository_path"))
+  end
+
+  defp project_repository_path(_project), do: nil
+
+  defp project_repository(project) when is_map(project) do
+    Map.get(project, "repository") || Map.get(project, "repositories")
+  end
+
+  defp project_repository(_project), do: nil
+
+  defp project_repository_source_count(project) when is_map(project) do
+    [
+      project_repository_url(project),
+      project_repository_path(project),
+      normalize_config_project_repository(project_repository(project))
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> length()
+  end
+
+  defp project_repository_source_count(_project), do: 0
+
+  defp project_repository_ref(project) when is_map(project) do
+    normalize_optional_config_string(Map.get(project, "repository_ref"))
+  end
+
+  defp project_repository_ref(_project), do: nil
+
+  defp normalize_optional_config_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_optional_config_string(_value), do: nil
+
+  defp normalize_config_project_repository(nil), do: nil
+
+  defp normalize_config_project_repository(repository) when is_binary(repository) do
+    normalize_optional_config_string(repository)
+  end
+
+  defp normalize_config_project_repository(repositories) when is_list(repositories) do
+    repositories
+    |> Enum.map(&normalize_optional_config_string/1)
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      normalized -> Enum.join(normalized, ",")
+    end
+  end
+
+  defp normalize_config_project_repository(_repository), do: nil
+
+  defp single_repository_url(repository) when is_binary(repository) do
+    case split_project_repository(repository) do
+      [repository] -> if remote_repository?(repository), do: repository
+      _ -> nil
+    end
+  end
+
+  defp single_repository_url(_repository), do: nil
+
+  defp single_repository_path(repository) when is_binary(repository) do
+    case split_project_repository(repository) do
+      [repository] -> unless remote_repository?(repository), do: repository
+      _ -> nil
+    end
+  end
+
+  defp single_repository_path(_repository), do: nil
+
+  defp split_project_repository(repository) when is_binary(repository) do
+    repository
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp split_project_repository(_repository), do: []
+
+  defp remote_repository?("http://" <> _rest), do: true
+  defp remote_repository?("https://" <> _rest), do: true
+  defp remote_repository?("git@" <> _rest), do: true
+  defp remote_repository?("file://" <> _rest), do: true
+  defp remote_repository?(_repository), do: false
+
+  defp normalize_config_project_key(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      key -> key
+    end
+  end
+
+  defp normalize_config_project_key(value), do: normalize_config_project_key(to_string(value))
+
+  defp normalize_config_project_slug(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      slug -> slug
+    end
+  end
+
+  defp normalize_config_project_slug(_value), do: nil
+
+  defp blank_string?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_string?(nil), do: true
+  defp blank_string?(_value), do: false
+
+  defp non_blank_string?(value) when is_binary(value), do: String.trim(value) != ""
+  defp non_blank_string?(_value), do: false
 
   defp format_config_error(reason) do
     case reason do

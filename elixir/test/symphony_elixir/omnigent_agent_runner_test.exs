@@ -93,11 +93,11 @@ defmodule SymphonyElixir.OmnigentAgentRunnerTest do
 
       interrupt_events = Enum.filter(post_events, &(&1.body["type"] == "interrupt"))
 
-      assert length(create_requests) == 1
-      assert length(post_events) == 2
-      assert length(message_events) == 1
-      assert length(stop_events) == 1
-      assert length(interrupt_events) == 0
+      assert [_create_request] = create_requests
+      assert [_first_post, _second_post] = post_events
+      assert [_message_event] = message_events
+      assert [_stop_event] = stop_events
+      assert interrupt_events == []
       assert Enum.at(message_events, 0).body["type"] == "message"
     after
       SymphonyElixir.FakeOmnigentServer.stop!(server)
@@ -193,11 +193,11 @@ defmodule SymphonyElixir.OmnigentAgentRunnerTest do
       first_message_text = request_message_text(Enum.at(message_events, 0))
       second_message_text = request_message_text(Enum.at(message_events, 1))
 
-      assert length(create_requests) == 1
-      assert length(post_events) == 3
-      assert length(message_events) == 2
-      assert length(stop_events) == 1
-      assert length(interrupt_events) == 0
+      assert [_create_request] = create_requests
+      assert [_first_post, _second_post, _third_post] = post_events
+      assert [_first_message, _second_message] = message_events
+      assert [_stop_event] = stop_events
+      assert interrupt_events == []
       assert Enum.map(message_events, & &1.session_id) == ["conv_fake_1", "conv_fake_1"]
       refute first_message_text =~ "Continuation guidance:"
       assert second_message_text =~ "Continuation guidance:"

@@ -39,10 +39,10 @@ defmodule SymphonyElixir.Agent.McpServer.Stdio do
         |> response_for(request)
 
       {:ok, _other} ->
-        {:reply, encode_error(nil, -32600, "Invalid JSON-RPC request.")}
+        {:reply, encode_error(nil, -32_600, "Invalid JSON-RPC request.")}
 
       {:error, _reason} ->
-        {:reply, encode_error(nil, -32700, "Parse error.")}
+        {:reply, encode_error(nil, -32_700, "Parse error.")}
     end
   end
 

@@ -29,6 +29,7 @@ defmodule SymphonyElixir.PromptBuilder do
     )
     |> IO.iodata_to_binary()
     |> ensure_valid_utf8()
+    |> append_issue_snapshot(issue)
     |> Prompts.append(workflow_phase, workflow_context, workspace)
   end
 
@@ -54,6 +55,24 @@ defmodule SymphonyElixir.PromptBuilder do
         acc <> valid_prefix <> "�"
     end
   end
+
+  defp append_issue_snapshot(prompt, %{snapshot: snapshot}) when is_map(snapshot) and map_size(snapshot) > 0 do
+    snapshot_json =
+      snapshot
+      |> to_solid_value()
+      |> Jason.encode!(pretty: true)
+
+    prompt <>
+      """
+
+      Linear issue snapshot:
+      ```json
+      #{snapshot_json}
+      ```
+      """
+  end
+
+  defp append_issue_snapshot(prompt, _issue), do: prompt
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
 

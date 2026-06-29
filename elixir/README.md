@@ -73,6 +73,64 @@ mise exec -- mix build
 mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
 
+## 本地启动入口（Windows / Codex Desktop）
+
+在当前本地开发环境中，统一使用 `start-local.ps1` 启动 Symphony。不要直接运行临时
+`symphony_boot_*.exs` 或手写 `mix run` 启动链路；这样容易漏掉新 agent backend、workflow
+路径、端口、日志和环境变量传递。
+
+`WORKFLOW.md` 是唯一共享 workflow 文件。启动时 Symphony 会自动加载同目录的
+`WORKFLOW.local.yml`（如果存在），并把它作为本机 YAML overlay 合并到
+`WORKFLOW.md` 的 front matter；prompt body 始终只来自 `WORKFLOW.md`。
+
+`WORKFLOW.local.yml` 已被 Git 忽略，只用于本机运行配置，例如 workspace root、clone
+来源、端口、agent 命令路径、并发数和 smoke-test hooks。新机器可从
+`WORKFLOW.local.example.yml` 复制一份后填入本机差异。
+
+推荐先做预检：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\elixir\start-local.ps1 -Preflight
+```
+
+启动或重启服务：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\elixir\start-local.ps1
+```
+
+停止服务：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\elixir\stop-local.ps1
+```
+
+默认配置如下：
+
+- workflow：`elixir/WORKFLOW.md`
+- local overlay：`elixir/WORKFLOW.local.yml`（如果存在）
+- dashboard/API 端口：`4000`
+- Linear token：优先读取 `LINEAR_API_KEY` 环境变量，其次读取 `$HOME\.linear_api_key`
+- 日志：WSL 内 `/tmp/symphony-local-4000.log`
+- PID：WSL 内 `/tmp/symphony-local-4000.pid`
+
+如果要用其他端口：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\elixir\start-local.ps1 -Port 4002
+powershell -NoProfile -ExecutionPolicy Bypass -File .\elixir\stop-local.ps1 -Port 4002
+```
+
+如果不想每次输入 `LINEAR_API_KEY`，可以在 Windows 用户目录保存一次密钥：
+
+```powershell
+Set-Content -NoNewline -Path "$HOME\.linear_api_key" -Value "<your-linear-api-key>"
+```
+
+不要把真实 token 写入仓库、issue 评论或日志。`start-local.ps1 -Preflight` 只显示密钥来源，
+不会打印密钥值。每次启动都会重新执行 `mix escript.build`，确保新增功能已经进入
+`bin/symphony` 后再启动服务。
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
@@ -97,12 +155,34 @@ Minimal example:
 ---
 tracker:
   kind: linear
-  project_slug: "..."
+  projects:
+    web:
+      slug: "web-app-123abc"
+      repository: "git@github.com:your-org/web-app.git"
+    api:
+      slug: "api-service-456def"
+      repository:
+        - "/Users/dev/src/api-service"
+        - "https://github.com/your-org/api-service"
 workspace:
   root: ~/code/workspaces
 hooks:
   after_create: |
-    git clone git@github.com:your-org/your-repo.git .
+    REPOS="${SYMPHONY_PROJECT_REPOSITORIES:-${SYMP_PROJECT_REPOSITORY:-}}"
+    OLD_IFS="$IFS"
+    IFS=','
+    for repo in $REPOS; do
+      repo=$(printf '%s' "$repo" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      if [ -d "$repo" ]; then
+        cp -r "$repo"/* . 2>/dev/null || true
+        cp -r "$repo"/.[!.]* . 2>/dev/null || true
+        break
+      fi
+      case "$repo" in
+        http*|git@*) git clone --depth 1 "$repo" . && break ;;
+      esac
+    done
+    IFS="$OLD_IFS"
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -141,8 +221,14 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
-- Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need.
+- Use `tracker.projects` to watch multiple Linear projects. Each key is an operator-chosen project
+  name, `slug` is the Linear project slug from the project URL, and `repository` is either one
+  address or an ordered list of addresses. The list can mix local repository paths and remote Git
+  URLs; hooks receive the active issue's mapped repositories in
+  `SYMPHONY_PROJECT_REPOSITORIES` as a comma-separated value. The legacy
+  `SYMP_PROJECT_REPOSITORY` alias is still exported for older hooks.
+- Use `hooks.after_create` to bootstrap a fresh workspace. For Git-backed repos, clone or copy from
+  `SYMPHONY_PROJECT_REPOSITORIES` so each Linear project seeds workspaces from its own repository.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.

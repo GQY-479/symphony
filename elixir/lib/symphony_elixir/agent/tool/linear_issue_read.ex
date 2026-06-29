@@ -8,7 +8,7 @@ defmodule SymphonyElixir.Agent.Tool.LinearIssueRead do
 
   @tool_name "linear_issue_read"
   @description """
-  Read a Linear issue by identifier or internal id using Symphony's configured auth. Prefer this high-level tool over raw `linear_graphql` when you need issue title, description, state, labels, project, team, or URL.
+  Read a rich Linear issue snapshot by identifier or internal id using Symphony's configured auth. Prefer this high-level tool over raw `linear_graphql` when you need issue title, description, state, labels, project, team, URL, comments, attachments, relations, or history.
   """
   @input_schema %{
     "type" => "object",
@@ -23,32 +23,185 @@ defmodule SymphonyElixir.Agent.Tool.LinearIssueRead do
   }
 
   @query """
-  query SymphonyLinearToolIssueRead($issueId: String!) {
+  query SymphonyLinearToolIssueRead($issueId: String!, $contextFirst: Int! = 50, $relationFirst: Int! = 50) {
     issue(id: $issueId) {
       id
       identifier
       title
       url
       description
+      priority
+      priorityLabel
+      estimate
+      sortOrder
+      branchName
+      startedAt
+      completedAt
+      canceledAt
+      archivedAt
+      autoClosedAt
+      autoArchivedAt
+      dueDate
+      slaStartedAt
+      slaBreachesAt
+      trashed
       state {
         id
         name
         type
       }
-      labels {
+      creator {
+        id
+        name
+        email
+      }
+      assignee {
+        id
+        name
+        email
+      }
+      labels(first: $contextFirst) {
         nodes {
+          id
           name
+          color
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
         }
       }
       project {
         id
         name
+        slugId
+        url
       }
       team {
         id
         key
         name
       }
+      cycle {
+        id
+        name
+        number
+        startsAt
+        endsAt
+      }
+      comments(first: $contextFirst) {
+        nodes {
+          id
+          body
+          url
+          createdAt
+          updatedAt
+          resolvedAt
+          user {
+            id
+            name
+            email
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      attachments(first: $contextFirst) {
+        nodes {
+          id
+          title
+          url
+          sourceType
+          createdAt
+          updatedAt
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      relations(first: $relationFirst) {
+        nodes {
+          id
+          type
+          relatedIssue {
+            id
+            identifier
+            title
+            url
+            state {
+              name
+              type
+            }
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          id
+          type
+          issue {
+            id
+            identifier
+            title
+            url
+            state {
+              name
+              type
+            }
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      history(first: $contextFirst) {
+        nodes {
+          id
+          createdAt
+          fromState {
+            name
+            type
+          }
+          toState {
+            name
+            type
+          }
+          actor {
+            id
+            name
+            email
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      stateHistory(first: $contextFirst) {
+        nodes {
+          id
+          startedAt
+          endedAt
+          state {
+            name
+            type
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+      createdAt
+      updatedAt
     }
   }
   """

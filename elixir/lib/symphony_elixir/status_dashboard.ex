@@ -398,16 +398,23 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_project_link_lines do
-    project_part =
-      case Config.settings!().tracker.project_slug do
-        project_slug when is_binary(project_slug) and project_slug != "" ->
-          colorize(linear_project_url(project_slug), @ansi_cyan)
+    project_line =
+      case Config.settings!() |> Config.tracker_project_entries() do
+        [] ->
+          colorize("│ Projects: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
 
-        _ ->
-          colorize("n/a", @ansi_gray)
+        [%{project_slug: project_slug}] ->
+          colorize("│ Project: ", @ansi_bold) <> colorize(linear_project_url(project_slug), @ansi_cyan)
+
+        entries ->
+          projects =
+            entries
+            |> Enum.map_join(", ", fn %{project_key: project_key, project_slug: project_slug} ->
+              "#{project_key}=#{linear_project_url(project_slug)}"
+            end)
+
+          colorize("│ Projects: ", @ansi_bold) <> colorize(projects, @ansi_cyan)
       end
-
-    project_line = colorize("│ Project: ", @ansi_bold) <> project_part
 
     case dashboard_url() do
       url when is_binary(url) ->
@@ -665,12 +672,21 @@ defmodule SymphonyElixir.StatusDashboard do
     identifier = Map.get(blocked_entry, :identifier) || Map.get(blocked_entry, :issue_id) || "unknown"
     phase = workflow_phase_label(Map.get(blocked_entry, :workflow_phase))
     reason = Map.get(blocked_entry, :workflow_blocked_reason) || Map.get(blocked_entry, :error) || "blocked"
+    category = Map.get(blocked_entry, :reason_category)
+
+    category_label =
+      case category do
+        nil -> ""
+        atom when is_atom(atom) -> " category=#{Atom.to_string(atom)}"
+        other -> " category=#{other}"
+      end
 
     "│ " <>
       colorize("!", @ansi_red) <>
       " " <>
       colorize(identifier, @ansi_red) <>
       colorize(" phase=#{phase}", @ansi_magenta) <>
+      colorize("#{category_label}", @ansi_magenta) <>
       colorize(" reason=#{truncate(reason, 96)}", @ansi_dim)
   end
 

@@ -8,6 +8,11 @@ defmodule SymphonyElixir.Config.Schema do
   alias SymphonyElixir.PathSafety
 
   @primary_key false
+  @default_agent_id "mimocode"
+  @default_mimocode_command "mimo-code"
+  @default_mimocode_model ["mimo-v2.5-pro", "mimo/mimo-auto"]
+  @default_mimocode_args ["acp", "--cwd", "{{workspace}}"]
+  @default_mimocode_mcp %{"linear_tools" => true}
 
   @type t :: %__MODULE__{}
 
@@ -49,6 +54,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:endpoint, :string, default: "https://api.linear.app/graphql")
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:projects, :map, default: %{})
       field(:assignee, :string)
       field(:required_labels, {:array, :string}, default: [])
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
@@ -60,7 +66,17 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :required_labels, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :projects,
+          :assignee,
+          :required_labels,
+          :active_states,
+          :terminal_states
+        ],
         empty_values: []
       )
       |> update_change(:required_labels, fn labels ->
@@ -213,7 +229,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:default_agent, :string, default: "codex")
+      field(:default_agent, :string)
       field(:by_assignee, :map, default: %{})
       field(:by_label, :map, default: %{})
     end
@@ -232,9 +248,10 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:enabled, :boolean, default: false)
-      field(:planner_agent, :string, default: "codex")
-      field(:reviewer_agent, :string, default: "codex")
+      field(:enabled, :boolean, default: true)
+      field(:mode, :string, default: "workflow")
+      field(:planner_agent, :string)
+      field(:reviewer_agent, :string)
       field(:artifact_dir, :string, default: ".symphony")
       field(:planning_max_turns, :integer, default: 1)
       field(:review_max_turns, :integer, default: 1)
@@ -245,9 +262,10 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:enabled, :planner_agent, :reviewer_agent, :artifact_dir, :planning_max_turns, :review_max_turns],
+        [:enabled, :mode, :planner_agent, :reviewer_agent, :artifact_dir, :planning_max_turns, :review_max_turns],
         empty_values: []
       )
+      |> validate_inclusion(:mode, ["workflow", "legacy"])
       |> validate_number(:planning_max_turns, greater_than: 0)
       |> validate_number(:review_max_turns, greater_than: 0)
     end
@@ -366,7 +384,7 @@ defmodule SymphonyElixir.Config.Schema do
   def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
     case settings.codex.turn_sandbox_policy do
       %{} = policy ->
-        {:ok, policy}
+        maybe_merge_runtime_writable_roots(policy, workspace, opts)
 
       _ ->
         workspace
@@ -378,6 +396,28 @@ defmodule SymphonyElixir.Config.Schema do
   @spec normalize_issue_state(String.t()) :: String.t()
   def normalize_issue_state(state_name) when is_binary(state_name) do
     String.downcase(state_name)
+  end
+
+  @doc false
+  @spec default_agent_id() :: String.t()
+  def default_agent_id, do: @default_agent_id
+
+  @doc false
+  @spec default_mimocode_agent_config() :: map()
+  def default_mimocode_agent_config do
+    %{
+      "kind" => "acp_stdio",
+      "command" => @default_mimocode_command,
+      "args" => @default_mimocode_args,
+      "permission_policy" => "reject",
+      "config_options" => %{"model" => @default_mimocode_model},
+      "mcp" => @default_mimocode_mcp,
+      "timeout_ms" => 3_600_000,
+      "read_timeout_ms" => 5_000,
+      "close_timeout_ms" => 1_000,
+      "stall_timeout_ms" => 300_000,
+      "enabled" => true
+    }
   end
 
   @doc false
@@ -450,12 +490,13 @@ defmodule SymphonyElixir.Config.Schema do
     %{
       settings
       | agents: normalize_agents(settings.agents, codex),
-        routing: normalize_routing(settings.routing)
+        routing: normalize_routing(settings.routing),
+        orchestration: normalize_orchestration(settings.orchestration)
     }
   end
 
-  defp normalize_agents(nil, codex), do: %{"codex" => default_codex_agent(codex)}
-  defp normalize_agents(agents, codex) when agents == %{}, do: %{"codex" => default_codex_agent(codex)}
+  defp normalize_agents(nil, codex), do: default_agents(codex)
+  defp normalize_agents(agents, codex) when agents == %{}, do: default_agents(codex)
 
   defp normalize_agents(agents, codex) when is_map(agents) do
     Enum.reduce(agents, %{}, fn {agent_id, agent_config}, normalized ->
@@ -478,6 +519,13 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_agent(agent_config, _codex), do: agent_config
 
+  defp default_agents(codex) do
+    %{
+      @default_agent_id => default_mimocode_agent_config(),
+      "codex" => default_codex_agent(codex)
+    }
+  end
+
   defp default_codex_agent(codex) do
     %{
       "kind" => "codex_app_server",
@@ -495,9 +543,17 @@ defmodule SymphonyElixir.Config.Schema do
   defp normalize_routing(%Routing{} = routing) do
     %{
       routing
-      | default_agent: normalize_key(routing.default_agent),
+      | default_agent: normalize_optional_agent_id(routing.default_agent),
         by_assignee: normalize_route_map(routing.by_assignee),
         by_label: normalize_label_route_map(routing.by_label)
+    }
+  end
+
+  defp normalize_orchestration(%Orchestration{} = orchestration) do
+    %{
+      orchestration
+      | planner_agent: normalize_optional_agent_id(orchestration.planner_agent),
+        reviewer_agent: normalize_optional_agent_id(orchestration.reviewer_agent)
     }
   end
 
@@ -533,6 +589,9 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
+
+  defp normalize_optional_agent_id(nil), do: @default_agent_id
+  defp normalize_optional_agent_id(value), do: normalize_key(value)
 
   defp drop_nil_values(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, nested}, acc ->
@@ -612,10 +671,14 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_secret_value(_value), do: nil
 
-  defp default_turn_sandbox_policy(workspace) do
+  defp default_turn_sandbox_policy(workspace) when is_binary(workspace) do
+    default_turn_sandbox_policy([workspace])
+  end
+
+  defp default_turn_sandbox_policy(workspaces) when is_list(workspaces) do
     %{
       "type" => "workspaceWrite",
-      "writableRoots" => [workspace],
+      "writableRoots" => workspaces,
       "readOnlyAccess" => %{"type" => "fullAccess"},
       "networkAccess" => false,
       "excludeTmpdirEnvVar" => false,
@@ -624,12 +687,20 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp default_runtime_turn_sandbox_policy(workspace_root, opts) when is_binary(workspace_root) do
+    extra_writable_roots =
+      opts
+      |> Keyword.get(:extra_writable_roots, [])
+      |> List.wrap()
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+
     if Keyword.get(opts, :remote, false) do
-      {:ok, default_turn_sandbox_policy(workspace_root)}
+      writable_roots = Enum.uniq([workspace_root | extra_writable_roots])
+      {:ok, default_turn_sandbox_policy(writable_roots)}
     else
       with expanded_workspace_root <- expand_local_workspace_root(workspace_root),
-           {:ok, canonical_workspace_root} <- PathSafety.canonicalize(expanded_workspace_root) do
-        {:ok, default_turn_sandbox_policy(canonical_workspace_root)}
+           canonical_writable_roots <- [expanded_workspace_root | Enum.map(extra_writable_roots, &expand_local_workspace_root/1)],
+           {:ok, canonical_writable_roots} <- canonicalize_writable_roots(canonical_writable_roots) do
+        {:ok, default_turn_sandbox_policy(canonical_writable_roots)}
       end
     end
   end
@@ -638,12 +709,63 @@ defmodule SymphonyElixir.Config.Schema do
     {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace_root}}}
   end
 
+  defp maybe_merge_runtime_writable_roots(%{"type" => "workspaceWrite"} = policy, workspace, opts) when is_binary(workspace) and workspace != "" do
+    extra_writable_roots =
+      opts
+      |> Keyword.get(:extra_writable_roots, [])
+      |> List.wrap()
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+
+    if Keyword.get(opts, :remote, false) do
+      writable_roots =
+        policy
+        |> Map.get("writableRoots", [])
+        |> List.wrap()
+        |> Kernel.++([workspace | extra_writable_roots])
+        |> Enum.uniq()
+
+      {:ok, Map.put(policy, "writableRoots", writable_roots)}
+    else
+      with runtime_roots <- [workspace | extra_writable_roots],
+           expanded_runtime_roots <- Enum.map(runtime_roots, &expand_local_workspace_root/1),
+           {:ok, canonical_runtime_roots} <- canonicalize_writable_roots(expanded_runtime_roots) do
+        writable_roots =
+          policy
+          |> Map.get("writableRoots", [])
+          |> List.wrap()
+          |> Kernel.++(canonical_runtime_roots)
+          |> Enum.uniq()
+
+        {:ok, Map.put(policy, "writableRoots", writable_roots)}
+      end
+    end
+  end
+
+  defp maybe_merge_runtime_writable_roots(%{"type" => "workspaceWrite"} = policy, _workspace, _opts), do: {:ok, policy}
+  defp maybe_merge_runtime_writable_roots(policy, _workspace, _opts), do: {:ok, policy}
+
   defp default_workspace_root(workspace, _fallback) when is_binary(workspace) and workspace != "",
     do: workspace
 
   defp default_workspace_root(nil, fallback), do: fallback
   defp default_workspace_root("", fallback), do: fallback
   defp default_workspace_root(workspace, _fallback), do: workspace
+
+  defp canonicalize_writable_roots(workspaces) when is_list(workspaces) do
+    Enum.reduce_while(workspaces, {:ok, []}, fn workspace, {:ok, acc} ->
+      case PathSafety.canonicalize(workspace) do
+        {:ok, canonical_workspace} ->
+          {:cont, {:ok, acc ++ [canonical_workspace]}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace, reason}}}}
+      end
+    end)
+    |> case do
+      {:ok, canonical_workspaces} -> {:ok, Enum.uniq(canonical_workspaces)}
+      other -> other
+    end
+  end
 
   defp expand_local_workspace_root(workspace_root)
        when is_binary(workspace_root) and workspace_root != "" do

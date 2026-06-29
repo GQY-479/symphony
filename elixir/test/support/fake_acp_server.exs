@@ -13,7 +13,7 @@ defmodule SymphonyElixir.FakeAcpServer do
     import select
     import sys
 
-    behavior = json.loads('''#{python_behavior_json}''')
+    behavior = json.loads(r'''#{python_behavior_json}''')
 
     pid_file = behavior.get("pidFile")
     if pid_file:
@@ -21,21 +21,33 @@ defmodule SymphonyElixir.FakeAcpServer do
             handle.write(str(os.getpid()))
 
     def send(message):
-        print(json.dumps(message), flush=True)
+        try:
+            print(json.dumps(message), flush=True)
+        except BrokenPipeError:
+            sys.exit(0)
 
     def send_split(message):
         encoded = json.dumps(message)
         split_at = max(1, len(encoded) // 2)
-        sys.stdout.write(encoded[:split_at])
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(encoded[:split_at])
+            sys.stdout.flush()
+        except BrokenPipeError:
+            sys.exit(0)
         import time
         time.sleep(0.05)
-        sys.stdout.write(encoded[split_at:] + "\\n")
-        sys.stdout.flush()
+        try:
+            sys.stdout.write(encoded[split_at:] + "\\n")
+            sys.stdout.flush()
+        except BrokenPipeError:
+            sys.exit(0)
 
     def send_together(messages):
-        sys.stdout.write("".join(json.dumps(message) + "\\n" for message in messages))
-        sys.stdout.flush()
+        try:
+            sys.stdout.write("".join(json.dumps(message) + "\\n" for message in messages))
+            sys.stdout.flush()
+        except BrokenPipeError:
+            sys.exit(0)
 
     def trace(method):
         trace_file = behavior.get("traceFile")
@@ -120,6 +132,22 @@ defmodule SymphonyElixir.FakeAcpServer do
                         continue
             if behavior.get("malformed"):
                 print("not-json", flush=True)
+            write_file = behavior.get("writeFileOnPrompt")
+            if write_file:
+                path = write_file.get("path")
+                contents = write_file.get("contents", "")
+                if path:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as handle:
+                        handle.write(contents)
+            append_jsonl = behavior.get("appendJsonlOnPrompt")
+            if append_jsonl:
+                path = append_jsonl.get("path")
+                entry = append_jsonl.get("entry", {})
+                if path:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(entry, ensure_ascii=False) + "\\n")
             if behavior.get("delayPromptMs"):
                 import time
                 time.sleep(behavior.get("delayPromptMs") / 1000.0)
@@ -133,6 +161,14 @@ defmodule SymphonyElixir.FakeAcpServer do
                     time.sleep(interval)
             prompt_update = behavior.get("promptUpdate", {"kind": "text", "text": "working"})
             send({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": session_id, "update": prompt_update}})
+            write_file_after_update = behavior.get("writeFileAfterPromptUpdate")
+            if write_file_after_update:
+                path = write_file_after_update.get("path")
+                contents = write_file_after_update.get("contents", "")
+                if path:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as handle:
+                        handle.write(contents)
             prompt_result = {"stopReason": behavior.get("stopReason", "end_turn")}
             if behavior.get("usage"):
                 prompt_result["usage"] = behavior.get("usage")

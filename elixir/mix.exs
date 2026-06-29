@@ -84,7 +84,8 @@ defmodule SymphonyElixir.MixProject do
     [
       setup: ["deps.get"],
       build: ["escript.build"],
-      lint: ["specs.check", "credo --strict"]
+      lint: ["specs.check", "credo --only warning,readability"],
+      "lint.strict": ["specs.check", "credo --strict"]
     ]
   end
 

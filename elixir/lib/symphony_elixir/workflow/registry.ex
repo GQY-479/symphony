@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Workflow.Registry do
   存放在 `workspace.root/.symphony/workflows/` 下的文件型工作流注册表。
   """
 
-  alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.{Config, Linear.Issue, PathSafety}
 
   @spec new_root(Issue.t()) :: map()
   def new_root(%Issue{} = issue) do
@@ -14,13 +14,55 @@ defmodule SymphonyElixir.Workflow.Registry do
       "status" => "planning",
       "nodes" => %{},
       "edges" => [],
+      "checkpoints" => [],
+      "subjects" => %{},
+      "reviews" => %{},
       "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
     }
+  end
+
+  @spec put_status(map(), String.t(), map()) :: map()
+  def put_status(registry, status, attrs)
+      when is_map(registry) and is_binary(status) and is_map(attrs) do
+    registry
+    |> Map.merge(normalize_map(attrs))
+    |> Map.put("status", status)
+    |> Map.put("updated_at", DateTime.utc_now() |> DateTime.to_iso8601())
   end
 
   @spec put_node(map(), String.t(), map()) :: map()
   def put_node(registry, node_key, node) when is_map(registry) and is_binary(node_key) and is_map(node) do
     put_in(registry, ["nodes", node_key], normalize_node(node))
+  end
+
+  @spec put_workflow_git(map(), map()) :: map()
+  def put_workflow_git(registry, attrs) when is_map(registry) and is_map(attrs) do
+    registry
+    |> Map.merge(normalize_map(attrs))
+    |> Map.put("updated_at", DateTime.utc_now() |> DateTime.to_iso8601())
+  end
+
+  @spec add_checkpoint(map(), map()) :: map()
+  def add_checkpoint(registry, checkpoint) when is_map(registry) and is_map(checkpoint) do
+    update_in(registry, ["checkpoints"], fn checkpoints ->
+      (checkpoints || []) ++ [normalize_map(checkpoint)]
+    end)
+  end
+
+  @spec put_subject(map(), String.t(), map()) :: map()
+  def put_subject(registry, subject_id, subject)
+      when is_map(registry) and is_binary(subject_id) and is_map(subject) do
+    update_in(registry, ["subjects"], fn subjects ->
+      Map.put(subjects || %{}, subject_id, normalize_map(subject))
+    end)
+  end
+
+  @spec put_review_state(map(), String.t(), map()) :: map()
+  def put_review_state(registry, review_node, review_state)
+      when is_map(registry) and is_binary(review_node) and is_map(review_state) do
+    update_in(registry, ["reviews"], fn reviews ->
+      Map.put(reviews || %{}, review_node, normalize_map(review_state))
+    end)
   end
 
   @spec node(map(), String.t()) :: map() | nil
@@ -36,9 +78,23 @@ defmodule SymphonyElixir.Workflow.Registry do
   @spec save!(map()) :: :ok
   def save!(registry) when is_map(registry) do
     path = registry_path(registry["root_issue_identifier"])
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, Jason.encode_to_iodata!(registry, pretty: true))
-    :ok
+    dir = Path.dirname(path)
+
+    temp_path =
+      Path.join(
+        dir,
+        "#{Path.basename(path)}.#{System.os_time(:nanosecond)}.#{System.unique_integer([:positive])}.tmp"
+      )
+
+    File.mkdir_p!(dir)
+
+    try do
+      File.write!(temp_path, Jason.encode_to_iodata!(registry, pretty: true))
+      File.rename!(temp_path, path)
+      :ok
+    after
+      if File.exists?(temp_path), do: File.rm!(temp_path)
+    end
   end
 
   @spec load_by_root_identifier(String.t()) :: {:ok, map()} | {:error, term()}
@@ -92,8 +148,48 @@ defmodule SymphonyElixir.Workflow.Registry do
     Path.join(registry_dir(), "#{root_identifier}.json")
   end
 
+  @spec root_workspace_path(map()) :: Path.t() | nil
+  def root_workspace_path(%{"root_issue_identifier" => root_issue_identifier}) when is_binary(root_issue_identifier) do
+    issue_workspace_path(root_issue_identifier)
+  end
+
+  def root_workspace_path(_registry), do: nil
+
+  @spec issue_workspace_path(String.t()) :: Path.t() | nil
+  def issue_workspace_path(issue_identifier) when is_binary(issue_identifier) do
+    issue_identifier
+    |> safe_identifier()
+    |> workspace_path_for_safe_identifier()
+  end
+
+  def issue_workspace_path(_issue_identifier), do: nil
+
+  defp workspace_path_for_safe_identifier(safe_identifier) do
+    Config.settings!().workspace.root
+    |> Path.join(safe_identifier)
+    |> PathSafety.canonicalize()
+    |> case do
+      {:ok, path} -> path
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp safe_identifier(identifier) do
+    String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
+  end
+
   defp registry_dir do
-    Path.join([Config.settings!().workspace.root, ".symphony", "workflows"])
+    Config.settings!().workspace.root
+    |> canonical_workspace_root()
+    |> Path.join(".symphony")
+    |> Path.join("workflows")
+  end
+
+  defp canonical_workspace_root(workspace_root) when is_binary(workspace_root) do
+    case PathSafety.canonicalize(workspace_root) do
+      {:ok, path} -> path
+      {:error, _reason} -> Path.expand(workspace_root)
+    end
   end
 
   defp load_registry_path(path) do
@@ -118,7 +214,11 @@ defmodule SymphonyElixir.Workflow.Registry do
   end
 
   defp normalize_node(node) do
-    Enum.into(node, %{}, fn
+    normalize_map(node)
+  end
+
+  defp normalize_map(map) do
+    Enum.into(map, %{}, fn
       {key, value} when is_atom(key) -> {Atom.to_string(key), value}
       pair -> pair
     end)
@@ -145,13 +245,27 @@ defmodule SymphonyElixir.Workflow.Registry do
 
   defp node_issue_id(_node), do: nil
 
-  defp valid_registry?(%{"nodes" => nodes, "edges" => edges, "status" => status})
-       when is_map(nodes) and is_list(edges) and is_binary(status),
-       do: true
+  defp valid_registry?(%{"nodes" => nodes, "edges" => edges, "status" => status} = registry)
+       when is_map(nodes) and is_list(edges) and is_binary(status) do
+    valid_optional_registry_collections?(registry)
+  end
 
-  defp valid_registry?(%{nodes: nodes, edges: edges, status: status})
-       when is_map(nodes) and is_list(edges) and is_binary(status),
-       do: true
+  defp valid_registry?(%{nodes: nodes, edges: edges, status: status} = registry)
+       when is_map(nodes) and is_list(edges) and is_binary(status) do
+    valid_optional_registry_collections?(registry)
+  end
 
   defp valid_registry?(_registry), do: false
+
+  defp valid_optional_registry_collections?(registry) when is_map(registry) do
+    valid_optional_list?(Map.get(registry, "checkpoints") || Map.get(registry, :checkpoints)) and
+      valid_optional_map?(Map.get(registry, "subjects") || Map.get(registry, :subjects)) and
+      valid_optional_map?(Map.get(registry, "reviews") || Map.get(registry, :reviews))
+  end
+
+  defp valid_optional_list?(nil), do: true
+  defp valid_optional_list?(value), do: is_list(value)
+
+  defp valid_optional_map?(nil), do: true
+  defp valid_optional_map?(value), do: is_map(value)
 end

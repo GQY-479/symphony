@@ -1,0 +1,334 @@
+{
+  "created": [
+    {
+      "assignee": {
+        "id": "cff2384a-89a0-456a-ab52-154bc749629f",
+        "name": "YQEEQY"
+      },
+      "id": "d35a52f8-7409-46c1-b915-bf32669a8938",
+      "identifier": "YQE-60",
+      "labels": {
+        "nodes": [
+          {
+            "id": "9c507c15-c8c9-4025-beb8-a907412f3406",
+            "name": "Improvement"
+          }
+        ]
+      },
+      "project": {
+        "id": "4ebbd061-2697-4fe6-b10f-b0b688a24a20",
+        "name": "symphony",
+        "slugId": "96f5ac7500e2"
+      },
+      "state": {
+        "id": "4058c299-b4f9-4ebc-8f93-bdec2e926760",
+        "name": "Backlog",
+        "type": "backlog"
+      },
+      "team": {
+        "id": "e5cf3d32-0d5f-4e2d-a234-5b5582d860ba",
+        "key": "YQE",
+        "name": "YQEEQY"
+      },
+      "title": "Dashboard shows each issue current workflow phase",
+      "url": "https://linear.app/yqeeqy/issue/YQE-60/dashboard-shows-each-issue-current-workflow-phase"
+    },
+    {
+      "assignee": {
+        "id": "cff2384a-89a0-456a-ab52-154bc749629f",
+        "name": "YQEEQY"
+      },
+      "id": "a11ba44a-05bc-424f-900c-17551f8a0e4b",
+      "identifier": "YQE-61",
+      "labels": {
+        "nodes": [
+          {
+            "id": "9c507c15-c8c9-4025-beb8-a907412f3406",
+            "name": "Improvement"
+          }
+        ]
+      },
+      "project": {
+        "id": "4ebbd061-2697-4fe6-b10f-b0b688a24a20",
+        "name": "symphony",
+        "slugId": "96f5ac7500e2"
+      },
+      "state": {
+        "id": "4058c299-b4f9-4ebc-8f93-bdec2e926760",
+        "name": "Backlog",
+        "type": "backlog"
+      },
+      "team": {
+        "id": "e5cf3d32-0d5f-4e2d-a234-5b5582d860ba",
+        "key": "YQE",
+        "name": "YQEEQY"
+      },
+      "title": "Workflow orchestration generates an auditable execution summary",
+      "url": "https://linear.app/yqeeqy/issue/YQE-61/workflow-orchestration-generates-an-auditable-execution-summary"
+    },
+    {
+      "assignee": {
+        "id": "cff2384a-89a0-456a-ab52-154bc749629f",
+        "name": "YQEEQY"
+      },
+      "id": "2c62d7a4-2b3f-4f4b-b683-0558afe4882c",
+      "identifier": "YQE-62",
+      "labels": {
+        "nodes": [
+          {
+            "id": "9c507c15-c8c9-4025-beb8-a907412f3406",
+            "name": "Improvement"
+          }
+        ]
+      },
+      "project": {
+        "id": "4ebbd061-2697-4fe6-b10f-b0b688a24a20",
+        "name": "symphony",
+        "slugId": "96f5ac7500e2"
+      },
+      "state": {
+        "id": "4058c299-b4f9-4ebc-8f93-bdec2e926760",
+        "name": "Backlog",
+        "type": "backlog"
+      },
+      "team": {
+        "id": "e5cf3d32-0d5f-4e2d-a234-5b5582d860ba",
+        "key": "YQE",
+        "name": "YQEEQY"
+      },
+      "title": "Missing or invalid workflow artifacts trigger clear repair behavior",
+      "url": "https://linear.app/yqeeqy/issue/YQE-62/missing-or-invalid-workflow-artifacts-trigger-clear-repair-behavior"
+    },
+    {
+      "assignee": {
+        "id": "cff2384a-89a0-456a-ab52-154bc749629f",
+        "name": "YQEEQY"
+      },
+      "id": "db094aff-1274-4267-a296-9f05a25e51f7",
+      "identifier": "YQE-63",
+      "labels": {
+        "nodes": [
+          {
+            "id": "9c507c15-c8c9-4025-beb8-a907412f3406",
+            "name": "Improvement"
+          }
+        ]
+      },
+      "project": {
+        "id": "4ebbd061-2697-4fe6-b10f-b0b688a24a20",
+        "name": "symphony",
+        "slugId": "96f5ac7500e2"
+      },
+      "state": {
+        "id": "4058c299-b4f9-4ebc-8f93-bdec2e926760",
+        "name": "Backlog",
+        "type": "backlog"
+      },
+      "team": {
+        "id": "e5cf3d32-0d5f-4e2d-a234-5b5582d860ba",
+        "key": "YQE",
+        "name": "YQEEQY"
+      },
+      "title": "Linear terminal state is validated against completion evidence",
+      "url": "https://linear.app/yqeeqy/issue/YQE-63/linear-terminal-state-is-validated-against-completion-evidence"
+    },
+    {
+      "assignee": {
+        "id": "cff2384a-89a0-456a-ab52-154bc749629f",
+        "name": "YQEEQY"
+      },
+      "id": "fda84bcf-4c67-41d9-8ab1-989023340d37",
+      "identifier": "YQE-64",
+      "labels": {
+        "nodes": [
+          {
+            "id": "9c507c15-c8c9-4025-beb8-a907412f3406",
+            "name": "Improvement"
+          }
+        ]
+      },
+      "project": {
+        "id": "4ebbd061-2697-4fe6-b10f-b0b688a24a20",
+        "name": "symphony",
+        "slugId": "96f5ac7500e2"
+      },
+      "state": {
+        "id": "4058c299-b4f9-4ebc-8f93-bdec2e926760",
+        "name": "Backlog",
+        "type": "backlog"
+      },
+      "team": {
+        "id": "e5cf3d32-0d5f-4e2d-a234-5b5582d860ba",
+        "key": "YQE",
+        "name": "YQEEQY"
+      },
+      "title": "Planner output explains dependencies for multi-step issues",
+      "url": "https://linear.app/yqeeqy/issue/YQE-64/planner-output-explains-dependencies-for-multi-step-issues"
+    },
+    {
+      "assignee": {
+        "id": "cff2384a-89a0-456a-ab52-154bc749629f",
+        "name": "YQEEQY"
+      },
+      "id": "1a14d06e-f7f7-44a1-8342-43a146a5a6bd",
+      "identifier": "YQE-65",
+      "labels": {
+        "nodes": [
+          {
+            "id": "9c507c15-c8c9-4025-beb8-a907412f3406",
+            "name": "Improvement"
+          }
+        ]
+      },
+      "project": {
+        "id": "4ebbd061-2697-4fe6-b10f-b0b688a24a20",
+        "name": "symphony",
+        "slugId": "96f5ac7500e2"
+      },
+      "state": {
+        "id": "4058c299-b4f9-4ebc-8f93-bdec2e926760",
+        "name": "Backlog",
+        "type": "backlog"
+      },
+      "team": {
+        "id": "e5cf3d32-0d5f-4e2d-a234-5b5582d860ba",
+        "key": "YQE",
+        "name": "YQEEQY"
+      },
+      "title": "Agent routing logs explain label assignee default or fallback selection",
+      "url": "https://linear.app/yqeeqy/issue/YQE-65/agent-routing-logs-explain-label-assignee-default-or-fallback"
+    },
+    {
+      "assignee": {
+        "id": "cff2384a-89a0-456a-ab52-154bc749629f",
+        "name": "YQEEQY"
+      },
+      "id": "918eda42-1c45-4811-b148-86074aefe03c",
+      "identifier": "YQE-66",
+      "labels": {
+        "nodes": [
+          {
+            "id": "9c507c15-c8c9-4025-beb8-a907412f3406",
+            "name": "Improvement"
+          }
+        ]
+      },
+      "project": {
+        "id": "4ebbd061-2697-4fe6-b10f-b0b688a24a20",
+        "name": "symphony",
+        "slugId": "96f5ac7500e2"
+      },
+      "state": {
+        "id": "4058c299-b4f9-4ebc-8f93-bdec2e926760",
+        "name": "Backlog",
+        "type": "backlog"
+      },
+      "team": {
+        "id": "e5cf3d32-0d5f-4e2d-a234-5b5582d860ba",
+        "key": "YQE",
+        "name": "YQEEQY"
+      },
+      "title": "Concurrent issue runs keep workspace artifact log and session data isolated",
+      "url": "https://linear.app/yqeeqy/issue/YQE-66/concurrent-issue-runs-keep-workspace-artifact-log-and-session-data"
+    },
+    {
+      "assignee": {
+        "id": "cff2384a-89a0-456a-ab52-154bc749629f",
+        "name": "YQEEQY"
+      },
+      "id": "da1f0dee-8c77-4f3a-bc4e-ae2cd1197062",
+      "identifier": "YQE-67",
+      "labels": {
+        "nodes": [
+          {
+            "id": "9c507c15-c8c9-4025-beb8-a907412f3406",
+            "name": "Improvement"
+          }
+        ]
+      },
+      "project": {
+        "id": "4ebbd061-2697-4fe6-b10f-b0b688a24a20",
+        "name": "symphony",
+        "slugId": "96f5ac7500e2"
+      },
+      "state": {
+        "id": "4058c299-b4f9-4ebc-8f93-bdec2e926760",
+        "name": "Backlog",
+        "type": "backlog"
+      },
+      "team": {
+        "id": "e5cf3d32-0d5f-4e2d-a234-5b5582d860ba",
+        "key": "YQE",
+        "name": "YQEEQY"
+      },
+      "title": "Failed or blocked issue states include actionable reasons",
+      "url": "https://linear.app/yqeeqy/issue/YQE-67/failed-or-blocked-issue-states-include-actionable-reasons"
+    },
+    {
+      "assignee": {
+        "id": "cff2384a-89a0-456a-ab52-154bc749629f",
+        "name": "YQEEQY"
+      },
+      "id": "fe1c5f75-ed70-4ce3-ade7-94dc4bff8331",
+      "identifier": "YQE-68",
+      "labels": {
+        "nodes": [
+          {
+            "id": "9c507c15-c8c9-4025-beb8-a907412f3406",
+            "name": "Improvement"
+          }
+        ]
+      },
+      "project": {
+        "id": "4ebbd061-2697-4fe6-b10f-b0b688a24a20",
+        "name": "symphony",
+        "slugId": "96f5ac7500e2"
+      },
+      "state": {
+        "id": "4058c299-b4f9-4ebc-8f93-bdec2e926760",
+        "name": "Backlog",
+        "type": "backlog"
+      },
+      "team": {
+        "id": "e5cf3d32-0d5f-4e2d-a234-5b5582d860ba",
+        "key": "YQE",
+        "name": "YQEEQY"
+      },
+      "title": "Continuation retry logs distinguish expected continuation from abnormal retry loops",
+      "url": "https://linear.app/yqeeqy/issue/YQE-68/continuation-retry-logs-distinguish-expected-continuation-from"
+    },
+    {
+      "assignee": {
+        "id": "cff2384a-89a0-456a-ab52-154bc749629f",
+        "name": "YQEEQY"
+      },
+      "id": "090edbed-3110-479e-a4d2-83d2baaf40b7",
+      "identifier": "YQE-69",
+      "labels": {
+        "nodes": [
+          {
+            "id": "9c507c15-c8c9-4025-beb8-a907412f3406",
+            "name": "Improvement"
+          }
+        ]
+      },
+      "project": {
+        "id": "4ebbd061-2697-4fe6-b10f-b0b688a24a20",
+        "name": "symphony",
+        "slugId": "96f5ac7500e2"
+      },
+      "state": {
+        "id": "4058c299-b4f9-4ebc-8f93-bdec2e926760",
+        "name": "Backlog",
+        "type": "backlog"
+      },
+      "team": {
+        "id": "e5cf3d32-0d5f-4e2d-a234-5b5582d860ba",
+        "key": "YQE",
+        "name": "YQEEQY"
+      },
+      "title": "Live orchestration has a preflight health check",
+      "url": "https://linear.app/yqeeqy/issue/YQE-69/live-orchestration-has-a-preflight-health-check"
+    }
+  ]
+}

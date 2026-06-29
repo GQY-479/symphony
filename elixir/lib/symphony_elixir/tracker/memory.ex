@@ -86,6 +86,12 @@ defmodule SymphonyElixir.Tracker.Memory do
       description: Map.get(attrs, :description) || Map.get(attrs, "description"),
       state: Map.get(attrs, :state) || Map.get(attrs, "state") || "Todo",
       assignee_id: Map.get(attrs, :assignee_id) || Map.get(attrs, "assignee_id"),
+      project_id: Map.get(attrs, :project_id) || Map.get(attrs, "project_id"),
+      project_slug: Map.get(attrs, :project_slug) || Map.get(attrs, "project_slug"),
+      project_name: Map.get(attrs, :project_name) || Map.get(attrs, "project_name"),
+      team_id: Map.get(attrs, :team_id) || Map.get(attrs, "team_id"),
+      team_key: Map.get(attrs, :team_key) || Map.get(attrs, "team_key"),
+      team_name: Map.get(attrs, :team_name) || Map.get(attrs, "team_name"),
       labels: Map.get(attrs, :labels) || Map.get(attrs, "labels") || []
     }
   end

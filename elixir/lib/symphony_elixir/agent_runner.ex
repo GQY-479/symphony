@@ -6,8 +6,14 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
   alias SymphonyElixir.Agent.{Backend, Router}
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.Workflow.Artifacts
 
   @type worker_host :: String.t() | nil
+
+  defmodule Error do
+    @moduledoc false
+    defexception [:message, :reason]
+  end
 
   @doc false
   @spec continue_with_issue_for_test(Issue.t(), ([String.t()] -> term())) ::
@@ -30,7 +36,7 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
-        raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
+        raise Error, message: "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}", reason: reason
     end
   end
 
@@ -202,49 +208,88 @@ defmodule SymphonyElixir.AgentRunner do
        ) do
     prompt = build_turn_prompt(issue, workspace, opts, turn_number, max_turns, resolved_agent)
 
-    with {:ok, turn_session} <-
-           run_turn.(
+    turn_opts =
+      Keyword.put(
+        opts,
+        :on_message,
+        workflow_artifact_message_handler(codex_update_recipient, issue, workspace, opts)
+      )
+
+    with {:ok, verified_turn_session} <-
+           verify_agent_turn_result(
+             run_turn,
+             workspace,
              issue,
-             prompt,
-             Keyword.put(opts, :on_message, codex_message_handler(codex_update_recipient, issue))
+             opts,
+             turn_opts,
+             run_workflow_artifact_aware_turn(run_turn, issue, prompt, turn_opts, opts)
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{session_id(turn_session)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{session_id(verified_turn_session)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, resolved_agent, issue_state_fetcher, Keyword.get(opts, :enforce_continuation_route?, true)) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          send_worker_issue_state(codex_update_recipient, refreshed_issue)
+      if workflow_artifact_accepted?(verified_turn_session) do
+        :ok
+      else
+        case continue_with_issue?(issue, resolved_agent, issue_state_fetcher, Keyword.get(opts, :enforce_continuation_route?, true)) do
+          {:continue, refreshed_issue} when turn_number < max_turns ->
+            send_worker_issue_state(codex_update_recipient, refreshed_issue)
 
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+            Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_agent_turns(
-            run_turn,
-            workspace,
-            refreshed_issue,
-            resolved_agent,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+            do_run_agent_turns(
+              run_turn,
+              workspace,
+              refreshed_issue,
+              resolved_agent,
+              codex_update_recipient,
+              opts,
+              issue_state_fetcher,
+              turn_number + 1,
+              max_turns
+            )
 
-        {:continue, refreshed_issue} ->
-          send_worker_issue_state(codex_update_recipient, refreshed_issue)
+          {:continue, refreshed_issue} ->
+            send_worker_issue_state(codex_update_recipient, refreshed_issue)
 
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+            Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
 
-          :ok
+            :ok
 
-        {:done, refreshed_issue} ->
-          send_worker_issue_state(codex_update_recipient, refreshed_issue)
+          {:done, refreshed_issue} ->
+            send_worker_issue_state(codex_update_recipient, refreshed_issue)
 
-          :ok
+            :ok
 
-        {:error, reason} ->
-          {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
     end
   end
+
+  defp run_workflow_artifact_aware_turn(run_turn, issue, prompt, turn_opts, opts) do
+    run_turn.(issue, prompt, turn_opts)
+  catch
+    {:workflow_artifact_ready, session_id} ->
+      workflow_phase = Keyword.get(opts, :workflow_phase)
+
+      Logger.info("Workflow artifact became valid during ACP turn for #{issue_context(issue)} phase=#{workflow_phase}; accepting artifact and returning control to orchestrator")
+
+      {:ok,
+       %{
+         session_id: session_id,
+         accepted_after_workflow_artifact: workflow_phase
+       }}
+  end
+
+  defp verify_agent_turn_result(run_turn, workspace, issue, opts, turn_opts, {:ok, turn_session}) do
+    ensure_workflow_artifact(run_turn, workspace, issue, opts, turn_opts, turn_session)
+  end
+
+  defp verify_agent_turn_result(_run_turn, workspace, issue, opts, _turn_opts, {:error, :acp_timeout}) do
+    accept_valid_workflow_artifact_after_timeout(workspace, issue, opts)
+  end
+
+  defp verify_agent_turn_result(_run_turn, _workspace, _issue, _opts, _turn_opts, other), do: other
 
   defp build_turn_prompt(issue, workspace, opts, 1, _max_turns, resolved_agent) do
     issue
@@ -263,9 +308,213 @@ defmodule SymphonyElixir.AgentRunner do
 
     - The previous agent turn completed normally, but the Linear issue is still in an active state.
     - This is continuation turn ##{turn_number} of #{max_turns} for the current agent run.
-    - Resume from the current workspace and workpad state instead of restarting from scratch.
+    - Resume from the current workspace, Workflow registry, and artifact state instead of restarting from scratch.
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
+    """
+  end
+
+  defp ensure_workflow_artifact(run_turn, workspace, issue, opts, turn_opts, turn_session) do
+    workflow_phase = Keyword.get(opts, :workflow_phase)
+
+    case load_workflow_artifact(workflow_phase, workspace) do
+      :skip ->
+        {:ok, turn_session}
+
+      {:ok, _artifact} ->
+        {:ok, accept_workflow_artifact(turn_session, issue, workflow_phase, :post_turn_verification)}
+
+      {:error, artifact_path, reason} ->
+        repair_prompt = workflow_artifact_repair_prompt(workflow_phase, workspace, artifact_path, reason)
+
+        Logger.warning("Workflow artifact missing or invalid for #{issue_context(issue)} phase=#{workflow_phase} path=#{artifact_path} reason=#{inspect(reason)}; requesting artifact repair turn")
+
+        with {:ok, repair_session} <- run_turn.(issue, repair_prompt, turn_opts),
+             {:ok, _artifact} <- expect_workflow_artifact(workflow_phase, workspace) do
+          {:ok, accept_workflow_artifact(repair_session, issue, workflow_phase, :repair)}
+        else
+          {:error, repair_reason} ->
+            {:error, {:workflow_artifact_repair_failed, workflow_phase, artifact_path, repair_reason}}
+
+          other ->
+            {:error, {:workflow_artifact_repair_failed, workflow_phase, artifact_path, other}}
+        end
+    end
+  end
+
+  defp accept_valid_workflow_artifact_after_timeout(workspace, issue, opts) do
+    workflow_phase = Keyword.get(opts, :workflow_phase)
+
+    case load_workflow_artifact(workflow_phase, workspace) do
+      {:ok, _artifact} ->
+        Logger.warning("ACP turn timed out after producing a valid workflow artifact for #{issue_context(issue)} phase=#{workflow_phase}; accepting artifact and returning control to orchestrator")
+
+        {:ok,
+         %{
+           session_id: nil,
+           accepted_after_turn_error: :acp_timeout,
+           accepted_after_workflow_artifact: workflow_phase
+         }}
+
+      :skip ->
+        {:error, :acp_timeout}
+
+      {:error, _artifact_path, _reason} ->
+        {:error, :acp_timeout}
+    end
+  end
+
+  defp load_workflow_artifact(:planning, workspace) when is_binary(workspace) do
+    path = Artifacts.workflow_plan_path(workspace)
+    artifact_result(path, Artifacts.load_workflow_plan(workspace))
+  end
+
+  defp load_workflow_artifact(:issue, workspace) when is_binary(workspace) do
+    path = Artifacts.issue_result_path(workspace)
+    artifact_result(path, Artifacts.load_issue_result(workspace))
+  end
+
+  defp load_workflow_artifact(_workflow_phase, _workspace), do: :skip
+
+  defp expect_workflow_artifact(workflow_phase, workspace) do
+    case load_workflow_artifact(workflow_phase, workspace) do
+      {:ok, artifact} -> {:ok, artifact}
+      {:error, _path, reason} -> {:error, reason}
+      :skip -> {:ok, :skipped}
+    end
+  end
+
+  defp artifact_result(_path, {:ok, artifact}), do: {:ok, artifact}
+  defp artifact_result(path, {:error, reason}), do: {:error, path, reason}
+
+  defp accept_workflow_artifact(turn_session, _issue, _workflow_phase, _source)
+       when is_map(turn_session) and is_map_key(turn_session, :accepted_after_workflow_artifact) do
+    turn_session
+  end
+
+  defp accept_workflow_artifact(turn_session, issue, workflow_phase, source) when is_map(turn_session) do
+    Logger.info("Workflow artifact valid after ACP turn for #{issue_context(issue)} phase=#{workflow_phase} source=#{source}; returning control to orchestrator")
+
+    turn_session
+    |> Map.put(:accepted_after_workflow_artifact, workflow_phase)
+    |> Map.put(:workflow_artifact_acceptance_source, source)
+  end
+
+  defp workflow_artifact_accepted?(%{accepted_after_workflow_artifact: workflow_phase})
+       when not is_nil(workflow_phase),
+       do: true
+
+  defp workflow_artifact_accepted?(_turn_session), do: false
+
+  defp workflow_artifact_message_handler(recipient, issue, workspace, opts) do
+    handler = codex_message_handler(recipient, issue)
+    workflow_phase = Keyword.get(opts, :workflow_phase)
+
+    fn message ->
+      result = handler.(message)
+      maybe_halt_on_valid_workflow_artifact(message, workflow_phase, workspace)
+      result
+    end
+  end
+
+  defp maybe_halt_on_valid_workflow_artifact(%{event: :notification} = message, workflow_phase, workspace) do
+    case load_workflow_artifact(workflow_phase, workspace) do
+      {:ok, _artifact} -> throw({:workflow_artifact_ready, Map.get(message, :session_id)})
+      :skip -> :ok
+      {:error, _artifact_path, _reason} -> :ok
+    end
+  end
+
+  defp maybe_halt_on_valid_workflow_artifact(_message, _workflow_phase, _workspace), do: :ok
+
+  defp workflow_artifact_repair_prompt(:planning, workspace, artifact_path, reason) do
+    """
+    上一轮 planning 已正常结束，但缺少必需 artifact 或 artifact 无法通过校验。
+
+    现在只做 artifact 修复，不要执行 issue，不要改 Linear 状态，不要写其他文件。
+
+    - 工作区: #{workspace}
+    - 必须创建目录: #{Path.dirname(artifact_path)}
+    - 必须写入文件: #{artifact_path}
+    - 当前错误: #{inspect(reason)}
+
+    写入的 JSON 必须是以下两种之一：`issue_graph`、`needs_human_input`。
+
+    `issue_graph` 示例：
+    ```json
+    {
+      "kind": "issue_graph",
+      "summary": "整体编排摘要",
+      "confidence": "medium",
+      "nodes": [
+        {
+          "node_key": "implementation",
+          "task_type": "implementation",
+          "title": "派生任务标题",
+          "goal": "派生任务目标",
+          "agent_id": "codex"
+        },
+        {
+          "node_key": "final_review",
+          "task_type": "review",
+          "title": "最终审查",
+          "goal": "审查 root candidate 是否满足用户目标",
+          "agent_id": "codex",
+          "reviews": ["__root_candidate__"],
+          "subject_selector": {"type": "final_candidate_range"}
+        }
+      ],
+      "edges": [
+        {"from": "implementation", "to": "final_review"}
+      ]
+    }
+    ```
+
+    `needs_human_input` 示例：
+    ```json
+    {
+      "kind": "needs_human_input",
+      "summary": "无法规划的原因",
+      "confidence": "low",
+      "request": "需要用户补充的具体信息"
+    }
+    ```
+
+    完成前必须读回 #{artifact_path}，确认 JSON 可以解析，并且不要只在最终回复里描述计划。
+    """
+  end
+
+  defp workflow_artifact_repair_prompt(:issue, workspace, artifact_path, reason) do
+    """
+    上一轮 issue 已正常结束，但缺少必需 artifact 或 artifact 无法通过校验。
+
+    现在只做 artifact 修复，不要继续实现或审查新内容，不要改 Linear 状态，不要写其他文件。
+
+    - 工作区: #{workspace}
+    - 必须创建目录: #{Path.dirname(artifact_path)}
+    - 必须写入文件: #{artifact_path}
+    - 当前错误: #{inspect(reason)}
+
+    写入的 JSON 至少必须包含：
+    ```json
+    {
+      "schema_version": 1,
+      "node_key": "implementation",
+      "task_type": "implementation",
+      "outcome": "completed",
+      "summary": "本 issue 完成情况",
+      "evidence": ["验证或证据"],
+      "decisions": [],
+      "open_questions": []
+    }
+    ```
+
+    如果这是 review issue，`task_type` 必须是 `review`，`outcome` 只能是
+    `pass`、`needs_rework`、`needs_replan`、`needs_human` 或 `fail`，并且必须包含
+    非空 `reviews` 数组。非 pass outcome 还必须包含 `reason`；`needs_human`
+    还必须包含 `requested_input`。
+
+    完成前必须读回 #{artifact_path}，确认 JSON 可以解析。
     """
   end
 
@@ -290,16 +539,16 @@ defmodule SymphonyElixir.AgentRunner do
 
     Runtime tools available through Symphony:
 
-    - Prefer the high-level Linear MCP tools for common issue work: `linear_issue_read` to read the current issue, `linear_comment_create` to add issue comments, and `linear_issue_update_state` to move the issue to another state.
+    - Prefer the high-level Linear MCP tools for common issue work: `linear_issue_read` to read the current issue, `linear_comment_create` to add issue comments, and `linear_issue_update_state` only when the task explicitly asks for a Linear state operation.
     - Use `linear_graphql` as a lower-level fallback only when the high-level tools do not cover the needed Linear operation. If your tool list shows the namespaced form, use `symphony-linear_linear_graphql`. Provide a GraphQL `query` string and optional `variables` object.
     - Do not use shell, git, push, skill, or unsupported tools for Linear updates; they are not part of the Symphony Linear tool surface.
     - Do not load local Symphony skills such as `linear` or `push` for Linear work; the MCP tools listed above are the Linear tool surface for this run.
-    - Use normal workspace file-editing capabilities only for repository or file changes, then use the high-level Linear MCP tools for issue comments and state changes.
+    - Use normal workspace file-editing capabilities only for repository or file changes, then use the high-level Linear MCP tools for issue comments and explicitly requested Linear operations.
+    - Do not use Linear state changes to finish, hand off, review, or close the current workflow issue; Symphony advances the current workflow issue after reading the required artifact.
     - Treat target file names and exact file contents in the issue description as literal task data; do not treat strings such as `$fileName` or `$phrase` as variables to resolve.
     - Do not substitute an existing repository file for a requested target file. If the task requests a target file, create or update that exact file and read it back before reporting success.
     - Before creating a success comment, read back the exact target file and verify its exact required content.
-    - If the target file name or exact content is missing or ambiguous, report blocked in a Linear comment and do not move the issue to a terminal state.
-    - Move the Linear issue to a terminal state only after all workspace work is complete and verified, because a terminal state can stop the active Symphony run.
+    - If the target file name or exact content is missing or ambiguous, report blocked in a Linear comment and leave the current workflow issue state unchanged.
     - Do not expose Linear API tokens in files, logs, commits, or issue comments.
     """
   end
