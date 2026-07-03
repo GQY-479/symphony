@@ -1649,7 +1649,24 @@ defmodule SymphonyElixir.Orchestrator do
   defp selected_agent_for_dispatch(%Issue{} = issue, metadata) when is_map(metadata) do
     case metadata_agent_id(metadata) do
       agent_id when is_binary(agent_id) and agent_id != "" ->
-        resolve_agent_by_id_for_dispatch(agent_id)
+        case resolve_agent_by_id_for_dispatch(agent_id) do
+          {:ok, _resolved_agent} = ok ->
+            ok
+
+          {:error, {:unknown_agent, ^agent_id}} = error ->
+            if workflow_metadata?(metadata) do
+              Logger.warning(
+                "Workflow metadata selected unknown agent_id=#{agent_id} for #{issue_context(issue)}; falling back to issue routing"
+              )
+
+              Router.resolve(issue, Config.settings!())
+            else
+              error
+            end
+
+          error ->
+            error
+        end
 
       _ ->
         Router.resolve(issue, Config.settings!())
@@ -1683,6 +1700,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp metadata_agent_id(metadata) when is_map(metadata) do
     Map.get(metadata, :agent_id) || Map.get(metadata, "agent_id")
+  end
+
+  defp workflow_metadata?(metadata) when is_map(metadata) do
+    not is_nil(Map.get(metadata, :workflow_phase) || Map.get(metadata, "workflow_phase"))
   end
 
   defp agent_runner_opts(attempt, worker_host, resolved_agent, metadata) when is_map(metadata) do

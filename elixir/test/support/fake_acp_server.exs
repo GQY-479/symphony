@@ -69,6 +69,8 @@ defmodule SymphonyElixir.FakeAcpServer do
             with open(trace_file, "a", encoding="utf-8") as handle:
                 handle.write("PROMPT:" + text.replace("\\n", "\\\\n") + "\\n")
 
+    prompt_count = 0
+
     for line in sys.stdin:
         message = json.loads(line)
         method = message.get("method")
@@ -112,6 +114,7 @@ defmodule SymphonyElixir.FakeAcpServer do
             else:
                 send({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32000, "message": "unexpected config option", "data": params}})
         elif method == "session/prompt":
+            prompt_count += 1
             trace_prompt_text(message)
             if behavior.get("permission"):
                 send({"jsonrpc": "2.0", "id": 9001, "method": "session/request_permission", "params": {"sessionId": session_id, "toolCall": {"title": "write"}, "options": behavior.get("permissionOptions", [{"optionId": "once", "kind": "allow_once", "name": "Allow once"}, {"optionId": "reject", "kind": "reject_once", "name": "Reject"}])}})
@@ -133,6 +136,9 @@ defmodule SymphonyElixir.FakeAcpServer do
             if behavior.get("malformed"):
                 print("not-json", flush=True)
             write_file = behavior.get("writeFileOnPrompt")
+            write_file_prompt_number = behavior.get("writeFileOnPromptNumber")
+            if write_file_prompt_number and prompt_count != write_file_prompt_number:
+                write_file = None
             if write_file:
                 path = write_file.get("path")
                 contents = write_file.get("contents", "")

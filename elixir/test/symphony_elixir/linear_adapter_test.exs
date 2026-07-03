@@ -137,11 +137,77 @@ defmodule SymphonyElixir.LinearAdapterTest do
 
     assert_receive {:graphql_called, _project_lookup_query, %{projectSlug: "project-slug"}}
     assert_receive {:graphql_called, _state_lookup_query, %{teamId: "team-1", stateName: "Todo"}}
-    assert_receive {:graphql_called, label_lookup_query, %{labelNames: ["symphony-local-test"]}}
+    assert_receive {:graphql_called, label_lookup_query, %{teamId: "team-1"}}
     assert label_lookup_query =~ "issueLabels"
-    refute label_lookup_query =~ "team:"
+    assert label_lookup_query =~ "$teamId: ID!"
+    assert label_lookup_query =~ "team:"
+    assert label_lookup_query =~ "null: true"
 
     assert_receive {:graphql_called, create_issue_query, %{labelIds: ["workspace-label-1"]}}
+    assert create_issue_query =~ "issueCreate"
+  end
+
+  test "create_issue resolves labels case-insensitively within the target team" do
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_project_slug: "project-slug"
+    )
+
+    Process.put(
+      {FakeLinearClient, :graphql_results},
+      [
+        {:ok,
+         %{
+           "data" => %{
+             "projects" => %{
+               "nodes" => [%{"id" => "project-1", "teams" => %{"nodes" => [%{"id" => "team-1"}]}}]
+             }
+           }
+         }},
+        {:ok, %{"data" => %{"team" => %{"states" => %{"nodes" => [%{"id" => "state-1"}]}}}}},
+        {:ok,
+         %{
+           "data" => %{
+             "issueLabels" => %{
+               "nodes" => [%{"id" => "label-bug", "name" => "bug", "team" => %{"id" => "team-1"}}]
+             }
+           }
+         }},
+        {:ok,
+         %{
+           "data" => %{
+             "issueCreate" => %{
+               "success" => true,
+               "issue" => %{
+                 "id" => "issue-1",
+                 "identifier" => "MT-1",
+                 "title" => "Derived task",
+                 "description" => "From workflow",
+                 "url" => "https://linear.app/issue/MT-1",
+                 "state" => %{"name" => "Todo"},
+                 "labels" => %{"nodes" => [%{"name" => "bug"}]}
+               }
+             }
+           }
+         }}
+      ]
+    )
+
+    assert {:ok, %Issue{labels: ["bug"]}} =
+             Adapter.create_issue(%{
+               title: "Derived task",
+               description: "From workflow",
+               labels: ["Bug"]
+             })
+
+    assert_receive {:graphql_called, _project_lookup_query, %{projectSlug: "project-slug"}}
+    assert_receive {:graphql_called, _state_lookup_query, %{teamId: "team-1", stateName: "Todo"}}
+    assert_receive {:graphql_called, label_lookup_query, label_lookup_variables}
+    assert label_lookup_query =~ "issueLabels"
+    assert label_lookup_variables == %{teamId: "team-1"}
+
+    assert_receive {:graphql_called, create_issue_query, %{labelIds: ["label-bug"]}}
     assert create_issue_query =~ "issueCreate"
   end
 

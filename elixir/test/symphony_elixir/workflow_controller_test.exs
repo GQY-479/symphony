@@ -296,6 +296,63 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert {:error, :invalid_workflow_plan} = Controller.handle_planning_completion(root_issue, workspace)
   end
 
+  test "issue_graph materialization rejects nodes assigned to unknown agents" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-unknown-agent-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{
+      id: "root-unknown-agent",
+      identifier: "YQE-UNKNOWN-AGENT",
+      title: "Unknown agent plan",
+      state: "In Progress"
+    }
+
+    workspace = Path.join(workspace_root, root_issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    File.write!(
+      Artifacts.workflow_plan_path(workspace),
+      Jason.encode!(%{
+        "kind" => "issue_graph",
+        "summary" => "Planner selected an unavailable agent",
+        "confidence" => "medium",
+        "nodes" => [
+          %{
+            "node_key" => "research",
+            "task_type" => "research",
+            "title" => "Research",
+            "goal" => "Gather facts",
+            "agent_id" => "mimo-auto"
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "Final review",
+            "goal" => "Review candidate",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
+          }
+        ],
+        "edges" => [%{"from" => "research", "to" => "final_review"}]
+      })
+    )
+
+    assert {:error, {:unknown_workflow_agent, "mimo-auto"}} =
+             Controller.handle_planning_completion(root_issue, workspace)
+
+    refute_receive {:memory_tracker_issue_created, %Issue{}}, 100
+  end
+
   test "explicit final review can depend on existing review leaves" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-final-after-review-#{System.unique_integer([:positive])}")
@@ -1167,6 +1224,105 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert rework_node["task_type"] == "implementation"
     assert rework_node["rework_of"] == "implementation"
     assert Registry.node(registry, "implementation_review-rework-1") == nil
+  end
+
+  test "final review needs_rework creates replacement final review gated on rework" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-final-review-rework-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, planner_agent: "codex", reviewer_agent: "codex", artifact_dir: ".symphony"}
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{id: "root-final-review-rework", identifier: "YQE-FINAL-REWORK", title: "root", state: "In Progress"}
+    implementation_issue = %Issue{id: "impl-final-review-rework", identifier: "YQE-FINAL-REWORK-1", title: "实现", state: "Closed"}
+    review_issue = %Issue{id: "review-final-review-rework", identifier: "YQE-FINAL-REWORK-2", title: "最终审查", state: "In Progress"}
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => implementation_issue.id,
+      "issue_identifier" => implementation_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "completed",
+      "dependencies" => [],
+      "title" => "实现",
+      "issue_result" => %{
+        "summary" => "实现声称完成",
+        "evidence" => ["mix test"]
+      }
+    })
+    |> Registry.put_node("final_review", %{
+      "node_key" => "final_review",
+      "issue_id" => review_issue.id,
+      "issue_identifier" => review_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "review",
+      "workflow_semantics" => "executable",
+      "status" => "ready",
+      "dependencies" => ["implementation"],
+      "reviews" => ["__root_candidate__"],
+      "subject_selector" => %{"type" => "final_candidate_range"},
+      "title" => "最终审查"
+    })
+    |> Registry.add_edge(%{"from" => "implementation", "to" => "final_review", "kind" => "review"})
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    review_workspace = Path.join(workspace_root, review_issue.identifier)
+    File.mkdir_p!(Path.join(review_workspace, ".symphony"))
+
+    write_issue_result!(
+      review_workspace,
+      review_result("final_review", ["implementation"], "needs_rework", "实现缺少链接功能，需要返工", %{
+        "reason" => "缺少 issue_link/2"
+      })
+    )
+
+    assert {:ok, {:needs_rework, "review-final-review-rework", "实现缺少链接功能，需要返工"}} =
+             Controller.handle_issue_completion(review_issue, review_workspace)
+
+    assert_receive {:memory_tracker_issue_created, %Issue{} = rework_issue}
+    assert_receive {:memory_tracker_issue_created, %Issue{} = replacement_review_issue}
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert Registry.node(registry, "implementation")["status"] == "superseded"
+    assert Registry.node(registry, "final_review")["status"] == "superseded"
+
+    rework_node = Registry.node(registry, "implementation-rework-1")
+    replacement_review_node = Registry.node(registry, "final_review-rework-1")
+
+    assert rework_node["issue_id"] == rework_issue.id
+    assert rework_node["status"] == "ready"
+    assert replacement_review_node["issue_id"] == replacement_review_issue.id
+    assert replacement_review_node["task_type"] == "review"
+    assert replacement_review_node["dependencies"] == ["implementation-rework-1"]
+    assert replacement_review_node["reviews"] == ["__root_candidate__"]
+    assert replacement_review_node["subject_selector"] == %{"type" => "final_candidate_range"}
+    assert replacement_review_node["status"] == "waiting"
+
+    rework_workspace = Path.join(workspace_root, rework_issue.identifier)
+    File.mkdir_p!(Path.join(rework_workspace, ".symphony"))
+
+    write_issue_result!(
+      rework_workspace,
+      issue_result("implementation-rework-1", "implementation", "返工完成", %{})
+    )
+
+    assert {:ok, {:completed, _rework_issue_id}} = Controller.handle_issue_completion(rework_issue, rework_workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert Registry.node(registry, "implementation-rework-1")["status"] == "completed"
+    assert Registry.node(registry, "final_review-rework-1")["status"] == "ready"
+    assert registry["status"] == "planning_complete"
   end
 
   test "review issue completion 读取 issue result、回写评论并完成 issue" do

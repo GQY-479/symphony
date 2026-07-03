@@ -272,7 +272,7 @@ defmodule SymphonyElixir.CoreTest do
     assert settings.agents["mimocode"]["command"] == "mimo-code"
     assert settings.agents["mimocode"]["args"] == ["acp", "--cwd", "{{workspace}}"]
     assert settings.agents["mimocode"]["permission_policy"] == "reject"
-    assert settings.agents["mimocode"]["config_options"] == %{"model" => "mimo/mimo-auto"}
+    assert settings.agents["mimocode"]["config_options"] == %{"model" => ["mimo-v2.5-pro", "mimo/mimo-auto"]}
     assert settings.agents["mimocode"]["mcp"] == %{"linear_tools" => true}
 
     assert settings.agents["codex"]["kind"] == "codex_app_server"
@@ -681,7 +681,7 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agents.mimocode.config_options must be a map of string keys to string values"
+    assert message =~ "agents.mimocode.config_options must be a map of string keys to string or string-list values"
   end
 
   test "workflow config rejects invalid acp_stdio mcp config" do
@@ -916,6 +916,63 @@ defmodule SymphonyElixir.CoreTest do
     refute MapSet.member?(updated_state.claimed, issue.id)
     refute Map.has_key?(updated_state.retry_attempts, issue.id)
     refute Map.has_key?(updated_state.running, issue.id)
+  end
+
+  test "workflow retry dispatch falls back to issue routing when stored agent is unavailable" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      agents: %{
+        codex: %{kind: "codex_app_server", command: "codex app-server"},
+        mimocode: %{kind: "cli_run", command: "mimo"}
+      },
+      routing: %{default_agent: "codex", by_label: %{"agent:mimo" => "mimocode"}}
+    )
+
+    issue = %Issue{
+      id: "issue-stale-workflow-agent",
+      identifier: "MT-STALE-WORKFLOW-AGENT",
+      title: "Stale workflow agent",
+      state: "In Progress",
+      labels: ["agent:mimo"]
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    state = %Orchestrator.State{
+      max_concurrent_agents: 10,
+      claimed: MapSet.new([issue.id]),
+      retry_attempts: %{
+        issue.id => %{
+          attempt: 1,
+          due_at_ms: System.monotonic_time(:millisecond),
+          identifier: issue.identifier,
+          agent_id: "mimo-auto",
+          agent_kind: nil,
+          workflow_phase: :issue,
+          workflow_root_issue_id: "YQE-119"
+        }
+      },
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    updated_state =
+      Orchestrator.handle_retry_issue_lookup_for_test(issue, state, issue.id, 1, %{
+        identifier: issue.identifier,
+        agent_id: "mimo-auto",
+        workflow_phase: :issue,
+        workflow_root_issue_id: "YQE-119"
+      })
+
+    running_entry = updated_state.running[issue.id]
+
+    on_exit(fn ->
+      if is_map(running_entry) do
+        pid = Map.get(running_entry, :pid)
+        if is_pid(pid) and Process.alive?(pid), do: Process.exit(pid, :shutdown)
+      end
+    end)
+
+    assert %{agent_id: "mimocode", agent_kind: "cli_run", workflow_phase: :issue} = running_entry
   end
 
   test "current WORKFLOW.md file is valid and complete" do

@@ -38,9 +38,9 @@ review 不再是 orchestrator 内部 phase；review 是普通 issue node。是�
 5. 派生 issue 只有在 registry 节点为 `ready` 且依赖已完成时才会执行。
 6. 普通 issue agent 写出 `issue_result.json` 后，Symphony 写回 Issue Result 评论，并按 registry 依赖边解锁下游。
 7. review issue agent 也写出 `issue_result.json`。`outcome=pass` 会把 review 节点标记为 `completed`，并把依赖满足的下游节点推进到 `ready`。
-8. review `needs_rework` 会创建普通返工 issue，原节点在 registry 中标记为 `superseded`，下游改为等待返工节点通过。
+8. review `needs_rework` 会创建普通返工 issue，原节点在 registry 中标记为 `superseded`，下游改为等待返工节点通过。可由 agent 通过代码、测试、文档或配置返工修复的 gap 应使用 `needs_rework`，不要使用 `fail`。如果被 supersede 的 review 是 root `final_review`，控制层会创建替代 `final_review`，确保返工结果仍经过最终审查后才完成 root workflow。
 9. review `needs_replan` 会把 root workflow 标记为 `replanning`，废弃未完成节点，并把这些被废弃的派生 issue 移到终态，避免旧路径继续被轮询；随后调度 root issue 重新进入 planning，planner 会收到重规划原因和被审查 issue。
-10. `needs_human` 和 `fail` 会把 issue 留在可诊断的 blocked 状态，避免静默成功。
+10. `needs_human` 和 `fail` 会把 issue 留在可诊断的 blocked 状态，避免静默成功。`fail` 只用于不应自动继续的不可恢复问题，例如目标本身无效、继续会破坏数据/安全边界、外部条件永久不可满足，或已经无法把返工安全地绑定到现有 workflow 节点。
 
 ## 需要人工输入
 

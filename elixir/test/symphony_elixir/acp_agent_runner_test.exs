@@ -645,6 +645,90 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
     end
   end
 
+  test "AgentRunner accepts a valid workflow artifact observed during repair turn" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-acp-runner-repair-artifact-ready-#{System.unique_integer([:positive])}")
+    pid_file = Path.join(test_root, "fake-acp.pid")
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-922")
+      artifact_path = Path.join([workspace, ".symphony", "issue_result.json"])
+      trace_file = Path.join(test_root, "acp.trace")
+      File.mkdir_p!(workspace_root)
+
+      {executable, _env} =
+        SymphonyElixir.FakeAcpServer.write!(test_root, %{
+          "sessionId" => "fake-acp-session",
+          "pidFile" => pid_file,
+          "traceFile" => trace_file,
+          "writeFileOnPromptNumber" => 2,
+          "writeFileOnPrompt" => %{
+            "path" => artifact_path,
+            "contents" =>
+              Jason.encode!(%{
+                schema_version: 1,
+                node_key: "final_review",
+                task_type: "review",
+                outcome: "pass",
+                summary: "Review passed after repair",
+                evidence: ["read SPEC.md"],
+                reviews: ["documentation"],
+                decisions: [],
+                open_questions: []
+              })
+          },
+          "streamUpdatesBeforePromptResponseMs" => 8_000,
+          "streamUpdateIntervalMs" => 50
+        })
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        agents: %{
+          mimocode: %{
+            kind: "acp_stdio",
+            command: executable,
+            args: [],
+            permission_policy: "reject",
+            timeout_ms: 10_000,
+            read_timeout_ms: 5_000
+          }
+        },
+        routing: %{default_agent: "mimocode"},
+        orchestration: %{enabled: true, planner_agent: "mimocode", artifact_dir: ".symphony"}
+      )
+
+      issue = %Issue{
+        id: "issue-acp-runner-repair-artifact-ready",
+        identifier: "MT-922",
+        title: "ACP runner repair artifact ready",
+        description: "Write issue result during repair and keep streaming",
+        state: "In Progress",
+        labels: []
+      }
+
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 self(),
+                 max_turns: 1,
+                 workflow_phase: :issue,
+                 issue_state_fetcher: fn ["issue-acp-runner-repair-artifact-ready"] ->
+                   {:ok, [%{issue | state: "In Progress"}]}
+                 end
+               )
+
+      assert {:ok, %{"outcome" => "pass"}} =
+               SymphonyElixir.Workflow.Artifacts.load_issue_result(workspace)
+
+      trace_lines = trace_file |> File.read!() |> String.split("\n", trim: true)
+      assert Enum.count(trace_lines, &(&1 == "session/prompt")) == 2
+    after
+      kill_fake_acp(pid_file)
+      File.rm_rf(test_root)
+    end
+  end
+
   defp kill_fake_acp(pid_file) when is_binary(pid_file) do
     if File.exists?(pid_file) do
       pid_file

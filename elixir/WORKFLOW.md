@@ -35,8 +35,22 @@ hooks:
       for repo in $REPOS; do
         repo=$(printf '%s' "$repo" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         if [ -d "$repo" ]; then
-          cp -r "$repo"/* . 2>/dev/null || true
-          cp -r "$repo"/.[!.]* . 2>/dev/null || true
+          if command -v rsync >/dev/null 2>&1; then
+            rsync -a \
+              --exclude '.symphony/' \
+              --exclude '.worktrees/' \
+              --exclude 'graphify-out/' \
+              --exclude 'node_modules/' \
+              --exclude 'elixir/_build/' \
+              --exclude 'elixir/deps/' \
+              --exclude 'elixir/log/' \
+              --exclude 'elixir/*.log' \
+              "$repo"/ .
+          else
+            cp -r "$repo"/* . 2>/dev/null || true
+            cp -r "$repo"/.[!.]* . 2>/dev/null || true
+            rm -rf .symphony .worktrees graphify-out node_modules elixir/_build elixir/deps elixir/log 2>/dev/null || true
+          fi
           break
         fi
       done

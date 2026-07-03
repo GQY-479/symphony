@@ -66,12 +66,15 @@ defmodule SymphonyElixir.Linear.Adapter do
   """
 
   @label_lookup_query """
-  query SymphonyResolveIssueLabelIds($labelNames: [String!]!) {
+  query SymphonyResolveIssueLabelIds($teamId: ID!) {
     issueLabels(
       filter: {
-        name: {in: $labelNames}
+        or: [
+          {team: {id: {eq: $teamId}}},
+          {team: {null: true}}
+        ]
       }
-      first: 50
+      first: 100
     ) {
       nodes {
         id
@@ -285,7 +288,7 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   defp resolve_label_ids(team_id, label_names) do
     with {:ok, response} <-
-           client_module().graphql(@label_lookup_query, %{labelNames: label_names}),
+           client_module().graphql(@label_lookup_query, %{teamId: team_id}),
          {:ok, label_ids} <- extract_label_ids(response, team_id, label_names) do
       {:ok, label_ids}
     else

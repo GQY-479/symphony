@@ -329,7 +329,8 @@ defmodule SymphonyElixir.AgentRunner do
 
         Logger.warning("Workflow artifact missing or invalid for #{issue_context(issue)} phase=#{workflow_phase} path=#{artifact_path} reason=#{inspect(reason)}; requesting artifact repair turn")
 
-        with {:ok, repair_session} <- run_turn.(issue, repair_prompt, turn_opts),
+        with {:ok, repair_session} <-
+               run_workflow_artifact_aware_turn(run_turn, issue, repair_prompt, turn_opts, opts),
              {:ok, _artifact} <- expect_workflow_artifact(workflow_phase, workspace) do
           {:ok, accept_workflow_artifact(repair_session, issue, workflow_phase, :repair)}
         else

@@ -3,6 +3,7 @@ defmodule SymphonyElixir.Workflow.Prompts do
   为不同工作流阶段追加固定提示词。
   """
 
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Workflow.Artifacts
 
   @review_outcomes ["pass", "needs_rework", "needs_replan", "needs_human", "fail"]
@@ -24,6 +25,7 @@ defmodule SymphonyElixir.Workflow.Prompts do
     replan_context = replan_context(context_map(context))
     artifact_dir = artifact_dir_text(workspace)
     plan_path = artifact_path_text(workspace, :workflow_plan)
+    available_agents = available_agents_text()
 
     """
 
@@ -41,6 +43,12 @@ defmodule SymphonyElixir.Workflow.Prompts do
     - 写入并读回 `workflow_plan.json` 后立即结束，等待控制层创建派生 issue 或请求人工输入。
     - 只允许输出一种规划形态：`issue_graph` 或 `needs_human_input`。
 
+    可用 agent_id:
+
+    #{available_agents}
+    - 每个 node 的 `agent_id` 必须精确使用上面列出的某一个 id。
+    - 不要使用未列出的 agent_id；不要根据模型名、工具名、Linear label 或自然语言名称自行发明 agent_id。
+
     业务编排策略:
 
     - 不要机械地把需求拆成固定阶段；你的职责是管理不确定性、依赖、风险、证据和验证闭环。
@@ -54,6 +62,8 @@ defmodule SymphonyElixir.Workflow.Prompts do
     - 如果 review 失败会让下游工作无效，下游必须依赖 review node；只有下游只是基于候选上下文继续工作，且后续仍有独立 review/verification 收口时，才可以依赖 implementation node。
     - 大型或低置信度任务，不要一次规划完整大图；规划能降低当前最大风险的一批 node，并让后续根据 issue result 动态重规划。
     - review/verification 发现 gap 时，后续应生成 `rework`、`diagnosis` 或新的 `design/implementation` node；gap 是下一轮规划输入，不只是评论。
+    - 可由 agent 通过代码、测试、文档或配置返工修复的 gap，必须输出 `needs_rework`，不要输出 `fail`。
+    - `fail` 只用于不应自动继续的不可恢复问题，例如目标本身无效、继续会破坏数据/安全边界、外部条件永久不可满足，或已经无法把返工安全地绑定到现有 workflow 节点。
 
     task_type 语义:
 
@@ -62,7 +72,7 @@ defmodule SymphonyElixir.Workflow.Prompts do
     - `design`: 决定架构、接口、数据模型、迁移、集成或验证策略。
     - `implementation`: 修改代码、测试、文档、配置或生成资产。
     - `integration`: 合并、串联或协调多个已完成结果。
-    - `review`: 审查明确 subject 是否满足 contract，输出 pass/needs_rework/fail/needs_human。
+    - `review`: 审查明确 subject 是否满足 contract，输出 pass/needs_rework/needs_replan/needs_human/fail。
     - `verification`: 从 root goal 或用户可观察行为倒推验证整体目标是否达成。
     - `rework`: 根据 review/verification gap 修复已有结果。
     - `merge_resolution`: 解决候选分支或 issue 分支冲突。
@@ -176,6 +186,9 @@ defmodule SymphonyElixir.Workflow.Prompts do
         - 不要执行 `git add`，不要 stage，不要 commit，不要 push，不要创建 PR，不要创建或切换分支。
         - 允许的 review outcome 集合: #{Enum.join(@review_outcomes, ", ")}。
         - `pass` 表示审查通过。
+        - 可由 agent 通过代码、测试、文档或配置返工修复的 gap，必须输出 `needs_rework`，不要输出 `fail`。
+        - `needs_replan` 表示当前图或审查对象已不适合直接返工，需要 root workflow 重新规划。
+        - `fail` 只用于不应自动继续的不可恢复问题，例如目标本身无效、继续会破坏数据/安全边界、外部条件永久不可满足，或已经无法把返工安全地绑定到现有 workflow 节点。
         - `needs_rework`、`needs_replan`、`fail` 必须包含非空 `reason`。
         - `needs_human` 必须包含非空 `reason` 和 `requested_input`。
         - `reviews` 必须列出被审查 node key；不要自行改写 controller 给出的审查对象。
@@ -249,6 +262,21 @@ defmodule SymphonyElixir.Workflow.Prompts do
 
   defp present?(value) when is_binary(value), do: String.trim(value) != ""
   defp present?(_value), do: false
+
+  defp available_agents_text do
+    Config.settings!().agents
+    |> case do
+      agents when is_map(agents) ->
+        agents
+        |> Map.keys()
+        |> Enum.map(&to_string/1)
+        |> Enum.sort()
+        |> Enum.map_join("\n", &"- `#{&1}`")
+
+      _ ->
+        "- `codex`"
+    end
+  end
 
   defp workspace_text(nil), do: "未提供"
   defp workspace_text(workspace) when is_binary(workspace), do: workspace

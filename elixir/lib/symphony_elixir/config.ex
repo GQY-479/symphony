@@ -540,10 +540,12 @@ defmodule SymphonyElixir.Config do
         :ok
 
       {:ok, value} when is_map(value) ->
-        if Enum.all?(value, fn {key, option_value} -> is_binary(key) and is_binary(option_value) end) do
+        if Enum.all?(value, fn {key, option_value} ->
+             is_binary(key) and valid_string_or_string_list?(option_value)
+           end) do
           :ok
         else
-          invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string values")
+          invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string or string-list values")
         end
 
       {:ok, value} when is_list(value) ->
@@ -557,6 +559,10 @@ defmodule SymphonyElixir.Config do
         invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string values or a list of strings, got #{inspect(value)}")
     end
   end
+
+  defp valid_string_or_string_list?(value) when is_binary(value), do: true
+  defp valid_string_or_string_list?(value) when is_list(value), do: Enum.all?(value, &is_binary/1)
+  defp valid_string_or_string_list?(_value), do: false
 
   defp validate_optional_acp_mcp_config(agent_id, agent) do
     case Map.fetch(agent, "mcp") do
