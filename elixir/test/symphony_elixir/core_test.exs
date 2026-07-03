@@ -272,7 +272,7 @@ defmodule SymphonyElixir.CoreTest do
     assert settings.agents["mimocode"]["command"] == "mimo-code"
     assert settings.agents["mimocode"]["args"] == ["acp", "--cwd", "{{workspace}}"]
     assert settings.agents["mimocode"]["permission_policy"] == "reject"
-    assert settings.agents["mimocode"]["config_options"] == %{"model" => "mimo/mimo-auto"}
+    assert settings.agents["mimocode"]["config_options"] == %{"model" => ["mimo-v2.5-pro", "mimo/mimo-auto"]}
     assert settings.agents["mimocode"]["mcp"] == %{"linear_tools" => true}
 
     assert settings.agents["codex"]["kind"] == "codex_app_server"
@@ -681,7 +681,7 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
-    assert message =~ "agents.mimocode.config_options must be a map of string keys to string values"
+    assert message =~ "agents.mimocode.config_options must be a map of string keys to string or string-list values"
   end
 
   test "workflow config rejects invalid acp_stdio mcp config" do
