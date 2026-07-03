@@ -63,12 +63,15 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
+    workflow_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
 
-             root && root.state == "Done" && orchestrator_idle?(orchestrator_name)
-           end) do
+        root && root.state == "Done" && orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless workflow_closed? do
       flunk("""
       workflow implementation smoke did not close
 
@@ -118,7 +121,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         log_path,
         %{
           "schema_version" => 1,
-          "node_key" => "root",
+          "node_key" => "implementation",
           "task_type" => "implementation",
           "outcome" => "completed",
           "summary" => "implementation completed without evidence",
@@ -162,14 +165,17 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+    missing_evidence_blocked? =
+      eventually?(fn ->
+        snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
 
-             Enum.any?(snapshot.blocked, fn blocked ->
-               blocked.issue_id == root_issue.id and blocked.workflow_phase == :issue and
-                 String.contains?(blocked.error, "invalid_issue_result")
-             end)
-           end) do
+        Enum.any?(snapshot.blocked, fn blocked ->
+          blocked.workflow_root_issue_id == root_issue.identifier and blocked.workflow_phase == :issue and
+            String.contains?(blocked.error, "invalid_issue_result")
+        end)
+      end)
+
+    unless missing_evidence_blocked? do
       flunk("""
       workflow implementation missing evidence did not block in execution
 
@@ -186,7 +192,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
 
     assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
     refute registry["status"] == "completed"
-    refute Registry.node(registry, "root")["status"] == "completed"
+    refute Registry.node(registry, "implementation")["status"] == "completed"
 
     runs = read_agent_runs(log_path)
     assert Enum.any?(runs, &(&1["phase"] == "planning" and &1["issue_identifier"] == root_issue.identifier))
@@ -208,7 +214,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         log_path,
         %{
           "schema_version" => 1,
-          "node_key" => "root",
+          "node_key" => "implementation",
           "task_type" => "implementation",
           "outcome" => "completed",
           "summary" => "implementation completed but needs product input",
@@ -254,21 +260,24 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+    needs_human_blocked? =
+      eventually?(fn ->
+        snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
 
-             case Registry.load_by_root_identifier(root_issue.identifier) do
-               {:ok, %{"status" => "blocked", "human_input_request" => request}} when is_binary(request) ->
-                 snapshot.running == [] and snapshot.retrying == [] and
-                   Enum.any?(snapshot.blocked, fn blocked ->
-                     blocked.workflow_phase == :issue and
-                       String.contains?(blocked.error, "review needs human")
-                   end)
+        case Registry.load_by_root_identifier(root_issue.identifier) do
+          {:ok, %{"status" => "blocked", "human_input_request" => request}} when is_binary(request) ->
+            snapshot.running == [] and snapshot.retrying == [] and
+              Enum.any?(snapshot.blocked, fn blocked ->
+                blocked.workflow_phase == :issue and
+                  String.contains?(blocked.error, "review needs human")
+              end)
 
-               _ ->
-                 false
-             end
-           end) do
+          _ ->
+            false
+        end
+      end)
+
+    unless needs_human_blocked? do
       flunk("""
       workflow implementation needs_human did not block registry
 
@@ -288,7 +297,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
     assert registry["blocked_reason"] == "product decision required before closing"
     assert registry["human_input_request"] == "Please confirm whether this implementation is acceptable."
-    assert Registry.node(registry, "root")["status"] == "completed"
+    assert Registry.node(registry, "implementation")["status"] == "completed"
     assert Registry.node(registry, "final_review")["status"] == "blocked"
     assert Registry.node(registry, "final_review")["review_summary"] == "product decision required before closing"
   end
@@ -307,7 +316,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         log_path,
         %{
           "schema_version" => 1,
-          "node_key" => "root",
+          "node_key" => "implementation",
           "task_type" => "implementation",
           "outcome" => "completed",
           "summary" => "implementation completed with unacceptable result",
@@ -352,21 +361,24 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+    failure_recorded? =
+      eventually?(fn ->
+        snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
 
-             case Registry.load_by_root_identifier(root_issue.identifier) do
-               {:ok, %{"status" => "failed", "failure_reason" => reason}} when is_binary(reason) ->
-                 snapshot.running == [] and snapshot.retrying == [] and
-                   Enum.any?(snapshot.blocked, fn blocked ->
-                     blocked.workflow_phase == :issue and
-                       String.contains?(blocked.error, "review failed")
-                   end)
+        case Registry.load_by_root_identifier(root_issue.identifier) do
+          {:ok, %{"status" => "failed", "failure_reason" => reason}} when is_binary(reason) ->
+            snapshot.running == [] and snapshot.retrying == [] and
+              Enum.any?(snapshot.blocked, fn blocked ->
+                blocked.workflow_phase == :issue and
+                  String.contains?(blocked.error, "review failed")
+              end)
 
-               _ ->
-                 false
-             end
-           end) do
+          _ ->
+            false
+        end
+      end)
+
+    unless failure_recorded? do
       flunk("""
       workflow implementation fail did not fail registry
 
@@ -386,7 +398,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
     assert registry["failure_reason"] == "implementation failed review"
     refute registry["failure_reason"] == "completion evidence proves the wrong behavior"
-    assert Registry.node(registry, "root")["status"] == "completed"
+    assert Registry.node(registry, "implementation")["status"] == "completed"
     assert Registry.node(registry, "final_review")["status"] == "failed"
     assert Registry.node(registry, "final_review")["review_summary"] == "implementation failed review"
   end
@@ -418,7 +430,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       workspace_root: workspace_root,
       workspace_preserve_terminal: true,
       max_concurrent_agents: 3,
-      max_tuns: 1,
+      max_turns: 1,
       agents: %{
         codex: %{
           kind: "cli_run",
@@ -433,8 +445,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         planner_agent: "codex",
         reviewer_agent: "codex",
         artifact_dir: ".symphony",
-        planning_max_tuns: 1,
-        review_max_tuns: 1
+        planning_max_turns: 1,
+        review_max_turns: 1
       },
       prompt: "Smoke issue {{ issue.identifier }} {{ issue.title }}"
     )
@@ -459,14 +471,17 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       File.rm_rf(workspace_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.find(issues, &(&1.id != root_issue.id))
+    smoke_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.find(issues, &(&1.id != root_issue.id))
 
-             root && derived && root.state == "Done" && derived.state == "Done" &&
-               orchestrator_idle?(orchestrator_name)
-           end) do
+        root && derived && root.state == "Done" && derived.state == "Done" &&
+          orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless smoke_closed? do
       flunk("""
       workflow smoke did not close
 
@@ -525,7 +540,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       workspace_root: workspace_root,
       workspace_preserve_terminal: true,
       max_concurrent_agents: 3,
-      max_tuns: 1,
+      max_turns: 1,
       agents: %{
         codex: %{
           kind: "cli_run",
@@ -540,8 +555,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         planner_agent: "codex",
         reviewer_agent: "codex",
         artifact_dir: ".symphony",
-        planning_max_tuns: 1,
-        review_max_tuns: 1
+        planning_max_turns: 1,
+        review_max_turns: 1
       },
       prompt: "Smoke issue {{ issue.identifier }} {{ issue.title }}"
     )
@@ -574,16 +589,19 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             with {:ok, registry} <- Registry.load_by_root_identifier(root_issue.identifier),
-                  %{"status" => "ready"} <- Registry.node(registry, "implementation") do
-               registry["status"] == "planning_complete" and
-                 Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "planning")) and
-                 not Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "issue"))
-             else
-               _ -> false
-             end
-           end) do
+    planning_persisted? =
+      eventually?(fn ->
+        with {:ok, registry} <- Registry.load_by_root_identifier(root_issue.identifier),
+             %{"status" => "ready"} <- Registry.node(registry, "implementation") do
+          registry["status"] == "planning_complete" and
+            Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "planning")) and
+            not Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "issue"))
+        else
+          _ -> false
+        end
+      end)
+
+    unless planning_persisted? do
       flunk("""
       workflow recovery smoke did not persist planning_complete before restart
 
@@ -614,18 +632,21 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     {:ok, second_pid} = Orchestrator.start_link(name: second_name)
     Orchestrator.request_refresh(second_name)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.find(issues, &(&1.id != root_issue.id))
+    recovery_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.find(issues, &(&1.id != root_issue.id))
 
-             if root && derived && root.state == "Done" && derived.state == "Done" do
-               Orchestrator.request_refresh(second_name)
-             end
+        if root && derived && root.state == "Done" && derived.state == "Done" do
+          Orchestrator.request_refresh(second_name)
+        end
 
-             root && derived && root.state == "Done" && derived.state == "Done" &&
-               orchestrator_idle?(second_name)
-           end) do
+        root && derived && root.state == "Done" && derived.state == "Done" &&
+          orchestrator_idle?(second_name)
+      end)
+
+    unless recovery_closed? do
       flunk("""
       workflow recovery smoke did not close after restart
 
@@ -708,7 +729,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       workspace_root: workspace_root,
       workspace_preserve_terminal: true,
       max_concurrent_agents: 3,
-      max_tuns: 1,
+      max_turns: 1,
       agents: %{
         codex: %{
           kind: "codex_app_server",
@@ -732,8 +753,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         planner_agent: "codex",
         reviewer_agent: "codex",
         artifact_dir: ".symphony",
-        planning_max_tuns: 1,
-        review_max_tuns: 1
+        planning_max_turns: 1,
+        review_max_turns: 1
       },
       prompt: "Smoke issue {{ issue.identifier }} {{ issue.title }}"
     )
@@ -758,14 +779,17 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.find(issues, &(&1.id != root_issue.id))
+    routing_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.find(issues, &(&1.id != root_issue.id))
 
-             root && derived && root.state == "Done" && derived.state == "Done" &&
-               orchestrator_idle?(orchestrator_name)
-           end) do
+        root && derived && root.state == "Done" && derived.state == "Done" &&
+          orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless routing_closed? do
       flunk("""
       workflow agent routing smoke did not close
 
@@ -844,7 +868,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       workspace_root: workspace_root,
       workspace_preserve_terminal: true,
       max_concurrent_agents: 3,
-      max_tuns: 1,
+      max_turns: 1,
       agents: %{
         codex: %{
           kind: "cli_run",
@@ -859,8 +883,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         planner_agent: "codex",
         reviewer_agent: "codex",
         artifact_dir: ".symphony",
-        planning_max_tuns: 1,
-        review_max_tuns: 1
+        planning_max_turns: 1,
+        review_max_turns: 1
       },
       prompt: "Smoke issue {{ issue.identifier }} {{ issue.title }}"
     )
@@ -885,15 +909,18 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       File.rm_rf(workspace_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.reject(issues, &(&1.id == root_issue.id))
+    rework_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.reject(issues, &(&1.id == root_issue.id))
 
-             root && root.state == "Done" && length(derived) >= 3 &&
-               Enum.all?(derived, &(&1.state == "Done")) &&
-               orchestrator_idle?(orchestrator_name)
-           end) do
+        root && root.state == "Done" && length(derived) >= 3 &&
+          Enum.all?(derived, &(&1.state == "Done")) &&
+          orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless rework_closed? do
       flunk("""
       workflow rework smoke did not close
 
@@ -944,7 +971,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       workspace_root: workspace_root,
       workspace_preserve_terminal: true,
       max_concurrent_agents: 3,
-      max_tuns: 1,
+      max_turns: 1,
       agents: %{
         codex: %{
           kind: "cli_run",
@@ -959,8 +986,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         planner_agent: "codex",
         reviewer_agent: "codex",
         artifact_dir: ".symphony",
-        planning_max_tuns: 1,
-        review_max_tuns: 1
+        planning_max_turns: 1,
+        review_max_turns: 1
       },
       prompt: "Smoke issue {{ issue.identifier }} {{ issue.title }}"
     )
@@ -985,15 +1012,18 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       File.rm_rf(workspace_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.reject(issues, &(&1.id == root_issue.id))
+    replan_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.reject(issues, &(&1.id == root_issue.id))
 
-             root && root.state == "Done" && length(derived) >= 2 &&
-               Enum.all?(derived, &(&1.state == "Done")) &&
-               orchestrator_idle?(orchestrator_name)
-           end) do
+        root && root.state == "Done" && length(derived) >= 2 &&
+          Enum.all?(derived, &(&1.state == "Done")) &&
+          orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless replan_closed? do
       flunk("""
       workflow replan smoke did not close
 
@@ -1046,7 +1076,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       workspace_root: workspace_root,
       workspace_preserve_terminal: true,
       max_concurrent_agents: 3,
-      max_tuns: 1,
+      max_turns: 1,
       agents: %{
         codex: %{
           kind: "codex_app_server",
@@ -1062,8 +1092,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         planner_agent: "codex",
         reviewer_agent: "codex",
         artifact_dir: ".symphony",
-        planning_max_tuns: 1,
-        review_max_tuns: 1
+        planning_max_turns: 1,
+        review_max_turns: 1
       },
       prompt: "Smoke issue {{ issue.identifier }} {{ issue.title }}"
     )
@@ -1080,15 +1110,18 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.find(issues, &(&1.id != root_issue.id))
+    root_workspace_probe_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.find(issues, &(&1.id != root_issue.id))
 
-             root && derived && root.state == "Done" && derived.state == "Done" &&
-               File.exists?(Path.join(root_workspace, "ROOT_WORKSPACE_PROBE.md")) &&
-               orchestrator_idle?(orchestrator_name)
-           end) do
+        root && derived && root.state == "Done" && derived.state == "Done" &&
+          File.exists?(Path.join(root_workspace, "ROOT_WORKSPACE_PROBE.md")) &&
+          orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless root_workspace_probe_closed? do
       flunk("""
       workflow root workspace probe did not close
 
@@ -1188,7 +1221,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
       workspace_root: workspace_root,
       workspace_preserve_terminal: true,
       max_concurrent_agents: 1,
-      max_tuns: 1,
+      max_turns: 1,
       agents: %{
         codex: %{
           kind: "cli_run",
@@ -1203,8 +1236,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         planner_agent: "codex",
         reviewer_agent: "codex",
         artifact_dir: ".symphony",
-        planning_max_tuns: 1,
-        review_max_tuns: 1
+        planning_max_turns: 1,
+        review_max_turns: 1
       },
       prompt: "Smoke issue {{ issue.identifier }} {{ issue.title }}"
     )
@@ -1274,9 +1307,18 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
             "agent_id" => "mimocode",
             "instructions" => "Write the completion packet for the routed smoke test.",
             "evidence_expectations" => ["mimocode execution log exists"]
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "Final review",
+            "goal" => "Review the root candidate result",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
           }
         ],
-        "edges" => []
+        "edges" => [%{"from" => "implementation", "to" => "final_review"}]
       })
 
     review_json =
@@ -1300,7 +1342,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     LOG_PATH = #{Jason.encode!(log_path)}
     PLAN = json.loads('''#{python_triple_quoted(plan_json)}''')
     REVIEW = json.loads('''#{python_triple_quoted(review_json)}''')
-    planning_tuns = 0
+    planning_turns = 0
 
     def send(message):
         print(json.dumps(message), flush=True)
@@ -1333,12 +1375,12 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
             pass
         elif method == "thread/start":
             send({"id": request_id, "result": {"thread": {"id": "fake-codex-thread"}}})
-        elif method == "tun/start":
+        elif method == "turn/start":
             text = prompt_text(message)
             if "workflow_plan.json" in text:
-                planning_tuns += 1
+                planning_turns += 1
                 phase = "planning"
-                if planning_tuns > 1 or "上一轮 planning 已正常结束" in text:
+                if planning_turns > 1 or "上一轮 planning 已正常结束" in text:
                     write_json(".symphony/workflow_plan.json", PLAN)
             elif "issue_result.json" in text:
                 phase = "issue"
@@ -1347,8 +1389,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
                 sys.exit(7)
 
             append_run(phase, REVIEW.get("task_type") if phase == "issue" else None)
-            send({"id": request_id, "result": {"tun": {"id": "fake-codex-" + phase}}})
-            send({"method": "tun/completed"})
+            send({"id": request_id, "result": {"turn": {"id": "fake-codex-" + phase}}})
+            send({"method": "turn/completed"})
         elif request_id is not None:
             send({"id": request_id, "result": {}})
     """)
@@ -1382,9 +1424,18 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
             "agent_id" => "codex",
             "instructions" => "在 root workflow workspace 中读取或写入目标文件，并在当前 issue workspace 写 artifact。",
             "evidence_expectations" => ["root workflow workspace path is present in prompt"]
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "Final review",
+            "goal" => "Review the root candidate result",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
           }
         ],
-        "edges" => []
+        "edges" => [%{"from" => "implementation", "to" => "final_review"}]
       })
 
     File.write!(script, """
@@ -1424,7 +1475,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
             pass
         elif method == "thread/start":
             send({"id": request_id, "result": {"thread": {"id": "fake-root-probe-thread"}}})
-        elif method == "tun/start":
+        elif method == "turn/start":
             text = prompt_text(message)
             sandbox = message.get("params", {}).get("sandboxPolicy", {})
             writable_roots = sandbox.get("writableRoots", [])
@@ -1488,8 +1539,8 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
             else:
                 sys.exit(7)
 
-            send({"id": request_id, "result": {"tun": {"id": "fake-root-probe-" + phase}}})
-            send({"method": "tun/completed"})
+            send({"id": request_id, "result": {"turn": {"id": "fake-root-probe-" + phase}}})
+            send({"method": "turn/completed"})
         elif request_id is not None:
             send({"id": request_id, "result": {}})
     """)
