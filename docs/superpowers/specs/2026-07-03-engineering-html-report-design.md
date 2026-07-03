@@ -11,6 +11,7 @@ Symphony 需要在自动执行多 issue workflow 后，给人一个稳定、可�
 3. Linear 只承载重点摘要、状态同步和本地/发布报告链接。
 4. 派生 issue 完成后，root issue 能看到增量状态，而不是只在派生 issue 里留下结果。
 5. 报告必须基于 Symphony 控制层事实和 artifact，不把 agent 最终回复当作权威来源。
+6. 报告可读性是一等验收标准；不可读的报告不能算有效交付。
 
 ## 背景和参考
 
@@ -57,16 +58,19 @@ Symphony 不需要复制这些工具，但需要吸收它们的结构原则：�
 2. **HTML 是主汇报面**
    HTML 用于呈现复杂结构、时间线、证据索引、过滤、折叠和对比。Markdown 用于 Linear 摘要、纯文本归档和快速 skim。
 
-3. **Linear 只放重点和入口**
+3. **可读性优先于流程完整**
+   artifact、发布、Linear 通知和 dashboard 入口都只是配套设施。报告本身必须让用户快速判断做了什么、结果是否可信、哪里需要继续看；否则流程再完整也没有意义。
+
+4. **Linear 只放重点和入口**
    Linear 评论应该回答这几个问题：当前批次进度如何、哪些 issue 已完成、哪些需要注意、完整报告在哪里。不要把完整日志墙塞进 Linear。
 
-4. **每个派生 issue 完成后同步 root 状态**
+5. **每个派生 issue 完成后同步 root 状态**
    派生 issue 完成时，Symphony 应把精简状态同步到 root issue 或 root workflow 记录中，让 root issue 成为批次回看入口。
 
-5. **报告可重复生成**
+6. **报告可重复生成**
    同一个 workflow 可以在运行中多次刷新报告。报告需要有 manifest 记录版本、生成时间、输入事实包 hash 和发布目标。
 
-6. **发布是 adapter，不是报告生成的一部分**
+7. **发布是 adapter，不是报告生成的一部分**
    local file、local HTTP、Lark、GitHub Pages、对象存储、Claude artifact 都只是发布 adapter。核心 artifact 必须在本地文件系统中先成立。
 
 ## Artifact 目录协议
@@ -201,6 +205,54 @@ Issue 表格：每个节点的状态、结果、证据、链接
 - 批量 workflow：issue 矩阵、状态统计、证据索引、异常清单。
 - 审查任务：审查对象、发现、严重程度、采纳状态。
 
+## 可读性契约
+
+报告质量是整个机制的核心。如果生成的 HTML 读起来像日志转储、聊天记录拼接或模板填空，那么 Linear 通知、发布 adapter 和 dashboard 都只是在放大噪音。
+
+第一版必须把可读性变成显式契约：
+
+1. **首屏必须有判断价值**
+   用户打开报告后，不滚动也应能看到：整体状态、是否需要关注、完成/失败/阻塞数量、最重要的 3 到 5 条结论。
+
+2. **先结论，后证据**
+   每个 section 先写人能理解的结论，再给证据链接、原始 artifact、日志或 diff。不要让用户从原始材料里自己推导结论。
+
+3. **异常优先**
+   `failed`、`blocked`、`needs_rework`、`needs_human` 和证据缺失必须优先展示。成功项可以折叠或压缩，异常项不能藏在长表格底部。
+
+4. **证据可追踪但不淹没正文**
+   报告正文展示证据摘要和链接；完整日志、长 diff、agent 输出、原始 JSON 默认折叠。证据必须能打开，但不应把第一页变成证据堆。
+
+5. **面向决策而不是归档**
+   报告应该回答“我现在要不要介入、能不能信任结果、下一步是什么”。归档完整性重要，但不能牺牲快速判断。
+
+6. **任务类型决定叙事结构**
+   实现、修复、调研、审查、批量 workflow 的可读结构不同。生成器不能只套同一个表格模板；至少要选择对应的报告范式。
+
+### 可读性评分
+
+报告生成后应给出一个内部质量评分，用于决定是否可以通知用户：
+
+```json
+{
+  "readability": {
+    "status": "pass",
+    "score": 0.86,
+    "checks": {
+      "has_first_screen_summary": true,
+      "has_exception_section": true,
+      "has_evidence_index": true,
+      "has_next_actions": true,
+      "raw_logs_are_collapsed": true,
+      "linear_summary_is_short": true
+    },
+    "notes": []
+  }
+}
+```
+
+第一版可以先用规则检查，不必引入 LLM 评审。后续可以增加 agent 自评或人工评分样本，但规则检查必须先保证下限。
+
 ## Markdown 摘要形态
 
 `summary.md` 不是 HTML 的降级版，而是给 Linear 和纯文本归档使用的短摘要。建议包含：
@@ -281,6 +333,7 @@ root issue 下需要有一条稳定汇总评论。第一版可以先追加评论
 3. 生成 `index.html` 和 `summary.md`。
 4. 输出 `manifest.json`。
 5. 做基本验证：HTML 可打开、关键字段存在、链接目标存在、没有外部依赖。
+6. 做可读性检查：首屏摘要、异常区、证据索引、后续动作、日志折叠和 Linear 摘要长度。
 
 建议模块边界：
 
@@ -290,6 +343,9 @@ SymphonyElixir.Workflow.ReportContext
 
 SymphonyElixir.Workflow.ReportGenerator
   把事实包渲染成 HTML/MD/manifest
+
+SymphonyElixir.Workflow.ReportQuality
+  检查报告可读性下限，输出 readability 评分和失败原因
 
 SymphonyElixir.Workflow.ReportPublisher
   发布到 local_file、local_http 或后续外部 adapter
@@ -308,6 +364,8 @@ SymphonyElixir.Workflow.ReportNotifier
 4. `index.html` 不包含外部 `http://` 或 `https://` 资源依赖。
 5. `summary.md` 长度可控，并包含 HTML 报告链接。
 6. Linear 评论生成函数有测试覆盖，确认不会输出完整日志墙。
+7. 可读性检查通过：首屏摘要存在、异常区存在、证据索引存在、后续动作存在、长日志默认折叠。
+8. 如果可读性检查失败，报告可以保存为 draft，但不应作为完成汇报通知用户。
 
 如果运行环境有浏览器能力，应增加截图/DOM 检查：
 
@@ -363,6 +421,7 @@ Dashboard 可以消费报告，但不是报告机制的前提。
 - 从一个 root workflow registry 生成 `report_context.json`。
 - 生成自包含 `index.html` 和 `summary.md`。
 - 添加 schema/HTML 字符串级测试。
+- 增加可读性规则检查和至少 2 个 fixture：一个正常批次、一个含失败/返工的批次。
 
 ### 阶段 3：Linear root 汇总
 
@@ -381,6 +440,7 @@ Dashboard 可以消费报告，但不是报告机制的前提。
 - 按任务类型扩展报告布局。
 - 支持实现、修复、调研、审查、批量 workflow、事故诊断。
 - 把生成规则沉淀为可复用 skill。
+- 建立小型 golden report 样本库，用人工可读性反馈反推生成规则。
 
 ## 关键风险
 
@@ -390,13 +450,16 @@ Dashboard 可以消费报告，但不是报告机制的前提。
 2. **报告变成新日志墙**
    HTML 可以丰富，但首页必须先给结论和异常；长日志默认折叠。
 
-3. **事实来源漂移**
+3. **可读性检查流于形式**
+   如果只检查 DOM 字段是否存在，可能生成“字段齐全但没人想读”的报告。第一版规则检查保证下限，后续需要 golden report 和人工反馈校准。
+
+4. **事实来源漂移**
    agent 评论、Linear 状态、registry、Git 事实可能不一致。报告必须标出来源和生成时间，以控制层事实为准。
 
-4. **本地链接不可分享**
+5. **本地链接不可分享**
    local file 对单机可用，但跨设备不可用。发布 adapter 需要作为后续重点，不应阻塞本地 MVP。
 
-5. **模板僵化**
+6. **模板僵化**
    固定模板会让复杂任务变难读。第一版可以有统一外壳，但内容区应由任务范式决定。
 
 ## 已定决策
@@ -408,3 +471,4 @@ Dashboard 可以消费报告，但不是报告机制的前提。
 5. Inbox 先按 Linear 通知机制间接触发，不假设直接写 Inbox。
 6. 报告生成和发布分层，发布 adapter 可替换。
 7. Dashboard 可以接入报告，但报告 artifact 不依赖 Dashboard 存在。
+8. 报告可读性是硬门槛；质量检查失败时只能生成 draft，不能作为正式汇报通知。
