@@ -13,5 +13,6 @@ defmodule SymphonyElixir.ConfigTest do
     )
 
     assert {:ok, _settings} = Config.settings()
+    assert :ok = Config.validate!()
   end
 end

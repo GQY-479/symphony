@@ -51,6 +51,7 @@ defmodule SymphonyElixir.Agent.Backend.AcpStdio do
     end
   end
 
+  @spec extract_model_list(map()) :: [String.t()]
   def extract_model_list(config) do
     case get_in(config, ["config_options", "model"]) do
       list when is_list(list) -> list

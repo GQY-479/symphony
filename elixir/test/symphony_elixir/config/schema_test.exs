@@ -7,6 +7,6 @@ defmodule SymphonyElixir.Config.SchemaTest do
     config = Schema.default_mimocode_agent_config()
     model = get_in(config, ["config_options", "model"])
     assert is_list(model)
-    assert length(model) > 0
+    assert model != []
   end
 end
