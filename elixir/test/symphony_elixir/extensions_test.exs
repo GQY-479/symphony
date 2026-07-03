@@ -729,6 +729,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "workflow_blocked_reason" => nil,
                  "last_event" => "notification",
                  "last_message" => "rendered",
+                 "runtime_seconds" => 0,
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
@@ -780,7 +781,99 @@ defmodule SymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
-             "rate_limits" => %{"primary" => %{"remaining" => 11}}
+             "rate_limits" => %{"primary" => %{"remaining" => 11}},
+             "workflows" => [
+               %{
+                 "root_issue_identifier" => "MT-ROOT",
+                 "root_issue_id" => nil,
+                 "title" => "MT-ROOT",
+                 "issue_url" => "https://example.org/issues/MT-HTTP",
+                 "status" => "blocked",
+                 "phase_summary" => "execution",
+                 "counts" => %{
+                   "running" => 1,
+                   "retrying" => 1,
+                   "blocked" => 1,
+                   "completed" => nil,
+                   "total_nodes" => nil
+                 },
+                 "active_entries" => [
+                   %{
+                     "status" => "running",
+                     "issue_id" => "issue-http",
+                     "issue_identifier" => "MT-HTTP",
+                     "issue_url" => "https://example.org/issues/MT-HTTP",
+                     "session_id" => "thread-http",
+                     "phase" => "review",
+                     "last_event" => "notification",
+                     "last_message" => "rendered"
+                   },
+                   %{
+                     "status" => "retrying",
+                     "issue_id" => "issue-retry",
+                     "issue_identifier" => "MT-RETRY",
+                     "issue_url" => "https://example.org/issues/MT-RETRY",
+                     "session_id" => nil,
+                     "phase" => "planning",
+                     "last_event" => nil,
+                     "last_message" => nil
+                   },
+                   %{
+                     "status" => "blocked",
+                     "issue_id" => "issue-blocked",
+                     "issue_identifier" => "MT-BLOCKED",
+                     "issue_url" => "https://example.org/issues/MT-BLOCKED",
+                     "session_id" => "thread-blocked",
+                     "phase" => "execution",
+                     "last_event" => "turn_input_required",
+                     "last_message" => "turn blocked: waiting for user input"
+                   }
+                 ],
+                 "attention_items" => [
+                   %{
+                     "kind" => "blocked",
+                     "root_issue_identifier" => "MT-ROOT",
+                     "issue_identifier" => "MT-BLOCKED",
+                     "reason" => "codex turn requires operator input",
+                     "phase" => "execution"
+                   },
+                   %{
+                     "kind" => "retrying",
+                     "root_issue_identifier" => "MT-ROOT",
+                     "issue_identifier" => "MT-RETRY",
+                     "attempt" => 2,
+                     "reason" => "boom",
+                     "phase" => "planning"
+                   }
+                 ],
+                 "recent_event" => %{
+                   "issue_identifier" => "MT-BLOCKED",
+                   "event" => "turn_input_required",
+                   "message" => "turn blocked: waiting for user input",
+                   "at" => state_payload["workflows"] |> List.first() |> Map.fetch!("recent_event") |> Map.fetch!("at")
+                 },
+                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+                 "runtime_seconds" => 0,
+                 "registry_available?" => false
+               }
+             ],
+             "attention_items" => [
+               %{
+                 "kind" => "blocked",
+                 "root_issue_identifier" => "MT-ROOT",
+                 "issue_identifier" => "MT-BLOCKED",
+                 "reason" => "codex turn requires operator input",
+                 "phase" => "execution"
+               },
+               %{
+                 "kind" => "retrying",
+                 "root_issue_identifier" => "MT-ROOT",
+                 "issue_identifier" => "MT-RETRY",
+                 "attempt" => 2,
+                 "reason" => "boom",
+                 "phase" => "planning"
+               }
+             ]
            }
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")

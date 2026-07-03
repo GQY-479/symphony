@@ -1655,9 +1655,7 @@ defmodule SymphonyElixir.Orchestrator do
 
           {:error, {:unknown_agent, ^agent_id}} = error ->
             if workflow_metadata?(metadata) do
-              Logger.warning(
-                "Workflow metadata selected unknown agent_id=#{agent_id} for #{issue_context(issue)}; falling back to issue routing"
-              )
+              Logger.warning("Workflow metadata selected unknown agent_id=#{agent_id} for #{issue_context(issue)}; falling back to issue routing")
 
               Router.resolve(issue, Config.settings!())
             else

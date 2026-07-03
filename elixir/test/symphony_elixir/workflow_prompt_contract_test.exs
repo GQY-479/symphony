@@ -110,7 +110,10 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
           "只允许创建或更新 planning artifact",
           "不要修改源码、测试、文档或其他业务文件",
           "不要修改当前 Linear issue 状态",
-          "写入并读回 `workflow_plan.json` 后立即结束"
+          "写入并读回 `workflow_plan.json` 后立即结束",
+          "root workflow 必须显式包含 `final_review` node",
+          ~s("reviews": ["__root_candidate__"]),
+          ~s("subject_selector": {"type": "final_candidate_range"})
         ] do
       assert planning =~ text
     end
@@ -170,8 +173,7 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
         "lib/symphony_elixir/agent_runner.ex",
         "lib/symphony_elixir/orchestrator.ex"
       ]
-      |> Enum.map(&File.read!(Path.join(root, &1)))
-      |> Enum.join("\n")
+      |> Enum.map_join("\n", &File.read!(Path.join(root, &1)))
 
     retired_execution = "exec" <> "ution"
     retired_review = "rev" <> "iew"

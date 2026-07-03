@@ -1,4 +1,4 @@
-﻿defmodule SymphonyElixir.WorkflowSmokeTest do
+defmodule SymphonyElixir.WorkflowSmokeTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Workflow.Registry
@@ -63,12 +63,15 @@
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
+    workflow_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
 
-             root && root.state == "Done" && orchestrator_idle?(orchestrator_name)
-           end) do
+        root && root.state == "Done" && orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless workflow_closed? do
       flunk("""
       workflow implementation smoke did not close
 
@@ -118,7 +121,7 @@
         log_path,
         %{
           "schema_version" => 1,
-          "node_key" => "root",
+          "node_key" => "implementation",
           "task_type" => "implementation",
           "outcome" => "completed",
           "summary" => "implementation completed without evidence",
@@ -162,14 +165,17 @@
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+    missing_evidence_blocked? =
+      eventually?(fn ->
+        snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
 
-             Enum.any?(snapshot.blocked, fn blocked ->
-               blocked.issue_id == root_issue.id and blocked.workflow_phase == :issue and
-                 String.contains?(blocked.error, "invalid_issue_result")
-             end)
-           end) do
+        Enum.any?(snapshot.blocked, fn blocked ->
+          blocked.workflow_root_issue_id == root_issue.identifier and blocked.workflow_phase == :issue and
+            String.contains?(blocked.error, "invalid_issue_result")
+        end)
+      end)
+
+    unless missing_evidence_blocked? do
       flunk("""
       workflow implementation missing evidence did not block in execution
 
@@ -186,7 +192,7 @@
 
     assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
     refute registry["status"] == "completed"
-    refute Registry.node(registry, "root")["status"] == "completed"
+    refute Registry.node(registry, "implementation")["status"] == "completed"
 
     runs = read_agent_runs(log_path)
     assert Enum.any?(runs, &(&1["phase"] == "planning" and &1["issue_identifier"] == root_issue.identifier))
@@ -208,7 +214,7 @@
         log_path,
         %{
           "schema_version" => 1,
-          "node_key" => "root",
+          "node_key" => "implementation",
           "task_type" => "implementation",
           "outcome" => "completed",
           "summary" => "implementation completed but needs product input",
@@ -254,21 +260,24 @@
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+    needs_human_blocked? =
+      eventually?(fn ->
+        snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
 
-             case Registry.load_by_root_identifier(root_issue.identifier) do
-               {:ok, %{"status" => "blocked", "human_input_request" => request}} when is_binary(request) ->
-                 snapshot.running == [] and snapshot.retrying == [] and
-                   Enum.any?(snapshot.blocked, fn blocked ->
-                     blocked.workflow_phase == :issue and
-                       String.contains?(blocked.error, "review needs human")
-                   end)
+        case Registry.load_by_root_identifier(root_issue.identifier) do
+          {:ok, %{"status" => "blocked", "human_input_request" => request}} when is_binary(request) ->
+            snapshot.running == [] and snapshot.retrying == [] and
+              Enum.any?(snapshot.blocked, fn blocked ->
+                blocked.workflow_phase == :issue and
+                  String.contains?(blocked.error, "review needs human")
+              end)
 
-               _ ->
-                 false
-             end
-           end) do
+          _ ->
+            false
+        end
+      end)
+
+    unless needs_human_blocked? do
       flunk("""
       workflow implementation needs_human did not block registry
 
@@ -288,7 +297,7 @@
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
     assert registry["blocked_reason"] == "product decision required before closing"
     assert registry["human_input_request"] == "Please confirm whether this implementation is acceptable."
-    assert Registry.node(registry, "root")["status"] == "completed"
+    assert Registry.node(registry, "implementation")["status"] == "completed"
     assert Registry.node(registry, "final_review")["status"] == "blocked"
     assert Registry.node(registry, "final_review")["review_summary"] == "product decision required before closing"
   end
@@ -307,7 +316,7 @@
         log_path,
         %{
           "schema_version" => 1,
-          "node_key" => "root",
+          "node_key" => "implementation",
           "task_type" => "implementation",
           "outcome" => "completed",
           "summary" => "implementation completed with unacceptable result",
@@ -352,21 +361,24 @@
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+    failure_recorded? =
+      eventually?(fn ->
+        snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
 
-             case Registry.load_by_root_identifier(root_issue.identifier) do
-               {:ok, %{"status" => "failed", "failure_reason" => reason}} when is_binary(reason) ->
-                 snapshot.running == [] and snapshot.retrying == [] and
-                   Enum.any?(snapshot.blocked, fn blocked ->
-                     blocked.workflow_phase == :issue and
-                       String.contains?(blocked.error, "review failed")
-                   end)
+        case Registry.load_by_root_identifier(root_issue.identifier) do
+          {:ok, %{"status" => "failed", "failure_reason" => reason}} when is_binary(reason) ->
+            snapshot.running == [] and snapshot.retrying == [] and
+              Enum.any?(snapshot.blocked, fn blocked ->
+                blocked.workflow_phase == :issue and
+                  String.contains?(blocked.error, "review failed")
+              end)
 
-               _ ->
-                 false
-             end
-           end) do
+          _ ->
+            false
+        end
+      end)
+
+    unless failure_recorded? do
       flunk("""
       workflow implementation fail did not fail registry
 
@@ -386,7 +398,7 @@
     assert {:ok, %DateTime{}, 0} = DateTime.from_iso8601(registry["updated_at"])
     assert registry["failure_reason"] == "implementation failed review"
     refute registry["failure_reason"] == "completion evidence proves the wrong behavior"
-    assert Registry.node(registry, "root")["status"] == "completed"
+    assert Registry.node(registry, "implementation")["status"] == "completed"
     assert Registry.node(registry, "final_review")["status"] == "failed"
     assert Registry.node(registry, "final_review")["review_summary"] == "implementation failed review"
   end
@@ -401,7 +413,7 @@
       "import json, os, sys; " <>
         "p=sys.argv[1]; os.makedirs('.symphony', exist_ok=True); " <>
         "phase='plan' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
-        "is_review='\"task_type\": \"review\"' in p or 'Review issue' in p; " <>
+        ~s|is_review='"task_type": "review"' in p or 'Review issue' in p; | <>
         "payloads={" <>
         "'plan': {'kind': 'issue_graph', 'summary': 'smoke planning created one executable child issue', 'confidence': 'high', 'nodes': [{'node_key': 'implementation', 'task_type': 'implementation', 'title': 'Smoke derived implementation', 'goal': 'Prove the workflow closes through review', 'agent_id': 'codex', 'instructions': 'Write the issue result for the smoke test.', 'evidence_expectations': ['issue result exists']},{'node_key':'final_review','task_type':'review','title':'Final review','goal':'Review the root candidate result','agent_id':'codex','reviews':['__root_candidate__'],'subject_selector':{'type':'final_candidate_range'}}], 'edges': [{'from':'implementation','to':'final_review'}]}, " <>
         "'implementation': {'schema_version': 1, 'node_key': 'implementation', 'task_type': 'implementation', 'outcome': 'completed', 'summary': 'smoke execution completed', 'evidence': ['fake cli wrote issue_result.json'], 'decisions': ['use artifact handoff'], 'open_questions': []}, " <>
@@ -459,14 +471,17 @@
       File.rm_rf(workspace_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.find(issues, &(&1.id != root_issue.id))
+    smoke_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.find(issues, &(&1.id != root_issue.id))
 
-             root && derived && root.state == "Done" && derived.state == "Done" &&
-               orchestrator_idle?(orchestrator_name)
-           end) do
+        root && derived && root.state == "Done" && derived.state == "Done" &&
+          orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless smoke_closed? do
       flunk("""
       workflow smoke did not close
 
@@ -507,7 +522,7 @@
       "import json, os, sys; " <>
         "p=sys.argv[1]; log=#{Jason.encode!(log_path)}; os.makedirs('.symphony', exist_ok=True); os.makedirs(os.path.dirname(log), exist_ok=True); " <>
         "phase='planning' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
-        "is_review='\"task_type\": \"review\"' in p or 'Review issue' in p; " <>
+        ~s|is_review='"task_type": "review"' in p or 'Review issue' in p; | <>
         "payloads={" <>
         "'planning': {'kind': 'issue_graph', 'summary': 'recovery planning created one executable child issue', 'confidence': 'high', 'nodes': [{'node_key': 'implementation', 'task_type': 'implementation', 'title': 'Recovery derived implementation', 'goal': 'Finish after orchestrator restart', 'agent_id': 'codex', 'instructions': 'Write the issue result for recovery smoke.', 'evidence_expectations': ['issue result exists']},{'node_key':'final_review','task_type':'review','title':'Final review','goal':'Review the root candidate result','agent_id':'codex','reviews':['__root_candidate__'],'subject_selector':{'type':'final_candidate_range'}}], 'edges': [{'from':'implementation','to':'final_review'}]}, " <>
         "'implementation': {'schema_version': 1, 'node_key': 'implementation', 'task_type': 'implementation', 'outcome': 'completed', 'summary': 'recovery execution completed', 'evidence': ['fake cli wrote issue_result.json'], 'decisions': ['continue from persisted registry'], 'open_questions': []}, " <>
@@ -574,16 +589,19 @@
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             with {:ok, registry} <- Registry.load_by_root_identifier(root_issue.identifier),
-                  %{"status" => "ready"} <- Registry.node(registry, "implementation") do
-               registry["status"] == "planning_complete" and
-                 Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "planning")) and
-                 not Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "issue"))
-             else
-               _ -> false
-             end
-           end) do
+    planning_persisted? =
+      eventually?(fn ->
+        with {:ok, registry} <- Registry.load_by_root_identifier(root_issue.identifier),
+             %{"status" => "ready"} <- Registry.node(registry, "implementation") do
+          registry["status"] == "planning_complete" and
+            Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "planning")) and
+            not Enum.any?(read_agent_runs(log_path), &(&1["phase"] == "issue"))
+        else
+          _ -> false
+        end
+      end)
+
+    unless planning_persisted? do
       flunk("""
       workflow recovery smoke did not persist planning_complete before restart
 
@@ -614,18 +632,21 @@
     {:ok, second_pid} = Orchestrator.start_link(name: second_name)
     Orchestrator.request_refresh(second_name)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.find(issues, &(&1.id != root_issue.id))
+    recovery_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.find(issues, &(&1.id != root_issue.id))
 
-             if root && derived && root.state == "Done" && derived.state == "Done" do
-               Orchestrator.request_refresh(second_name)
-             end
+        if root && derived && root.state == "Done" && derived.state == "Done" do
+          Orchestrator.request_refresh(second_name)
+        end
 
-             root && derived && root.state == "Done" && derived.state == "Done" &&
-               orchestrator_idle?(second_name)
-           end) do
+        root && derived && root.state == "Done" && derived.state == "Done" &&
+          orchestrator_idle?(second_name)
+      end)
+
+    unless recovery_closed? do
       flunk("""
       workflow recovery smoke did not close after restart
 
@@ -758,14 +779,17 @@
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.find(issues, &(&1.id != root_issue.id))
+    routing_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.find(issues, &(&1.id != root_issue.id))
 
-             root && derived && root.state == "Done" && derived.state == "Done" &&
-               orchestrator_idle?(orchestrator_name)
-           end) do
+        root && derived && root.state == "Done" && derived.state == "Done" &&
+          orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless routing_closed? do
       flunk("""
       workflow agent routing smoke did not close
 
@@ -826,7 +850,7 @@
       "import json, os, sys; " <>
         "p=sys.argv[1]; os.makedirs('.symphony', exist_ok=True); " <>
         "phase='plan' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
-        "is_review='\"task_type\": \"review\"' in p or 'Review issue' in p; is_final='final_review' in p or '__root_candidate__' in p; is_rework='返工：' in p or 'implementation-rework-1' in p; " <>
+        ~s|is_review='"task_type": "review"' in p or 'Review issue' in p; is_final='final_review' in p or '__root_candidate__' in p; is_rework='返工：' in p or 'implementation-rework-1' in p; | <>
         "decision='pass' if is_final else 'needs_rework'; " <>
         "payloads={" <>
         "'plan': {'kind':'issue_graph','summary':'smoke planning created rework candidate','confidence':'high','nodes':[{'node_key':'implementation','task_type':'implementation','title':'Smoke rework implementation','goal':'Produce a result that first review rejects','agent_id':'codex','instructions':'Write issue result for rework smoke.','evidence_expectations':['issue result exists']},{'node_key':'implementation_review','task_type':'review','title':'Review smoke implementation','goal':'Review the implementation result','agent_id':'codex','reviews':['implementation'],'subject_selector':{'type':'candidate_range'}},{'node_key':'final_review','task_type':'review','title':'Final review','goal':'Review the root candidate result','agent_id':'codex','reviews':['__root_candidate__'],'subject_selector':{'type':'final_candidate_range'}}],'edges':[{'from':'implementation','to':'implementation_review'},{'from':'implementation_review','to':'final_review'}]}, " <>
@@ -885,15 +909,18 @@
       File.rm_rf(workspace_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.reject(issues, &(&1.id == root_issue.id))
+    rework_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.reject(issues, &(&1.id == root_issue.id))
 
-             root && root.state == "Done" && length(derived) >= 3 &&
-               Enum.all?(derived, &(&1.state == "Done")) &&
-               orchestrator_idle?(orchestrator_name)
-           end) do
+        root && root.state == "Done" && length(derived) >= 3 &&
+          Enum.all?(derived, &(&1.state == "Done")) &&
+          orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless rework_closed? do
       flunk("""
       workflow rework smoke did not close
 
@@ -925,7 +952,7 @@
       "import json, os, sys; " <>
         "p=sys.argv[1]; os.makedirs('.symphony', exist_ok=True); " <>
         "phase='plan' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
-        "is_review='\"task_type\": \"review\"' in p or 'Review issue' in p; is_final='final_review' in p or '__root_candidate__' in p; " <>
+        ~s|is_review='"task_type": "review"' in p or 'Review issue' in p; is_final='final_review' in p or '__root_candidate__' in p; | <>
         "replanning='重规划原因' in p; key='implementation-v2' if replanning else 'implementation-v1'; title='Smoke replanned implementation' if replanning else 'Smoke initial implementation'; summary='smoke replanning created replacement issue' if replanning else 'smoke planning created initial issue'; " <>
         "decision='pass' if is_final else 'needs_replan'; " <>
         "payloads={" <>
@@ -985,15 +1012,18 @@
       File.rm_rf(workspace_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.reject(issues, &(&1.id == root_issue.id))
+    replan_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.reject(issues, &(&1.id == root_issue.id))
 
-             root && root.state == "Done" && length(derived) >= 2 &&
-               Enum.all?(derived, &(&1.state == "Done")) &&
-               orchestrator_idle?(orchestrator_name)
-           end) do
+        root && root.state == "Done" && length(derived) >= 2 &&
+          Enum.all?(derived, &(&1.state == "Done")) &&
+          orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless replan_closed? do
       flunk("""
       workflow replan smoke did not close
 
@@ -1080,15 +1110,18 @@
       File.rm_rf(test_root)
     end)
 
-    unless eventually?(fn ->
-             issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-             root = Enum.find(issues, &(&1.id == root_issue.id))
-             derived = Enum.find(issues, &(&1.id != root_issue.id))
+    root_workspace_probe_closed? =
+      eventually?(fn ->
+        issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+        root = Enum.find(issues, &(&1.id == root_issue.id))
+        derived = Enum.find(issues, &(&1.id != root_issue.id))
 
-             root && derived && root.state == "Done" && derived.state == "Done" &&
-               File.exists?(Path.join(root_workspace, "ROOT_WORKSPACE_PROBE.md")) &&
-               orchestrator_idle?(orchestrator_name)
-           end) do
+        root && derived && root.state == "Done" && derived.state == "Done" &&
+          File.exists?(Path.join(root_workspace, "ROOT_WORKSPACE_PROBE.md")) &&
+          orchestrator_idle?(orchestrator_name)
+      end)
+
+    unless root_workspace_probe_closed? do
       flunk("""
       workflow root workspace probe did not close
 
@@ -1247,7 +1280,7 @@
     "import base64, json, os, sys; " <>
       "p=sys.argv[1]; log=#{Jason.encode!(log_path)}; os.makedirs('.symphony', exist_ok=True); os.makedirs(os.path.dirname(log), exist_ok=True); " <>
       "phase='planning' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
-      "task_type='review' if '\"task_type\": \"review\"' in p or 'Review issue' in p else ('implementation' if '\"task_type\": \"implementation\"' in p else ''); " <>
+      ~s|task_type='review' if '"task_type": "review"' in p or 'Review issue' in p else ('implementation' if '"task_type": "implementation"' in p else ''); | <>
       "loads=lambda v: json.loads(base64.b64decode(v).decode('utf-8')); " <>
       "payloads={'planning': loads('#{plan_b64}'), 'issue': (loads('#{review_b64}') if task_type=='review' else loads('#{issue_b64}'))}; " <>
       "paths={'planning': '.symphony/workflow_plan.json', 'issue': '.symphony/issue_result.json'}; " <>
@@ -1274,9 +1307,18 @@
             "agent_id" => "mimocode",
             "instructions" => "Write the completion packet for the routed smoke test.",
             "evidence_expectations" => ["mimocode execution log exists"]
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "Final review",
+            "goal" => "Review the root candidate result",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
           }
         ],
-        "edges" => []
+        "edges" => [%{"from" => "implementation", "to" => "final_review"}]
       })
 
     review_json =
@@ -1382,9 +1424,18 @@
             "agent_id" => "codex",
             "instructions" => "在 root workflow workspace 中读取或写入目标文件，并在当前 issue workspace 写 artifact。",
             "evidence_expectations" => ["root workflow workspace path is present in prompt"]
+          },
+          %{
+            "node_key" => "final_review",
+            "task_type" => "review",
+            "title" => "Final review",
+            "goal" => "Review the root candidate result",
+            "agent_id" => "codex",
+            "reviews" => ["__root_candidate__"],
+            "subject_selector" => %{"type" => "final_candidate_range"}
           }
         ],
-        "edges" => []
+        "edges" => [%{"from" => "implementation", "to" => "final_review"}]
       })
 
     File.write!(script, """

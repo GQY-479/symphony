@@ -375,9 +375,8 @@ defmodule SymphonyElixir.Config do
          :ok <- validate_agent_integer(agent_id, agent, "stream_timeout_ms", greater_than: 0),
          :ok <- validate_agent_integer(agent_id, agent, "runner_ready_timeout_ms", greater_than_or_equal_to: 0),
          :ok <- validate_agent_integer(agent_id, agent, "runner_ready_poll_ms", greater_than: 0),
-         :ok <- validate_omnigent_host(agent_id, Map.get(agent, "host") || %{}),
-         :ok <- validate_omnigent_agent(agent_id, omnigent_agent) do
-      :ok
+         :ok <- validate_omnigent_host(agent_id, Map.get(agent, "host") || %{}) do
+      validate_omnigent_agent(agent_id, omnigent_agent)
     end
   end
 
@@ -540,29 +539,24 @@ defmodule SymphonyElixir.Config do
         :ok
 
       {:ok, value} when is_map(value) ->
-        if Enum.all?(value, fn {key, option_value} ->
-             is_binary(key) and valid_string_or_string_list?(option_value)
-           end) do
-          :ok
-        else
-          invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string or string-list values")
-        end
-
-      {:ok, value} when is_list(value) ->
-        if Enum.all?(value, &is_binary/1) do
-          :ok
-        else
-          invalid_config("agents.#{agent_id}.#{field} must be a list of strings")
-        end
+        validate_config_options_map(agent_id, field, value)
 
       {:ok, value} ->
-        invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string values or a list of strings, got #{inspect(value)}")
+        invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string or string-list values, got #{inspect(value)}")
     end
   end
 
-  defp valid_string_or_string_list?(value) when is_binary(value), do: true
-  defp valid_string_or_string_list?(value) when is_list(value), do: Enum.all?(value, &is_binary/1)
-  defp valid_string_or_string_list?(_value), do: false
+  defp validate_config_options_map(agent_id, field, value) do
+    if Enum.all?(value, fn {key, option_value} -> is_binary(key) and config_option_value?(option_value) end) do
+      :ok
+    else
+      invalid_config("agents.#{agent_id}.#{field} must be a map of string keys to string or string-list values")
+    end
+  end
+
+  defp config_option_value?(value) when is_binary(value), do: true
+  defp config_option_value?(value) when is_list(value), do: Enum.all?(value, &is_binary/1)
+  defp config_option_value?(_value), do: false
 
   defp validate_optional_acp_mcp_config(agent_id, agent) do
     case Map.fetch(agent, "mcp") do
