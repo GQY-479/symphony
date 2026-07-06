@@ -1,474 +1,448 @@
-# 工程任务 HTML 汇报机制设计
+# 工程任务自适应 HTML 汇报设计
 
 ## 目标
 
-Symphony 需要在自动执行多 issue workflow 后，给人一个稳定、可回看、能快速判断结果质量的汇报入口。这个入口不能只依赖 Linear issue 被标记为 Done，也不能要求用户逐个翻派生 issue 评论。
+Symphony 需要一种让 agent 根据具体工程任务生成合适 HTML 汇报的机制。它不是固定模板，也不是数据 dashboard 生成器，而是一个工程汇报 artifact 工作流：agent 先理解任务、证据和读者需求，再选择合适的叙事结构，最终生成可打开、可审查、可追溯的 HTML 页面。
 
-第一版目标是建立一套 Symphony 自己可控的 artifact/report 协议：
+第一版目标：
 
-1. 每个 root workflow 和重要 issue 都可以生成本地汇报 artifact。
-2. 本地汇报至少包含 HTML 和 Markdown 两种形式，其中 HTML 是主形态。
-3. Linear 只承载重点摘要、状态同步和本地/发布报告链接。
-4. 派生 issue 完成后，root issue 能看到增量状态，而不是只在派生 issue 里留下结果。
-5. 报告必须基于 Symphony 控制层事实和 artifact，不把 agent 最终回复当作权威来源。
-6. 报告可读性是一等验收标准；不可读的报告不能算有效交付。
+1. 建立一套本地 HTML artifact 协议，作为工程任务汇报的主形态。
+2. 沉淀一个 `engineering-html-report` skill，让 agent 按任务类型自适应设计报告。
+3. 把事实来源、报告设计、HTML 输出和质量校验分层，避免 agent 自由发挥时编造事实。
+4. 支持功能实现、bug 修复、代码审查、调研、批量 workflow、故障诊断等不同汇报范式。
+5. 生成的报告必须优先回答：做了什么、完成了吗、怎么验证、风险在哪、证据在哪里。
 
 ## 背景和参考
 
 ### Claude Code Artifacts
 
-Claude Code 的 artifacts 提供了一个值得复刻的形态：agent 把会话输出写成 HTML 或 Markdown 文件，再通过产品层发布成可打开的页面。它适合 PR walkthrough、方案对比、调查时间线和长任务进度展示。
+Claude Code Artifacts 提供了一个值得复刻的形态：Claude 把会话输出写成本地 HTML 或 Markdown 文件，再由产品层发布成可打开的 artifact。官方文档列举了 PR walkthrough、方案对比、调查时间线和工作进度 checklist 等用途。
 
-Symphony 不能直接依赖 Claude Code artifact 作为统一能力，因为它绑定 Claude Code 会话、Anthropic 登录和 claude.ai 发布入口。但它验证了一个重要模式：
+Symphony 不应依赖 Claude Code Artifacts 作为默认能力，因为它绑定 Claude Code 会话、Anthropic 登录和发布入口。但它验证了一个关键模式：
 
 ```text
 agent 生成任务专属 HTML artifact
-系统保存、校验、发布并把链接回写到任务系统
+系统保存、校验、发布并把入口回写到工作流
 ```
+
+参考：https://code.claude.com/docs/en/artifacts
 
 ### Claude Skills 的 visual output / review viewer
 
-Claude Skills 文档里的 visual output 模式强调 skill 可以携带脚本，扫描项目后生成自包含 HTML，并打开浏览器检查。review viewer 示例则说明 HTML 可以作为质量评审界面，而不只是静态展示页。
+Claude Skills 文档中的 visual output 模式展示了 skill 可以携带脚本，扫描项目后生成自包含 HTML 并打开浏览器检查。review viewer 示例则说明 HTML 可以作为评审界面，而不只是展示页。
 
-这对 Symphony 的启发是：汇报不应该只是固定模板，而应该是一个生成工作流。不同任务类型可以选择不同报告范式，但最终遵守同一份 artifact 协议。
+这对 Symphony 的启发是：报告生成应该是一个 skill 工作流，而不是一组写死模板。skill 可以规定输入、输出、质量规则和验证脚本，但让 agent 根据任务决定页面结构。
 
-### ADR / SRE Postmortem / Allure
+参考：https://docs.anthropic.com/en/docs/claude-code/skills
 
-现有工程实践可以提供报告结构参考：
+### 工程汇报范式
 
-- ADR / MADR：适合方案、架构、取舍类任务，强调背景、决策、方案和影响。
-- Google SRE Postmortem：适合故障、失败批次和诊断任务，强调影响、根因、时间线和后续行动。
-- Allure：适合测试和批量执行结果，强调结果文件、附件、历史、重试和证据链接。
+成熟参考不是单一 HTML 工具，而是一组工程写作范式：
 
-Symphony 不需要复制这些工具，但需要吸收它们的结构原则：汇报必须把结论、证据、风险和后续动作放在同一页面中。
+- PR / release note：适合功能实现、影响范围、验证和风险说明。
+- ADR / MADR：适合方案、架构、取舍和后续演进。
+- SRE postmortem：适合故障诊断、失败批次、根因、时间线和行动项。
+- Code review report：适合 findings first、严重程度、证据和建议。
+- Test report / Allure：适合结果、附件、重试、日志和证据索引。
+
+Symphony 应借鉴这些范式的结构，而不是复制它们的模板。
 
 ## 非目标
 
-1. 不把 Claude Code artifact 当作必需依赖。
-2. 不在第一版实现通用静态站点或多路由应用。
-3. 不要求 Linear 成为完整报告承载面。
-4. 不把 dashboard 作为唯一入口；dashboard 可以消费报告，但报告 artifact 本身应独立存在。
-5. 不让 agent 自行伪造 Git sha、checkpoint、artifact hash 或最终合并事实。
+1. 不实现 Linear Inbox 投递。
+2. 不设计 root issue 下派生 issue 评论同步机制；该机制可以独立处理。
+3. 不把 dashboard 作为报告的前提。
+4. 不做固定 HTML 模板系统。
+5. 不做以数据图表为中心的 dashboard generator。
+6. 不依赖 Claude Code Artifact、Quarto、Observable、Allure 或任何单一外部工具。
+7. 不让 agent 自行伪造 Git sha、测试结果、issue 状态、artifact hash 或合并事实。
 
 ## 核心原则
 
-1. **控制层事实优先**
-   报告事实来源优先级为 workflow registry、issue result、execution summary、Git adapter 事实、验证日志和 Linear 快照。agent 的自然语言回复只能作为辅助材料。
+1. **HTML 是主阅读面，JSON 是事实层**
+   HTML 用来组织工程叙事、证据导航和人类判断；事实来源应来自结构化上下文包和已存在 artifact。
 
-2. **HTML 是主汇报面**
-   HTML 用于呈现复杂结构、时间线、证据索引、过滤、折叠和对比。Markdown 用于 Linear 摘要、纯文本归档和快速 skim。
+2. **agent 是报告设计师，不是事实来源**
+   agent 可以判断报告应该怎么读、哪些信息应该置顶、哪些证据应折叠，但不能发明完成状态、测试结果或链接。
 
-3. **可读性优先于流程完整**
-   artifact、发布、Linear 通知和 dashboard 入口都只是配套设施。报告本身必须让用户快速判断做了什么、结果是否可信、哪里需要继续看；否则流程再完整也没有意义。
+3. **任务类型决定报告结构**
+   功能实现、bug 修复、审查、调研、批量 workflow 和故障诊断不能套同一张表。skill 必须要求 agent 先选择或组合报告范式。
 
-4. **Linear 只放重点和入口**
-   Linear 评论应该回答这几个问题：当前批次进度如何、哪些 issue 已完成、哪些需要注意、完整报告在哪里。不要把完整日志墙塞进 Linear。
+4. **首屏必须有判断价值**
+   用户打开报告后，应立即知道整体结论、是否需要介入、最重要证据在哪里。报告不能把用户推到日志和长表格里自己分析。
 
-5. **每个派生 issue 完成后同步 root 状态**
-   派生 issue 完成时，Symphony 应把精简状态同步到 root issue 或 root workflow 记录中，让 root issue 成为批次回看入口。
+5. **证据可追踪但不淹没正文**
+   关键结论必须能跳回 issue result、执行摘要、测试日志、diff、PR、截图或原始 artifact。长日志和大段输出默认折叠。
 
-6. **报告可重复生成**
-   同一个 workflow 可以在运行中多次刷新报告。报告需要有 manifest 记录版本、生成时间、输入事实包 hash 和发布目标。
+6. **生成后必须校验**
+   HTML 是否存在、是否自包含、是否覆盖关键任务、链接是否有效、异常是否置顶，都应有规则检查。不能相信 agent 的“已完成”自报。
 
-7. **发布是 adapter，不是报告生成的一部分**
-   local file、local HTTP、Lark、GitHub Pages、对象存储、Claude artifact 都只是发布 adapter。核心 artifact 必须在本地文件系统中先成立。
+## Artifact 协议
 
-## Artifact 目录协议
-
-每个 root workflow 使用一个稳定目录：
+每次报告生成使用一个稳定目录：
 
 ```text
-.symphony/reports/<root-workflow-id>/
-  manifest.json
+.symphony/reports/<report-id>/
   report_context.json
+  report_brief.json
   index.html
   summary.md
+  manifest.json
   assets/
-  snapshots/
-```
-
-如果需要给单个 issue 生成报告，可以使用：
-
-```text
-.symphony/reports/issues/<issue-id>/
-  manifest.json
-  report_context.json
-  index.html
-  summary.md
-```
-
-### manifest.json
-
-`manifest.json` 记录报告自身元数据：
-
-```json
-{
-  "schema_version": 1,
-  "report_id": "root-YQE-700",
-  "report_type": "root_workflow",
-  "root_issue_id": "YQE-700",
-  "generated_at": "2026-07-03T16:00:00+08:00",
-  "generator": "engineering-html-report",
-  "context_hash": "sha256:...",
-  "html_path": "index.html",
-  "markdown_path": "summary.md",
-  "publish_targets": [
-    {
-      "kind": "local_file",
-      "url": "file:///..."
-    }
-  ],
-  "status": "generated"
-}
 ```
 
 ### report_context.json
 
-`report_context.json` 是报告生成事实包，控制层负责构造。第一版最小结构：
+`report_context.json` 是事实包。它由 Symphony 控制层、运行 agent 或报告生成前置脚本收集。第一版可以是宽松 schema，但必须区分事实和解释。
+
+示例：
 
 ```json
 {
   "schema_version": 1,
-  "report_type": "root_workflow",
-  "root_issue": {
+  "subject": {
+    "kind": "workflow",
     "id": "YQE-700",
-    "identifier": "YQE-700",
-    "title": "...",
-    "url": "https://linear.app/..."
+    "title": "实现工程 HTML 汇报机制",
+    "links": []
   },
-  "workflow": {
-    "status": "running",
-    "started_at": "...",
-    "updated_at": "...",
-    "target_branch": "main",
-    "candidate_branch": "symphony/YQE-700/candidate"
+  "task": {
+    "original_request": "...",
+    "task_type_hint": "feature_implementation",
+    "success_criteria": []
   },
-  "nodes": [
+  "work_items": [
     {
-      "node_key": "implementation",
-      "issue_id": "YQE-701",
-      "task_type": "implementation",
+      "id": "YQE-701",
+      "title": "...",
       "status": "completed",
-      "outcome": "completed",
-      "summary": "...",
-      "evidence": [],
-      "artifact_paths": [],
-      "branch": "...",
-      "checkpoint_id": "checkpoint-001"
+      "result": {
+        "outcome": "completed",
+        "summary": "...",
+        "evidence": []
+      },
+      "artifacts": []
     }
   ],
-  "reviews": [],
-  "checkpoints": [],
+  "changes": {
+    "commits": [],
+    "files": [],
+    "diff_refs": []
+  },
+  "verification": {
+    "commands": [],
+    "test_results": [],
+    "logs": []
+  },
   "risks": [],
   "open_questions": [],
-  "links": []
+  "raw_artifacts": []
 }
 ```
 
-控制层可以从现有数据填充这些字段：
+### report_brief.json
 
-- `Workflow.Registry`
-- `.symphony/issue_result.json`
-- `Workflow.ExecutionSummary`
-- `Workflow.GitAdapter`
-- Linear issue read snapshot
-- observability runtime snapshot
+`report_brief.json` 是 agent 在写 HTML 前生成的报告设计说明。它让报告结构可审查、可复用，也能避免 agent 直接进入排版。
 
-## HTML 报告形态
-
-第一版 HTML 应该是自包含单页：
-
-1. 不依赖外部 CSS、JS、字体或网络请求。
-2. 支持直接从文件系统打开。
-3. 支持浏览器截图和基本 DOM 校验。
-4. 对长文本、日志、证据和 diff 链接使用折叠区域。
-5. 页面顶部先给结论，不把用户拖进细节。
-
-建议信息架构：
-
-```text
-标题区：root issue、批次状态、更新时间、完整性提示
-结论区：已完成/失败/阻塞/需人工关注数量
-关键变化：本批次实际交付了什么
-Issue 表格：每个节点的状态、结果、证据、链接
-时间线：调度、执行、审查、合并、发布事件
-证据索引：artifact、测试、日志、PR、diff、截图
-风险和待办：open questions、needs_rework、needs_human
-发布信息：本地路径、外部链接、Linear 回写位置
-```
-
-不同任务可以套不同“报告范式”，但页面外壳保持一致：
-
-- 实现任务：目标、文件变化、测试、风险、后续。
-- 修复任务：症状、根因、修复、回归验证。
-- 调研任务：问题、结论、证据、未确认项。
-- 批量 workflow：issue 矩阵、状态统计、证据索引、异常清单。
-- 审查任务：审查对象、发现、严重程度、采纳状态。
-
-## 可读性契约
-
-报告质量是整个机制的核心。如果生成的 HTML 读起来像日志转储、聊天记录拼接或模板填空，那么 Linear 通知、发布 adapter 和 dashboard 都只是在放大噪音。
-
-第一版必须把可读性变成显式契约：
-
-1. **首屏必须有判断价值**
-   用户打开报告后，不滚动也应能看到：整体状态、是否需要关注、完成/失败/阻塞数量、最重要的 3 到 5 条结论。
-
-2. **先结论，后证据**
-   每个 section 先写人能理解的结论，再给证据链接、原始 artifact、日志或 diff。不要让用户从原始材料里自己推导结论。
-
-3. **异常优先**
-   `failed`、`blocked`、`needs_rework`、`needs_human` 和证据缺失必须优先展示。成功项可以折叠或压缩，异常项不能藏在长表格底部。
-
-4. **证据可追踪但不淹没正文**
-   报告正文展示证据摘要和链接；完整日志、长 diff、agent 输出、原始 JSON 默认折叠。证据必须能打开，但不应把第一页变成证据堆。
-
-5. **面向决策而不是归档**
-   报告应该回答“我现在要不要介入、能不能信任结果、下一步是什么”。归档完整性重要，但不能牺牲快速判断。
-
-6. **任务类型决定叙事结构**
-   实现、修复、调研、审查、批量 workflow 的可读结构不同。生成器不能只套同一个表格模板；至少要选择对应的报告范式。
-
-### 可读性评分
-
-报告生成后应给出一个内部质量评分，用于决定是否可以通知用户：
+示例：
 
 ```json
 {
-  "readability": {
+  "schema_version": 1,
+  "report_kind": "feature_implementation",
+  "audience": "workflow owner",
+  "reader_goal": "快速判断功能是否实现、验证是否充分、风险在哪里",
+  "top_questions": [
+    "完成了吗？",
+    "改了什么？",
+    "怎么验证？",
+    "还需要我看哪里？"
+  ],
+  "sections": [
+    "结论",
+    "用户可见变化",
+    "核心实现",
+    "验证结果",
+    "风险和后续",
+    "证据索引"
+  ],
+  "attention_policy": "失败、阻塞、未验证和需要人工决策的内容置顶"
+}
+```
+
+### manifest.json
+
+`manifest.json` 描述输出结果和质量状态。
+
+```json
+{
+  "schema_version": 1,
+  "report_id": "YQE-700-20260706",
+  "generated_at": "2026-07-06T12:00:00+08:00",
+  "generator": "engineering-html-report",
+  "context_hash": "sha256:...",
+  "brief_path": "report_brief.json",
+  "html_path": "index.html",
+  "markdown_path": "summary.md",
+  "quality": {
     "status": "pass",
-    "score": 0.86,
-    "checks": {
-      "has_first_screen_summary": true,
-      "has_exception_section": true,
-      "has_evidence_index": true,
-      "has_next_actions": true,
-      "raw_logs_are_collapsed": true,
-      "linear_summary_is_short": true
-    },
-    "notes": []
+    "checks": {}
   }
 }
 ```
 
-第一版可以先用规则检查，不必引入 LLM 评审。后续可以增加 agent 自评或人工评分样本，但规则检查必须先保证下限。
+## `engineering-html-report` Skill 设计
 
-## Markdown 摘要形态
+这个 skill 的职责是把事实包变成任务专属 HTML 汇报。它不是模板 skill，而是报告作者 skill。
 
-`summary.md` 不是 HTML 的降级版，而是给 Linear 和纯文本归档使用的短摘要。建议包含：
+### 输入
 
-```text
-# Workflow 汇报：<root issue>
+skill 接收：
 
-状态：...
-更新时间：...
-完整报告：...
+- `report_context.json`
+- 用户额外要求
+- 可选的既有报告样例
+- 可选的品牌或视觉约束
 
-## 结论
-- ...
+### 工作流
 
-## Issue 状态
-| Issue | 状态 | 结果 | 证据 |
+1. **读取事实包**
+   区分任务目标、工作项、结果、验证、风险、证据和原始材料。
 
-## 需要关注
-- ...
-```
+2. **判断报告范式**
+   选择一个主范式，也可以组合多个范式。例如“功能实现 + 批量 workflow”。
 
-Markdown 应控制长度，避免在 Linear 中刷屏。完整证据留给 HTML。
+3. **生成 report brief**
+   写出读者、核心问题、首屏信息、章节结构、证据入口和异常策略。
 
-## Linear 集成
+4. **生成 HTML**
+   写出单页、自包含、可本地打开的 `index.html`。页面结构由任务决定，而不是固定模板。
 
-### Inbox 约束
+5. **生成 Markdown 摘要**
+   写出短 `summary.md`，供 Linear、PR、聊天或纯文本归档引用。
 
-Linear Inbox 本质是 Linear 的通知中心，不是通用消息投递队列。公开资料显示用户通常通过订阅、被提及、被分配、issue 活动等事件收到 Inbox 通知。第一版不假设存在可直接创建 Inbox 通知的 API。
+6. **自检和修正**
+   检查覆盖率、证据链接、外部依赖、异常置顶、长日志折叠和可读性。
 
-因此 Symphony 的设计应优先使用可靠机制：
-
-1. 在 root issue 下创建或更新汇总评论。
-2. 在评论中提及需要通知的人或团队，前提是配置允许。
-3. 保持 root issue 订阅者能通过正常 issue 活动收到通知。
-4. 如果后续 GraphQL schema 确认有 notification/inbox 写接口，再作为可选 adapter 接入。
-
-### Root issue 汇总评论
-
-root issue 下需要有一条稳定汇总评论。第一版可以先追加评论，后续再考虑更新同一条评论。
-
-评论内容应短：
-
-```markdown
-## Symphony 汇报更新
-
-状态：运行中 / 已完成 / 需要关注
-进度：5/7 issue completed，1 needs_rework，1 blocked
-完整报告：<link>
-
-最新完成：
-- YQE-701 implementation：completed，证据 3 项
-- YQE-702 review：needs_rework，发现 2 个问题
-
-需要关注：
-- YQE-704 缺少验证证据
-```
-
-### 派生 issue 完成后的同步
-
-每个派生 issue 被控制层接受 `issue_result.json` 后，Symphony 应执行：
-
-1. 更新 registry 中对应 node 的 `issue_result`。
-2. 刷新 root workflow 的 `report_context.json`。
-3. 重新生成或增量更新 HTML/MD 报告。
-4. 在 root issue 发布短状态更新或更新汇总评论。
-5. 在派生 issue 保留本 issue 的完成评论。
-
-这样 root issue 可以成为批量任务入口，而派生 issue 仍然保留细节证据。
-
-## 生成器设计
-
-新增一个逻辑能力：`engineering-html-report`。它可以先作为内部模块实现，后续再沉淀为 Codex/Symphony skill。
-
-职责：
-
-1. 读取 `report_context.json`。
-2. 判断报告类型和任务范式。
-3. 生成 `index.html` 和 `summary.md`。
-4. 输出 `manifest.json`。
-5. 做基本验证：HTML 可打开、关键字段存在、链接目标存在、没有外部依赖。
-6. 做可读性检查：首屏摘要、异常区、证据索引、后续动作、日志折叠和 Linear 摘要长度。
-
-建议模块边界：
+### 输出
 
 ```text
-SymphonyElixir.Workflow.ReportContext
-  从 registry、execution summary、issue result、Linear snapshot 构造事实包
-
-SymphonyElixir.Workflow.ReportGenerator
-  把事实包渲染成 HTML/MD/manifest
-
-SymphonyElixir.Workflow.ReportQuality
-  检查报告可读性下限，输出 readability 评分和失败原因
-
-SymphonyElixir.Workflow.ReportPublisher
-  发布到 local_file、local_http 或后续外部 adapter
-
-SymphonyElixir.Workflow.ReportNotifier
-  把摘要和链接写回 Linear root issue
+index.html
+summary.md
+report_brief.json
+manifest.json
 ```
 
-## 验证要求
+### HTML 约束
 
-第一版最低验证：
+1. 单页静态 HTML。
+2. CSS 和必要 JS 内嵌。
+3. 不请求外部网络资源。
+4. 不使用远程字体、远程脚本或远程样式。
+5. 可直接从文件系统打开。
+6. 有目录和锚点。
+7. 长日志、长 diff、原始 JSON 默认折叠。
+8. 关键结论附近必须有证据入口。
+9. 页面首屏必须包含结论、状态和需要关注项。
 
-1. `report_context.json` schema 校验通过。
-2. `manifest.json` schema 校验通过。
-3. `index.html` 包含 root issue、状态统计、issue 表格和证据链接。
-4. `index.html` 不包含外部 `http://` 或 `https://` 资源依赖。
-5. `summary.md` 长度可控，并包含 HTML 报告链接。
-6. Linear 评论生成函数有测试覆盖，确认不会输出完整日志墙。
-7. 可读性检查通过：首屏摘要存在、异常区存在、证据索引存在、后续动作存在、长日志默认折叠。
-8. 如果可读性检查失败，报告可以保存为 draft，但不应作为完成汇报通知用户。
+## 报告范式库
 
-如果运行环境有浏览器能力，应增加截图/DOM 检查：
+skill 应提供范式指导，但不强制固定模板。
 
-1. HTML 页面非空。
-2. 关键区域可见。
-3. 长 issue 标题不会挤压布局。
-4. 移动宽度下表格可横向滚动或转为列表。
+### 功能实现报告
 
-## 发布 adapter
+适合 feature / implementation issue。
 
-第一版建议只实现：
+推荐结构：
+
+```text
+结论
+用户可见变化
+核心实现
+修改文件和模块
+验证结果
+风险和后续
+证据索引
+```
+
+### Bug 修复报告
+
+推荐结构：
+
+```text
+结论
+症状和影响
+根因
+修复点
+回归验证
+残余风险
+证据索引
+```
+
+### 代码审查报告
+
+推荐结构：
+
+```text
+审查结论
+Findings first
+严重程度和影响
+文件/行证据
+建议修复
+测试缺口
+```
+
+### 调研/方案报告
+
+推荐结构：
+
+```text
+推荐结论
+问题背景
+候选方案
+取舍分析
+证据和来源
+不确定性
+下一步
+```
+
+### 批量 Workflow 报告
+
+推荐结构：
+
+```text
+整体状态
+需要关注
+Issue 结果矩阵
+执行时间线
+验证和证据索引
+失败/返工/阻塞详情
+后续动作
+```
+
+### 故障诊断报告
+
+推荐结构：
+
+```text
+当前结论
+影响范围
+时间线
+根因或候选根因
+已执行修复
+验证结果
+预防动作
+```
+
+## 质量校验
+
+第一版可以用规则检查保证下限。
+
+必需检查：
+
+1. `index.html` 存在且非空。
+2. `summary.md` 存在且长度可控。
+3. `report_brief.json` 存在，且说明报告范式和读者目标。
+4. HTML 不包含外部 `<script src>` 或 `<link href>`。
+5. 每个关键 work item 至少在 HTML 中出现一次。
+6. 每个 failed / blocked / needs_human / needs_rework 项出现在需要关注区域。
+7. 每条关键结论附近有证据链接或证据说明。
+8. 长日志和原始 JSON 不直接铺在正文中。
+9. 如果存在验证命令，报告必须展示验证结果。
+10. 如果没有验证，报告必须显式标注“未验证”或“验证缺失”。
+
+可选视觉检查：
+
+1. 用浏览器打开 HTML。
+2. 截图确认页面非空。
+3. 检查首屏可见区域包含结论和需要关注项。
+4. 检查窄屏下不发生明显重叠。
+
+## 与 Symphony 的集成边界
+
+### 控制层职责
+
+Symphony 控制层负责：
+
+1. 生成或收集 `report_context.json`。
+2. 提供 artifact、issue、Git、验证和日志路径。
+3. 调用报告 skill 或报告 agent。
+4. 保存输出目录和 manifest。
+5. 运行质量校验。
+6. 把报告路径交给通知、dashboard 或发布 adapter。
+
+### Agent 职责
+
+报告 agent 负责：
+
+1. 理解任务和读者需求。
+2. 选择报告范式。
+3. 生成 `report_brief.json`。
+4. 写 `index.html` 和 `summary.md`。
+5. 根据校验失败原因修正报告。
+
+### 发布和通知职责
+
+发布不是本设计重点。后续可以接：
 
 ```text
 local_file
 local_http
-```
-
-后续可扩展：
-
-```text
 lark_html_publish
 github_pages
-static_host
 object_storage
 claude_artifact
 ```
 
-`claude_artifact` 只能在 Claude backend 可用时作为可选发布 adapter，不能成为 Symphony 默认能力。
+Linear、dashboard、PR 或聊天只负责放入口，不负责承载完整报告。
 
-## 和 Dashboard 的关系
+## MVP
 
-Dashboard 可以消费报告，但不是报告机制的前提。
+第一版只做最小闭环：
 
-建议关系：
+1. 写入 `engineering-html-report` skill。
+2. 准备一个示例 `report_context.json`。
+3. 让 agent 基于该事实包生成 `report_brief.json`、`index.html`、`summary.md` 和 `manifest.json`。
+4. 实现一个校验脚本，检查 HTML 自包含、work item 覆盖、异常置顶和证据入口。
+5. 提供 2 个 golden 示例：
+   - 功能实现报告。
+   - 批量 workflow 含失败/返工报告。
 
-1. report artifact 是持久事实和展示文件。
-2. dashboard 是运行时入口，可以列出最近 reports、嵌入 HTML、显示生成状态。
-3. Linear 是通知和追溯入口，指向 report。
+不在 MVP 中做：
 
-这样 dashboard 不在线时，报告仍然存在；Linear 链接不失效时，用户能从 root issue 回到完整上下文。
+1. Linear Inbox。
+2. root issue 评论机制。
+3. dashboard 嵌入。
+4. 外部发布。
+5. 多页静态站点。
 
-## 分阶段落地
+## 风险和控制
 
-### 阶段 1：设计和协议
+1. **报告像模板填空**
+   控制：要求先生成 report brief，解释读者目标和章节选择。
 
-- 写入本设计文档。
-- 明确 artifact 目录、manifest、report_context、HTML/MD 形态。
-- 明确 Linear Inbox 只作为通知效果，不假设直接投递 API。
+2. **报告像日志墙**
+   控制：长日志、diff、原始 JSON 默认折叠；首页必须先给结论。
 
-### 阶段 2：本地 artifact MVP
+3. **agent 编造事实**
+   控制：事实只能来自 `report_context.json` 和明确 artifact；校验器检查链接和覆盖率。
 
-- 新增 ReportContext 和 ReportGenerator。
-- 从一个 root workflow registry 生成 `report_context.json`。
-- 生成自包含 `index.html` 和 `summary.md`。
-- 添加 schema/HTML 字符串级测试。
-- 增加可读性规则检查和至少 2 个 fixture：一个正常批次、一个含失败/返工的批次。
+4. **HTML 漂亮但不可用**
+   控制：浏览器打开、截图、链接检查和窄屏检查作为可选质量门。
 
-### 阶段 3：Linear root 汇总
+5. **过早产品化**
+   控制：先做本地 artifact 和 skill，不急着接发布、dashboard 和 Linear。
 
-- 派生 issue 完成后刷新报告。
-- root issue 下追加或更新汇总评论。
-- 评论只包含重点、状态和报告链接。
-
-### 阶段 4：发布和 Dashboard 接入
-
-- 增加 local HTTP 或静态发布 adapter。
-- Dashboard 展示 report 列表和最近 workflow 报告入口。
-- 后续根据需要接入 Lark/GitHub Pages/对象存储。
-
-### 阶段 5：报告范式库
-
-- 按任务类型扩展报告布局。
-- 支持实现、修复、调研、审查、批量 workflow、事故诊断。
-- 把生成规则沉淀为可复用 skill。
-- 建立小型 golden report 样本库，用人工可读性反馈反推生成规则。
-
-## 关键风险
-
-1. **Linear Inbox API 不确定**
-   第一版不能承诺直接投递 Inbox。通过 root issue 评论、mention 和订阅行为实现通知效果。
-
-2. **报告变成新日志墙**
-   HTML 可以丰富，但首页必须先给结论和异常；长日志默认折叠。
-
-3. **可读性检查流于形式**
-   如果只检查 DOM 字段是否存在，可能生成“字段齐全但没人想读”的报告。第一版规则检查保证下限，后续需要 golden report 和人工反馈校准。
-
-4. **事实来源漂移**
-   agent 评论、Linear 状态、registry、Git 事实可能不一致。报告必须标出来源和生成时间，以控制层事实为准。
-
-5. **本地链接不可分享**
-   local file 对单机可用，但跨设备不可用。发布 adapter 需要作为后续重点，不应阻塞本地 MVP。
-
-6. **模板僵化**
-   固定模板会让复杂任务变难读。第一版可以有统一外壳，但内容区应由任务范式决定。
+6. **范式库僵化**
+   控制：范式是建议，不是模板。agent 可以组合和调整，但必须在 brief 中说明原因。
 
 ## 已定决策
 
-1. Symphony 自己实现 artifact/report 协议，不直接依赖 Claude Code artifact。
-2. HTML 是主汇报形态，Markdown 是短摘要和 Linear 回写形态。
-3. Linear root issue 必须成为批次回看入口。
-4. 派生 issue 完成后应同步 root workflow 状态并刷新报告。
-5. Inbox 先按 Linear 通知机制间接触发，不假设直接写 Inbox。
-6. 报告生成和发布分层，发布 adapter 可替换。
-7. Dashboard 可以接入报告，但报告 artifact 不依赖 Dashboard 存在。
-8. 报告可读性是硬门槛；质量检查失败时只能生成 draft，不能作为正式汇报通知。
+1. 当前重点是工程任务 HTML 汇报，不做 Linear Inbox。
+2. root issue 评论同步机制独立处理，不纳入本设计 MVP。
+3. Symphony 自己保存本地 artifact，不依赖 Claude Code Artifact 产品能力。
+4. HTML 是主汇报形态，Markdown 是短摘要形态。
+5. 报告结构由 agent 按任务自适应选择。
+6. `report_context.json` 是事实层，`report_brief.json` 是报告设计层，`index.html` 是阅读层。
+7. `engineering-html-report` 应作为 skill/工作流沉淀，而不是硬编码模板。
+8. 质量校验是必需环节；校验失败的报告不能作为正式汇报入口。
