@@ -89,16 +89,6 @@ defmodule SymphonyElixir.Agent.Router do
     end
   end
 
-  defp resolve_agent({nil, _routing_reason}, %Schema{} = config) do
-    case default_agent(config) do
-      agent_id when is_binary(agent_id) ->
-        resolve_agent({agent_id, %{source: :default, matched: nil}}, config)
-
-      nil ->
-        {:error, {:unknown_agent, nil}}
-    end
-  end
-
   defp route_map(routes) when is_map(routes), do: routes
   defp route_map(_routes), do: %{}
 

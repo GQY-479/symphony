@@ -60,8 +60,6 @@ defmodule SymphonyElixir.Agent.McpServer.LinearTools do
     end
   end
 
-  defp error_category(_result), do: "tool_error"
-
   defp graphql_errors?(%{"errors" => errors}) when is_list(errors) and errors != [], do: true
   defp graphql_errors?(%{errors: errors}) when is_list(errors) and errors != [], do: true
   defp graphql_errors?(_payload), do: false

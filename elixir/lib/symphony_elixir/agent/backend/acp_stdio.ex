@@ -87,9 +87,6 @@ defmodule SymphonyElixir.Agent.Backend.AcpStdio do
       {:error, reason} = error ->
         emit_turn_failed(turn_session, reason)
         error
-
-      other ->
-        other
     end
   end
 

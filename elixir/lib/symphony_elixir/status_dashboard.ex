@@ -10,6 +10,10 @@ defmodule SymphonyElixir.StatusDashboard do
   alias SymphonyElixir.Orchestrator
   alias SymphonyElixirWeb.ObservabilityPubSub
 
+  # Dialyzer reports a module-level no_match for generated dashboard formatting
+  # branches without a useful function location.
+  @dialyzer :no_match
+
   @minimum_idle_rerender_ms 1_000
   @throughput_window_ms 5_000
   @throughput_graph_window_ms 10 * 60 * 1000
@@ -189,8 +193,13 @@ defmodule SymphonyElixir.StatusDashboard do
     }
   end
 
-  defp schedule_tick(refresh_ms, true), do: Process.send_after(self(), :tick, refresh_ms)
-  defp schedule_tick(_refresh_ms, false), do: :ok
+  defp schedule_tick(refresh_ms, enabled) do
+    if enabled do
+      Process.send_after(self(), :tick, refresh_ms)
+    else
+      :ok
+    end
+  end
 
   defp maybe_render(state) do
     now_ms = System.monotonic_time(:millisecond)
@@ -977,11 +986,9 @@ defmodule SymphonyElixir.StatusDashboard do
     end)
   end
 
-  defp in_bucket?(timestamp, bucket_start, bucket_end, true),
-    do: timestamp >= bucket_start and timestamp <= bucket_end
-
-  defp in_bucket?(timestamp, bucket_start, bucket_end, false),
-    do: timestamp >= bucket_start and timestamp < bucket_end
+  defp in_bucket?(timestamp, bucket_start, bucket_end, last_bucket?) do
+    timestamp >= bucket_start and (timestamp < bucket_end or (last_bucket? and timestamp == bucket_end))
+  end
 
   defp format_rate_limits(nil), do: colorize("unavailable", @ansi_gray)
 
@@ -2087,15 +2094,9 @@ defmodule SymphonyElixir.StatusDashboard do
   defp truncate(value, _max), do: value
 
   defp dashboard_enabled? do
-    if Code.ensure_loaded?(Mix) and function_exported?(Mix, :env, 0) do
-      try do
-        Mix.env() != :test
-      rescue
-        _ -> true
-      end
-    else
-      true
-    end
+    apply(Mix, :env, []) != :test
+  rescue
+    _ -> true
   end
 
   defp keyword_override(opts, key) do

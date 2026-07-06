@@ -155,7 +155,6 @@ defmodule SymphonyElixir.Workflow.Artifacts do
       {:ok, decoded}
     else
       {:error, reason} -> {:error, reason}
-      other -> other
     end
   end
 

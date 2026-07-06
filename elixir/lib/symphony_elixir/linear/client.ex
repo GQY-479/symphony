@@ -1032,8 +1032,6 @@ defmodule SymphonyElixir.Linear.Client do
     |> drop_nil_values()
   end
 
-  defp issue_snapshot(_issue), do: %{}
-
   defp drop_nil_values(map) when is_map(map) do
     map
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)

@@ -155,7 +155,7 @@ defmodule SymphonyElixir.Workflow.Registry do
 
   def root_workspace_path(_registry), do: nil
 
-  @spec issue_workspace_path(String.t()) :: Path.t() | nil
+  @spec issue_workspace_path(term()) :: Path.t() | nil
   def issue_workspace_path(issue_identifier) when is_binary(issue_identifier) do
     issue_identifier
     |> safe_identifier()
@@ -174,8 +174,8 @@ defmodule SymphonyElixir.Workflow.Registry do
     end
   end
 
-  defp safe_identifier(identifier) do
-    String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
+  defp safe_identifier(identifier) when is_binary(identifier) do
+    String.replace(identifier, ~r/[^a-zA-Z0-9._-]/, "_")
   end
 
   defp registry_dir do

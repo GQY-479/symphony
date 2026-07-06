@@ -139,7 +139,7 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
   defp bundle_multipart_fields(metadata, tar_path) do
     [
       metadata: {Jason.encode!(metadata), content_type: "application/json"},
-      bundle: {File.stream!(tar_path, [], 2048), filename: "bundle.tar.gz", content_type: "application/gzip", size: File.stat!(tar_path).size}
+      bundle: {File.stream!(tar_path, 2048), filename: "bundle.tar.gz", content_type: "application/gzip", size: File.stat!(tar_path).size}
     ]
   end
 
@@ -320,6 +320,8 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
   end
 
   defp wait_stream_ready(%{task: task, ref: ref}) do
+    task_ref = task.ref
+
     receive do
       {:omnigent_stream_ready, ^ref} ->
         :ok
@@ -328,7 +330,7 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
         Task.shutdown(task, :brutal_kill)
         {:error, reason}
 
-      {task_ref, {:error, reason}} when task_ref == task.ref ->
+      {^task_ref, {:error, reason}} ->
         Process.demonitor(task.ref, [:flush])
         {:error, reason}
     after
@@ -356,8 +358,6 @@ defmodule SymphonyElixir.Agent.Omnigent.Client do
     send(parent, {:omnigent_stream_ready, ref})
     true
   end
-
-  defp maybe_notify_stream_ready(nil, false, _events), do: true
 
   defp handle_stream_events([], sse, output_text, _session_id, _on_event) do
     {:cont, {sse, output_text}}

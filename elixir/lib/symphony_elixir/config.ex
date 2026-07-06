@@ -487,10 +487,6 @@ defmodule SymphonyElixir.Config do
     invalid_config("agents.#{agent_id}.agent.type must be one of agent_id, bundle_path")
   end
 
-  defp validate_omnigent_agent(agent_id, agent) do
-    invalid_config("agents.#{agent_id}.agent must be a map, got #{inspect(agent)}")
-  end
-
   defp validate_optional_string_or_map(agent_id, agent, field) do
     case Map.fetch(agent, field) do
       :error -> :ok
@@ -851,8 +847,6 @@ defmodule SymphonyElixir.Config do
     |> Enum.map(&String.trim/1)
     |> Enum.reject(&(&1 == ""))
   end
-
-  defp split_project_repository(_repository), do: []
 
   defp remote_repository?("http://" <> _rest), do: true
   defp remote_repository?("https://" <> _rest), do: true

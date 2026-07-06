@@ -653,8 +653,6 @@ defmodule SymphonyElixirWeb.Presenter do
     Map.get(entry, :workflow_blocked_reason) || Map.get(entry, :error)
   end
 
-  defp workflow_blocked_reason(_entry), do: nil
-
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()
     |> DateTime.add(div(due_in_ms, 1_000), :second)

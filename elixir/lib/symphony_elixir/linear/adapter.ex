@@ -275,8 +275,6 @@ defmodule SymphonyElixir.Linear.Adapter do
     end)
   end
 
-  defp resolve_project_team_inputs(_team_ids, _state_name, _label_names), do: {:error, :project_not_found}
-
   defp resolve_team_inputs(team_id, state_name, label_names) do
     with {:ok, state_id} <- resolve_project_state_id(team_id, state_name),
          {:ok, label_ids} <- resolve_label_ids(team_id, label_names) do

@@ -132,8 +132,6 @@ defmodule SymphonyElixir.Agent.Backend.CliRun do
     Enum.each(pids, &signal_process(&1, "KILL"))
   end
 
-  defp terminate_port_process(_port), do: :ok
-
   defp process_tree_pids(nil), do: []
 
   defp process_tree_pids(os_pid) when is_integer(os_pid) do

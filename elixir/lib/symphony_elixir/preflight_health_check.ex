@@ -85,9 +85,6 @@ defmodule SymphonyElixir.PreflightHealthCheck do
           {:ok, _body} ->
             {:ok, ["Linear auth verified"]}
 
-          {:error, :missing_linear_api_token} ->
-            {:error, ["Linear API token is missing or invalid"]}
-
           {:error, reason} ->
             {:error, ["Linear auth check failed: #{inspect(reason)}"]}
         end

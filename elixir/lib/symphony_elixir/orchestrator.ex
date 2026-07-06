@@ -72,6 +72,8 @@ defmodule SymphonyElixir.Orchestrator do
       codex_totals: nil,
       codex_rate_limits: nil
     ]
+
+    @type t :: %__MODULE__{}
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -364,8 +366,6 @@ defmodule SymphonyElixir.Orchestrator do
       _ -> String.slice(error, 0, 200)
     end
   end
-
-  defp extract_reason(error), do: to_string(error)
 
   defp any_pattern_matches?(error, patterns) do
     Enum.any?(patterns, &String.contains?(error, &1))
@@ -1097,8 +1097,6 @@ defmodule SymphonyElixir.Orchestrator do
   defp last_activity_timestamp(running_entry) when is_map(running_entry) do
     Map.get(running_entry, :last_codex_timestamp) || Map.get(running_entry, :started_at)
   end
-
-  defp last_activity_timestamp(_running_entry), do: nil
 
   defp input_required_blocker?(running_entry) when is_map(running_entry) do
     Map.get(running_entry, :last_codex_event) in [:turn_input_required, :approval_required] or

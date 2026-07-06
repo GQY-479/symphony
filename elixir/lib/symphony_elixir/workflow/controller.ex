@@ -31,6 +31,7 @@ defmodule SymphonyElixir.Workflow.Controller do
   @spec handle_issue_completion(Issue.t(), Path.t()) ::
           {:ok,
            {:completed, String.t()}
+           | {:pass, String.t()}
            | {:needs_human, String.t(), String.t()}
            | {:needs_replan, String.t(), String.t()}
            | {:needs_rework, String.t(), String.t()}
