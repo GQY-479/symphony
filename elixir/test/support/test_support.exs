@@ -41,6 +41,12 @@ defmodule SymphonyElixir.TestSupport do
       setup do
         SymphonyElixir.TestSupport.ensure_symphony_application_started!()
 
+        Application.put_env(
+          :symphony_elixir,
+          :workflow_git_adapter_driver,
+          SymphonyElixir.WorkflowGitAdapterStub
+        )
+
         workflow_root =
           Path.join(
             System.tmp_dir!(),
@@ -59,6 +65,8 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :server_port_override)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+          Application.delete_env(:symphony_elixir, :workflow_git_adapter_driver)
+          Application.delete_env(:symphony_elixir, :workflow_git_adapter_stub)
           File.rm_rf(workflow_root)
         end)
 
