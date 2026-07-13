@@ -289,7 +289,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp handle_workflow_phase_down(state, issue_id, running_entry, :planning) do
     with {:ok, workspace} <- running_workspace(running_entry),
-         {:ok, registry} <- Controller.handle_planning_completion(running_entry.issue, workspace) do
+         {:ok, registry} <-
+           Controller.handle_planning_completion(
+             running_entry.issue,
+             workspace,
+             worker_host: Map.get(running_entry, :worker_host)
+           ) do
       apply_workflow_planning_result(state, issue_id, running_entry, registry)
     else
       {:error, reason} ->
@@ -300,7 +305,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp handle_workflow_phase_down(state, issue_id, running_entry, :issue) do
     with {:ok, workspace} <- running_workspace(running_entry),
-         {:ok, result} <- Controller.handle_issue_completion(running_entry.issue, workspace) do
+         {:ok, result} <-
+           Controller.handle_issue_completion(
+             running_entry.issue,
+             workspace,
+             worker_host: Map.get(running_entry, :worker_host)
+           ) do
       apply_workflow_issue_result(state, issue_id, running_entry, result)
     else
       {:error, reason} ->

@@ -6,7 +6,7 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
   alias SymphonyElixir.Agent.{Backend, Router}
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
-  alias SymphonyElixir.Workflow.Artifacts
+  alias SymphonyElixir.Workflow.{Artifacts, Controller}
 
   @type worker_host :: String.t() | nil
 
@@ -48,7 +48,8 @@ defmodule SymphonyElixir.AgentRunner do
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
         try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
+          with :ok <- maybe_prepare_workflow_workspace(issue, workspace, opts, worker_host),
+               :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
             run_agent_turns(workspace, issue, codex_update_recipient, opts, worker_host)
           end
         after
@@ -57,6 +58,16 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp maybe_prepare_workflow_workspace(issue, workspace, opts, worker_host) do
+    case Keyword.get(opts, :workflow_phase) do
+      phase when phase in [:issue, "issue"] ->
+        Controller.prepare_issue_workspace(issue, workspace, worker_host: worker_host)
+
+      _phase ->
+        :ok
     end
   end
 
@@ -316,8 +327,9 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp ensure_workflow_artifact(run_turn, workspace, issue, opts, turn_opts, turn_session) do
     workflow_phase = Keyword.get(opts, :workflow_phase)
+    worker_host = Keyword.get(opts, :worker_host)
 
-    case load_workflow_artifact(workflow_phase, workspace) do
+    case load_workflow_artifact(workflow_phase, workspace, worker_host) do
       :skip ->
         {:ok, turn_session}
 
@@ -331,7 +343,8 @@ defmodule SymphonyElixir.AgentRunner do
 
         with {:ok, repair_session} <-
                run_workflow_artifact_aware_turn(run_turn, issue, repair_prompt, turn_opts, opts),
-             {:ok, _artifact} <- expect_workflow_artifact(workflow_phase, workspace) do
+             {:ok, _artifact} <-
+               expect_workflow_artifact(workflow_phase, workspace, worker_host) do
           {:ok, accept_workflow_artifact(repair_session, issue, workflow_phase, :repair)}
         else
           {:error, repair_reason} ->
@@ -345,8 +358,9 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp accept_valid_workflow_artifact_after_timeout(workspace, issue, opts) do
     workflow_phase = Keyword.get(opts, :workflow_phase)
+    worker_host = Keyword.get(opts, :worker_host)
 
-    case load_workflow_artifact(workflow_phase, workspace) do
+    case load_workflow_artifact(workflow_phase, workspace, worker_host) do
       {:ok, _artifact} ->
         Logger.warning("ACP turn timed out after producing a valid workflow artifact for #{issue_context(issue)} phase=#{workflow_phase}; accepting artifact and returning control to orchestrator")
 
@@ -365,20 +379,20 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp load_workflow_artifact(:planning, workspace) when is_binary(workspace) do
+  defp load_workflow_artifact(:planning, workspace, worker_host) when is_binary(workspace) do
     path = Artifacts.workflow_plan_path(workspace)
-    artifact_result(path, Artifacts.load_workflow_plan(workspace))
+    artifact_result(path, Artifacts.load_workflow_plan(workspace, worker_host))
   end
 
-  defp load_workflow_artifact(:issue, workspace) when is_binary(workspace) do
+  defp load_workflow_artifact(:issue, workspace, worker_host) when is_binary(workspace) do
     path = Artifacts.issue_result_path(workspace)
-    artifact_result(path, Artifacts.load_issue_result(workspace))
+    artifact_result(path, Artifacts.load_issue_result(workspace, worker_host))
   end
 
-  defp load_workflow_artifact(_workflow_phase, _workspace), do: :skip
+  defp load_workflow_artifact(_workflow_phase, _workspace, _worker_host), do: :skip
 
-  defp expect_workflow_artifact(workflow_phase, workspace) do
-    case load_workflow_artifact(workflow_phase, workspace) do
+  defp expect_workflow_artifact(workflow_phase, workspace, worker_host) do
+    case load_workflow_artifact(workflow_phase, workspace, worker_host) do
       {:ok, artifact} -> {:ok, artifact}
       {:error, _path, reason} -> {:error, reason}
       :skip -> {:ok, :skipped}
@@ -410,23 +424,35 @@ defmodule SymphonyElixir.AgentRunner do
   defp workflow_artifact_message_handler(recipient, issue, workspace, opts) do
     handler = codex_message_handler(recipient, issue)
     workflow_phase = Keyword.get(opts, :workflow_phase)
+    worker_host = Keyword.get(opts, :worker_host)
 
     fn message ->
       result = handler.(message)
-      maybe_halt_on_valid_workflow_artifact(message, workflow_phase, workspace)
+      maybe_halt_on_valid_workflow_artifact(message, workflow_phase, workspace, worker_host)
       result
     end
   end
 
-  defp maybe_halt_on_valid_workflow_artifact(%{event: :notification} = message, workflow_phase, workspace) do
-    case load_workflow_artifact(workflow_phase, workspace) do
+  defp maybe_halt_on_valid_workflow_artifact(
+         %{event: :notification} = message,
+         workflow_phase,
+         workspace,
+         worker_host
+       ) do
+    case load_workflow_artifact(workflow_phase, workspace, worker_host) do
       {:ok, _artifact} -> throw({:workflow_artifact_ready, Map.get(message, :session_id)})
       :skip -> :ok
       {:error, _artifact_path, _reason} -> :ok
     end
   end
 
-  defp maybe_halt_on_valid_workflow_artifact(_message, _workflow_phase, _workspace), do: :ok
+  defp maybe_halt_on_valid_workflow_artifact(
+         _message,
+         _workflow_phase,
+         _workspace,
+         _worker_host
+       ),
+       do: :ok
 
   defp workflow_artifact_repair_prompt(:planning, workspace, artifact_path, reason) do
     """

@@ -32,6 +32,50 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
              Path.join([workspace, ".symphony", "issue_result.json"])
   end
 
+  test "artifact loader 保持本地 API 并接受 worker host 参数" do
+    workspace =
+      Path.join(System.tmp_dir!(), "workflow-artifacts-worker-read-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf(workspace) end)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    plan = %{
+      "kind" => "issue_graph",
+      "summary" => "worker artifact",
+      "confidence" => "high",
+      "nodes" => [
+        %{
+          "node_key" => "implementation",
+          "task_type" => "implementation",
+          "title" => "实现",
+          "goal" => "实现目标",
+          "agent_id" => "codex"
+        },
+        final_review_node()
+      ],
+      "edges" => [%{"from" => "implementation", "to" => "final_review"}]
+    }
+
+    result = %{
+      "schema_version" => 1,
+      "node_key" => "implementation",
+      "task_type" => "implementation",
+      "outcome" => "completed",
+      "summary" => "已完成",
+      "evidence" => ["mix test"],
+      "decisions" => [],
+      "open_questions" => []
+    }
+
+    File.write!(Artifacts.workflow_plan_path(workspace), Jason.encode!(plan))
+    File.write!(Artifacts.issue_result_path(workspace), Jason.encode!(result))
+
+    assert {:ok, ^plan} = Artifacts.load_workflow_plan(workspace)
+    assert {:ok, ^plan} = Artifacts.load_workflow_plan(workspace, nil)
+    assert {:ok, ^result} = Artifacts.load_issue_result(workspace)
+    assert {:ok, ^result} = Artifacts.load_issue_result(workspace, nil)
+  end
+
   test "execution summary path uses the configured artifact directory" do
     write_workflow_file!(Workflow.workflow_file_path(),
       orchestration: %{enabled: true, artifact_dir: ".symphony"}

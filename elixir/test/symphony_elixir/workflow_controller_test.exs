@@ -107,6 +107,10 @@ defmodule SymphonyElixir.WorkflowControllerTest do
 
     assert registry["root_issue_id"] == "root-1"
     assert registry["root_issue_identifier"] == "YQE-100"
+    assert registry["remote"] == "origin"
+    assert registry["target_branch"] == "main"
+    assert registry["candidate_branch"] == "symphony/YQE-100/candidate"
+    assert registry["candidate_head_sha"] == "candidate-base"
     assert map_size(registry["nodes"]) == 2
 
     assert_receive {:memory_tracker_issue_created, %Issue{} = implementation_issue}
@@ -119,6 +123,8 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert implementation_node["status"] == "ready"
     assert implementation_node["agent_id"] == "codex"
     assert implementation_node["task_type"] == "implementation"
+    assert implementation_node["base_candidate_sha"] == "candidate-base"
+    assert implementation_node["branch"] == "symphony/YQE-100/#{implementation_issue.identifier}"
 
     final_review = Registry.node(registry, "final_review")
     assert final_review["issue_id"] == final_review_issue.id
@@ -134,6 +140,67 @@ defmodule SymphonyElixir.WorkflowControllerTest do
 
     assert {:ok, persisted} = Registry.load_by_root_identifier("YQE-100")
     assert persisted["root_issue_identifier"] == "YQE-100"
+  end
+
+  test "prepare_issue_workspace 为 review checkout Controller 记录的 subject" do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-review-prepare-#{System.unique_integer([:positive])}")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      workspace_root: workspace_root,
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    root_issue = %Issue{
+      id: "root-review-prepare",
+      identifier: "YQE-REVIEW-PREPARE",
+      title: "root",
+      state: "In Progress"
+    }
+
+    review_issue = %Issue{
+      id: "issue-review-prepare",
+      identifier: "YQE-REVIEW-1",
+      title: "review",
+      state: "In Progress"
+    }
+
+    root_issue
+    |> Registry.new_root()
+    |> Registry.put_workflow_git(%{
+      "remote" => "origin",
+      "target_branch" => "main",
+      "candidate_branch" => "symphony/YQE-REVIEW-PREPARE/candidate",
+      "candidate_head_sha" => "candidate-head"
+    })
+    |> Registry.put_subject("subject-1", %{
+      "type" => "candidate_range",
+      "head_sha" => "review-head"
+    })
+    |> Registry.put_node("review-1", %{
+      "issue_id" => review_issue.id,
+      "issue_identifier" => review_issue.identifier,
+      "task_type" => "review",
+      "subject_id" => "subject-1",
+      "status" => "ready"
+    })
+    |> Registry.save!()
+
+    test_pid = self()
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      checkout_commit: fn sha ->
+        send(test_pid, {:review_checkout, sha})
+        :ok
+      end
+    })
+
+    workspace = Path.join(workspace_root, review_issue.identifier)
+    File.mkdir_p!(workspace)
+
+    assert :ok = Controller.prepare_issue_workspace(review_issue, workspace, worker_host: nil)
+    assert_receive {:review_checkout, "review-head"}
   end
 
   test "issue_graph 会创建派生 issue、保存 registry readiness，并给 root 留规划摘要 comment" do

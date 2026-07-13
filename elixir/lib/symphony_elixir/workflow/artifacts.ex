@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Workflow.Artifacts do
   工作流规划、完成与审查产物的路径和最小结构校验。
   """
 
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, Workspace}
 
   @workflow_plan_filename "workflow_plan.json"
   @issue_result_filename "issue_result.json"
@@ -16,14 +16,23 @@ defmodule SymphonyElixir.Workflow.Artifacts do
   def issue_result_path(workspace), do: artifact_path(workspace, @issue_result_filename)
 
   @spec load_plan(Path.t()) :: {:ok, map()} | {:error, term()}
-  def load_plan(workspace), do: load_json(workflow_plan_path(workspace), &validate_plan/1)
+  def load_plan(workspace), do: load_workflow_plan(workspace, nil)
 
   @spec load_workflow_plan(Path.t()) :: {:ok, map()} | {:error, term()}
-  def load_workflow_plan(workspace), do: load_plan(workspace)
+  def load_workflow_plan(workspace), do: load_workflow_plan(workspace, nil)
+
+  @spec load_workflow_plan(Path.t(), String.t() | nil) :: {:ok, map()} | {:error, term()}
+  def load_workflow_plan(workspace, worker_host) do
+    load_json(workflow_plan_path(workspace), worker_host, &validate_plan/1)
+  end
 
   @spec load_issue_result(Path.t()) :: {:ok, map()} | {:error, term()}
-  def load_issue_result(workspace),
-    do: load_json(issue_result_path(workspace), &validate_issue_result/1)
+  def load_issue_result(workspace), do: load_issue_result(workspace, nil)
+
+  @spec load_issue_result(Path.t(), String.t() | nil) :: {:ok, map()} | {:error, term()}
+  def load_issue_result(workspace, worker_host) do
+    load_json(issue_result_path(workspace), worker_host, &validate_issue_result/1)
+  end
 
   @spec validate_plan(term()) :: :ok | {:error, :invalid_workflow_plan}
   def validate_plan(%{
@@ -148,8 +157,8 @@ defmodule SymphonyElixir.Workflow.Artifacts do
     Config.settings!().orchestration.artifact_dir
   end
 
-  defp load_json(path, validator) when is_function(validator, 1) do
-    with {:ok, body} <- File.read(path),
+  defp load_json(path, worker_host, validator) when is_function(validator, 1) do
+    with {:ok, body} <- Workspace.read_file(path, worker_host),
          {:ok, decoded} <- Jason.decode(body),
          :ok <- validator.(decoded) do
       {:ok, decoded}

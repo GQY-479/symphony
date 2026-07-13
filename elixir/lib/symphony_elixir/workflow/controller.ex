@@ -5,17 +5,46 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   alias SymphonyElixir.{Config, Tracker}
   alias SymphonyElixir.Linear.Issue
-  alias SymphonyElixir.Workflow.{Artifacts, Registry}
+  alias SymphonyElixir.Workflow.{Artifacts, GitAdapter, Registry}
 
   @ready_statuses MapSet.new(["ready"])
   @completed_statuses MapSet.new(["completed", "done", "passed"])
 
   @spec handle_planning_completion(Issue.t(), Path.t()) :: {:ok, map()} | {:error, term()}
   def handle_planning_completion(%Issue{} = root_issue, workspace) when is_binary(workspace) do
-    with {:ok, plan} <- Artifacts.load_workflow_plan(workspace),
+    handle_planning_completion(root_issue, workspace, [])
+  end
+
+  def handle_planning_completion(_issue, _workspace), do: {:error, :invalid_arguments}
+
+  @spec handle_planning_completion(Issue.t(), Path.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def handle_planning_completion(%Issue{} = root_issue, workspace, opts)
+      when is_binary(workspace) and is_list(opts) do
+    worker_host = Keyword.get(opts, :worker_host)
+    settings = Config.settings!().orchestration
+    candidate_branch = candidate_branch_name(root_issue.identifier)
+
+    with {:ok, plan} <- Artifacts.load_workflow_plan(workspace, worker_host),
          :ok <- validate_materialization_plan(plan),
          {:ok, base_registry} <- load_or_new_registry(root_issue),
-         {:ok, registry} <- materialize_plan(base_registry, root_issue, plan) do
+         {:ok, git} <-
+           GitAdapter.initialize_candidate(
+             workspace,
+             worker_host,
+             settings.git_remote,
+             settings.target_branch,
+             candidate_branch
+           ),
+         git_registry <-
+           Registry.put_workflow_git(base_registry, %{
+             "remote" => settings.git_remote,
+             "target_branch" => settings.target_branch,
+             "target_base_sha" => git.target_sha,
+             "candidate_branch" => git.candidate_branch,
+             "candidate_head_sha" => git.candidate_sha
+           }),
+         {:ok, registry} <- materialize_plan(git_registry, root_issue, plan) do
       case Registry.save!(registry) do
         :ok ->
           case maybe_comment_root(root_issue, plan, registry) do
@@ -26,7 +55,7 @@ defmodule SymphonyElixir.Workflow.Controller do
     end
   end
 
-  def handle_planning_completion(_issue, _workspace), do: {:error, :invalid_arguments}
+  def handle_planning_completion(_issue, _workspace, _opts), do: {:error, :invalid_arguments}
 
   @spec handle_issue_completion(Issue.t(), Path.t()) ::
           {:ok,
@@ -38,13 +67,55 @@ defmodule SymphonyElixir.Workflow.Controller do
            | {:fail, String.t(), String.t()}}
           | {:error, term()}
   def handle_issue_completion(%Issue{} = issue, workspace) when is_binary(workspace) do
-    with {:ok, result} <- Artifacts.load_issue_result(workspace),
+    handle_issue_completion(issue, workspace, [])
+  end
+
+  def handle_issue_completion(_issue, _workspace), do: {:error, :invalid_arguments}
+
+  @spec handle_issue_completion(Issue.t(), Path.t(), keyword()) ::
+          {:ok,
+           {:completed, String.t()}
+           | {:pass, String.t()}
+           | {:needs_human, String.t(), String.t()}
+           | {:needs_replan, String.t(), String.t()}
+           | {:needs_rework, String.t(), String.t()}
+           | {:fail, String.t(), String.t()}}
+          | {:error, term()}
+  def handle_issue_completion(%Issue{} = issue, workspace, opts)
+      when is_binary(workspace) and is_list(opts) do
+    worker_host = Keyword.get(opts, :worker_host)
+
+    with {:ok, result} <- Artifacts.load_issue_result(workspace, worker_host),
          :ok <- Tracker.create_comment(issue.id, render_issue_result_comment(issue, result)) do
       apply_issue_result(issue, result)
     end
   end
 
-  def handle_issue_completion(_issue, _workspace), do: {:error, :invalid_arguments}
+  def handle_issue_completion(_issue, _workspace, _opts), do: {:error, :invalid_arguments}
+
+  @spec prepare_issue_workspace(Issue.t(), Path.t(), keyword()) :: :ok | {:error, term()}
+  def prepare_issue_workspace(%Issue{} = issue, workspace, opts)
+      when is_binary(workspace) and is_list(opts) do
+    worker_host = Keyword.get(opts, :worker_host)
+
+    with {:ok, registry, _node_key, node} <- Registry.load_by_issue_id(issue.id) do
+      if node["task_type"] == "review" do
+        GitAdapter.checkout_commit(workspace, worker_host, review_subject_head(registry, node))
+        |> normalize_prepare_result()
+      else
+        GitAdapter.prepare_private_branch(
+          workspace,
+          worker_host,
+          registry["remote"],
+          node["branch"],
+          node["base_candidate_sha"]
+        )
+        |> normalize_prepare_result()
+      end
+    end
+  end
+
+  def prepare_issue_workspace(_issue, _workspace, _opts), do: {:error, :invalid_arguments}
 
   @spec issue_ready?(String.t()) :: boolean()
   def issue_ready?(issue_id) when is_binary(issue_id) do
@@ -286,7 +357,7 @@ defmodule SymphonyElixir.Workflow.Controller do
   defp reusable_node_issue(_node), do: :error
 
   defp put_derived_node(registry, node_key, node, issue_ref, dependencies, handoffs) do
-    Registry.put_node(registry, node_key, %{
+    node_attrs = %{
       "node_key" => node_key,
       "issue_id" => issue_ref["issue_id"],
       "issue_identifier" => issue_ref["issue_identifier"],
@@ -303,12 +374,54 @@ defmodule SymphonyElixir.Workflow.Controller do
       "workflow_semantics" => "executable",
       "status" => readiness_for(dependencies),
       "title" => node["title"]
-    })
+    }
+
+    node_attrs =
+      if node["task_type"] == "review" do
+        node_attrs
+      else
+        Map.merge(node_attrs, %{
+          "branch" =>
+            private_branch_name(
+              registry["root_issue_identifier"],
+              issue_ref["issue_identifier"]
+            ),
+          "base_candidate_sha" => registry["candidate_head_sha"]
+        })
+      end
+
+    Registry.put_node(registry, node_key, node_attrs)
   end
 
   defp attach_edges(registry, edges) do
     registry = Map.put(registry, "edges", [])
     {:ok, Enum.reduce(edges, registry, &Registry.add_edge(&2, &1))}
+  end
+
+  defp review_subject_head(registry, node) do
+    case get_in(registry, ["subjects", node["subject_id"]]) do
+      %{"head_sha" => sha} when is_binary(sha) -> sha
+      %{"candidate_sha" => sha} when is_binary(sha) -> sha
+      _subject -> registry["candidate_head_sha"]
+    end
+  end
+
+  defp normalize_prepare_result(:ok), do: :ok
+  defp normalize_prepare_result({:ok, _facts}), do: :ok
+  defp normalize_prepare_result({:error, reason}), do: {:error, reason}
+
+  defp candidate_branch_name(root_identifier) do
+    "symphony/#{branch_segment(root_identifier)}/candidate"
+  end
+
+  defp private_branch_name(root_identifier, issue_identifier) do
+    "symphony/#{branch_segment(root_identifier)}/#{branch_segment(issue_identifier)}"
+  end
+
+  defp branch_segment(value) when is_binary(value) do
+    value
+    |> String.replace(~r/[^a-zA-Z0-9._-]/, "-")
+    |> String.trim("-")
   end
 
   defp maybe_comment_root(root_issue, %{"kind" => "issue_graph"} = plan, registry) do
