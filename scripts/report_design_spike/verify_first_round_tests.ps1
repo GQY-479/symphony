@@ -121,9 +121,9 @@ function Write-ValidCase {
         schema_version = 1
         case_id = "YQE-134"
         issues = @(
-            [ordered]@{ id = "YQE-134" }
-            [ordered]@{ id = "YQE-142" }
-            [ordered]@{ id = "YQE-143" }
+            [ordered]@{ identifier = "YQE-134" }
+            [ordered]@{ identifier = "YQE-142" }
+            [ordered]@{ identifier = "YQE-143" }
         )
     })
 
@@ -199,7 +199,7 @@ try {
     $validCase = Join-Path $testRoot "valid"
     Write-ValidCase -CaseDir $validCase
     if ((Invoke-Verifier -CaseDir $validCase) -ne 0) {
-        throw "场景 2 失败：完整合法 artifact 应返回 0"
+        throw "场景 2 失败：identifier 契约的完整合法 artifact 应返回 0"
     }
 
     $zeroByteTextPaths = @(

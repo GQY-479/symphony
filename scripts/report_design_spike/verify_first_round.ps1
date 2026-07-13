@@ -190,11 +190,8 @@ if ($null -ne $context) {
     }
 
     $issueIds = @($context.issues | ForEach-Object {
-        if ($_ -is [string]) {
-            $_
-        }
-        elseif (Test-HasProperty -Value $_ -Name "id") {
-            $_.id
+        if (Test-HasProperty -Value $_ -Name "identifier") {
+            $_.identifier
         }
     })
     foreach ($requiredIssue in @("YQE-134", "YQE-142", "YQE-143")) {
