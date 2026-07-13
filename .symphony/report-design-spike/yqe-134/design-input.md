@@ -2,7 +2,7 @@
 
 ## 任务本质
 
-这不是状态 dashboard，也不是 Linear 字段汇总。页面要帮助 workflow owner 判断一个表面为 Done 的 root issue 是否已经可信交付。真正的阅读难点是三层语义互相冲突：implementation agent 自报完成，final review 证明核心实现不存在，而 root 和 review issue 最终都显示 Done。
+这不是状态 dashboard，也不是 Linear 字段汇总。页面要帮助 workflow owner 判断一个表面为 Done 的 root issue 是否已经可信交付。真正的阅读难点是三层语义互相冲突：implementation agent 自报完成，final review 记录目标实现代码中未检出三个函数定义且目标渲染点仍输出纯文本，而 root 和 review issue 最终都显示 Done。
 
 ## 读者和场景
 
@@ -10,7 +10,7 @@
 
 ## 三版共同事实
 
-三版只能使用 `report_context.json`。必须同时出现 YQE-134、YQE-142、YQE-143，并准确表达：root 的表面状态是 Done；implementation 自报 completed；final review 的 outcome 是 fail / needs_rework；审查证据指向核心函数和渲染改动不存在；root 在审查后发生状态往返。
+三版只能使用 `report_context.json`。必须同时出现 YQE-134、YQE-142、YQE-143，并准确表达：root 的表面状态是 Done；implementation 自报 completed；final review 的 outcome 是 fail / needs_rework；审查在目标实现代码中未检出 issue_link/2、issue_url/2、extract_team_domain/1 三个函数定义，且目标渲染点仍输出纯文本；测试中存在 issue_link/2 调用/引用，但审查指出该函数未定义；root 在审查后发生状态往返。
 
 ## 三版共同判断
 

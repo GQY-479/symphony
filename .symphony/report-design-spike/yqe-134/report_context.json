@@ -55,28 +55,83 @@
       "id": "C-001",
       "surface": "YQE-134 当前状态为 Done",
       "counter_evidence": "YQE-143 最终审查结论为 needs_rework",
+      "evidence_ids": ["E-002", "E-007"],
       "meaning": "Linear terminal state 不能单独作为可信完成证明"
     },
     {
       "id": "C-002",
       "surface": "YQE-142 自报三个链接函数已经实现且测试通过",
-      "counter_evidence": "YQE-143 在 root 和 implementation workspace 中 grep 三个函数均为 0 matches",
+      "counter_evidence": "YQE-143 评论记录两个目标 controller.ex 的函数定义检索均为 0 matches，且 diff、渲染与测试审查不支持自报实现",
+      "evidence_ids": ["E-001", "E-003", "E-004", "E-005", "E-006"],
       "meaning": "实现自报与代码证据直接冲突"
     },
     {
       "id": "C-003",
       "surface": "YQE-143 issue 自身状态为 Done",
       "counter_evidence": "其 Issue Result outcome 为 fail 和 needs_rework",
+      "evidence_ids": ["E-002"],
       "meaning": "审查任务完成不等于被审查实现通过"
     }
   ],
   "evidence": [
-    { "id": "E-001", "source_issue": "YQE-142", "source_type": "issue_result_comment", "created_at": "2026-06-30T01:06:15.388Z", "proves": "implementation agent 自报完成并声称测试通过" },
-    { "id": "E-002", "source_issue": "YQE-143", "source_type": "review_comment", "created_at": "2026-06-30T16:07:02.294Z", "proves": "最终审查给出 needs_rework" },
-    { "id": "E-003", "source_issue": "YQE-143", "source_type": "grep_evidence", "proves": "root 和 implementation workspace 中 issue_link/2、issue_url/2、extract_team_domain/1 均为 0 matches" },
-    { "id": "E-004", "source_issue": "YQE-143", "source_type": "diff_evidence", "proves": "controller.ex diff 只有行尾变化和 validate_node_agents，没有链接实现" },
-    { "id": "E-005", "source_issue": "YQE-143", "source_type": "render_evidence", "proves": "render_plan_comment、render_issue_result_comment、node_description 仍输出纯文本 identifier" },
-    { "id": "E-006", "source_issue": "YQE-143", "source_type": "test_evidence", "proves": "YQE-142 测试引用 issue_link/2，但函数不存在，因此自报测试结果不可直接采信" },
-    { "id": "E-007", "source_issue": "YQE-134", "source_type": "state_history", "proves": "root 在最终审查后经历 Done、In Progress、Done 状态往返" }
+    {
+      "id": "E-001",
+      "source_issue": "YQE-142",
+      "source_type": "issue_result_comment",
+      "evidence_kind": "reported_result",
+      "created_at": "2026-06-30T01:06:15.388Z",
+      "proves": "implementation agent 自报完成并声称测试通过"
+    },
+    {
+      "id": "E-002",
+      "source_issue": "YQE-143",
+      "source_type": "review_comment",
+      "evidence_kind": "review_outcome",
+      "created_at": "2026-06-30T16:07:02.294Z",
+      "proves": "最终审查给出 needs_rework"
+    },
+    {
+      "id": "E-003",
+      "source_issue": "YQE-143",
+      "source_type": "review_comment",
+      "evidence_kind": "definition_search",
+      "parent_evidence_id": "E-002",
+      "source_comment_created_at": "2026-06-30T16:07:02.294Z",
+      "proves": "YQE-143 评论记录：在 YQE-134 和 YQE-142 workspace 的 elixir/lib/symphony_elixir/workflow/controller.ex 中，以 def issue_link\\|def issue_url\\|def extract_team_domain 模式检索函数定义，均为 0 matches"
+    },
+    {
+      "id": "E-004",
+      "source_issue": "YQE-143",
+      "source_type": "review_comment",
+      "evidence_kind": "diff_review",
+      "parent_evidence_id": "E-002",
+      "source_comment_created_at": "2026-06-30T16:07:02.294Z",
+      "proves": "YQE-143 评论记录：controller.ex diff 只有行尾变化和 validate_node_agents，没有链接实现"
+    },
+    {
+      "id": "E-005",
+      "source_issue": "YQE-143",
+      "source_type": "review_comment",
+      "evidence_kind": "render_review",
+      "parent_evidence_id": "E-002",
+      "source_comment_created_at": "2026-06-30T16:07:02.294Z",
+      "proves": "YQE-143 评论记录：render_plan_comment、render_issue_result_comment、node_description 仍输出纯文本 identifier"
+    },
+    {
+      "id": "E-006",
+      "source_issue": "YQE-143",
+      "source_type": "review_comment",
+      "evidence_kind": "test_review",
+      "parent_evidence_id": "E-002",
+      "source_comment_created_at": "2026-06-30T16:07:02.294Z",
+      "proves": "YQE-143 评论记录：YQE-142 workflow_controller_test.exs 第 1915 行存在 issue_link/2 测试调用/引用，但目标函数定义未找到，因此自报测试结果不可直接采信"
+    },
+    {
+      "id": "E-007",
+      "source_issue": "YQE-134",
+      "source_type": "state_history",
+      "evidence_kind": "state_transition",
+      "proves": "root 在最终审查后经历 Done、In Progress、Done 状态往返"
+    }
   ]
 }
