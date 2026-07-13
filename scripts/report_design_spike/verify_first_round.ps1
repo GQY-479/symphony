@@ -189,11 +189,27 @@ if ($null -ne $context) {
         Add-Problem "report_context.json 的 case_id 必须为 YQE-134"
     }
 
-    $issueIds = @($context.issues | ForEach-Object {
-        if (Test-HasProperty -Value $_ -Name "identifier") {
-            $_.identifier
+    $issueIds = New-Object "System.Collections.Generic.List[string]"
+    if ($context.issues -isnot [System.Array]) {
+        Add-Problem "report_context.json 的 issues 必须是数组"
+    }
+    else {
+        $issueIndex = 0
+        foreach ($issue in $context.issues) {
+            if ($issue -isnot [pscustomobject]) {
+                Add-Problem "report_context.json 的 issue 必须是对象：索引 $issueIndex"
+            }
+            elseif (-not (Test-HasProperty -Value $issue -Name "identifier") -or
+                $issue.identifier -isnot [string] -or
+                [string]::IsNullOrWhiteSpace($issue.identifier)) {
+                Add-Problem "report_context.json 的 issue identifier 必须为非空字符串：索引 $issueIndex"
+            }
+            else {
+                $issueIds.Add($issue.identifier) | Out-Null
+            }
+            $issueIndex++
         }
-    })
+    }
     foreach ($requiredIssue in @("YQE-134", "YQE-142", "YQE-143")) {
         if ($issueIds -notcontains $requiredIssue) {
             Add-Problem "report_context.json 缺少 issue：$requiredIssue"

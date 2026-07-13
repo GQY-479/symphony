@@ -202,6 +202,61 @@ try {
         throw "场景 2 失败：identifier 契约的完整合法 artifact 应返回 0"
     }
 
+    $contextPath = Join-Path $validCase "report_context.json"
+    $invalidIssueShapes = @(
+        [ordered]@{
+            Name = "单个 issue 使用三元素 identifier 数组"
+            Issues = @(
+                [ordered]@{ identifier = @("YQE-134", "YQE-142", "YQE-143") }
+            )
+            ExpectedMessage = "issue identifier 必须为非空字符串"
+        }
+        [ordered]@{
+            Name = "三个 issue 分别使用单元素 identifier 数组"
+            Issues = @(
+                [ordered]@{ identifier = @("YQE-134") }
+                [ordered]@{ identifier = @("YQE-142") }
+                [ordered]@{ identifier = @("YQE-143") }
+            )
+            ExpectedMessage = "issue identifier 必须为非空字符串"
+        }
+        [ordered]@{
+            Name = "issues 为 identifier 数组的标量对象"
+            Issues = [ordered]@{
+                identifier = @("YQE-134", "YQE-142", "YQE-143")
+            }
+            ExpectedMessage = "report_context.json 的 issues 必须是数组"
+        }
+    )
+    foreach ($invalidIssueShape in $invalidIssueShapes) {
+        $originalContent = Get-Content -Raw -Encoding UTF8 -LiteralPath $contextPath
+        try {
+            Write-Json -Path $contextPath -Value ([ordered]@{
+                schema_version = 1
+                case_id = "YQE-134"
+                issues = $invalidIssueShape.Issues
+            })
+            $invalidIssueResult = Invoke-PowerShellScript -ScriptPath $verifier `
+                -Arguments @("-CaseDir", $validCase)
+            if ($invalidIssueResult.ExitCode -eq 0) {
+                throw "identifier shape 回归失败：必须拒绝 $($invalidIssueShape.Name)"
+            }
+            if ($invalidIssueResult.Output -notmatch [regex]::Escape($invalidIssueShape.ExpectedMessage)) {
+                throw "identifier shape 回归失败：缺少清晰类型诊断（$($invalidIssueShape.Name)）"
+            }
+            $missingIssueCount = ([regex]::Matches(
+                $invalidIssueResult.Output,
+                "report_context\.json 缺少 issue"
+            )).Count
+            if ($missingIssueCount -ne 3) {
+                throw "identifier shape 回归失败：必须继续累计三个必需 issue 缺失（$($invalidIssueShape.Name)）"
+            }
+        }
+        finally {
+            $originalContent | Set-Content -LiteralPath $contextPath -Encoding UTF8
+        }
+    }
+
     $zeroByteTextPaths = @(
         (Join-Path $validCase "case-brief\index.html"),
         (Join-Path $validCase "case-brief\summary.md"),
@@ -228,7 +283,6 @@ try {
 
     $briefPath = Join-Path $validCase "case-brief\report_brief.json"
     $manifestPath = Join-Path $validCase "case-brief\manifest.json"
-    $contextPath = Join-Path $validCase "report_context.json"
     $originalBrief = Get-Content -Raw -Encoding UTF8 -LiteralPath $briefPath
     $originalManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath
     $zeroByteJsonPaths = @($contextPath, $briefPath, $manifestPath)
