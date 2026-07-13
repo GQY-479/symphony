@@ -66,4 +66,80 @@ defmodule SymphonyElixir.WorkflowGitAdapterTest do
     assert {:ok, true} = Command.ancestor?(repo.workspace, nil, base_sha, head_sha)
     assert {:ok, false} = Command.ancestor?(repo.workspace, nil, head_sha, base_sha)
   end
+
+  test "initialize_candidate 从 remote target 创建 candidate" do
+    repo = SymphonyElixir.GitRepositorySupport.create!("git-candidate")
+    on_exit(fn -> File.rm_rf(repo.root) end)
+
+    assert {:ok, facts} =
+             Command.initialize_candidate(
+               repo.workspace,
+               nil,
+               "origin",
+               "main",
+               "symphony/YQE-1/candidate"
+             )
+
+    assert facts.target_sha == facts.candidate_sha
+    assert facts.candidate_branch == "symphony/YQE-1/candidate"
+  end
+
+  test "compare_and_swap_ref 只接受当前 expected SHA" do
+    repo = SymphonyElixir.GitRepositorySupport.create!("git-cas")
+    on_exit(fn -> File.rm_rf(repo.root) end)
+
+    base = SymphonyElixir.GitRepositorySupport.run!(repo.workspace, ["rev-parse", "HEAD"])
+    head = SymphonyElixir.GitRepositorySupport.commit!(repo.workspace, "change.txt", "change\n")
+
+    assert {:ok, ^head} =
+             Command.compare_and_swap_ref(repo.workspace, nil, "origin", "main", base, head)
+
+    next_head =
+      SymphonyElixir.GitRepositorySupport.commit!(repo.workspace, "next-change.txt", "next\n")
+
+    assert {:error, {:stale_remote_ref, _output}} =
+             Command.compare_and_swap_ref(
+               repo.workspace,
+               nil,
+               "origin",
+               "main",
+               base,
+               next_head
+             )
+  end
+
+  test "prepare_private_branch 和 checkout_commit 准备可写与只读 workspace" do
+    repo = SymphonyElixir.GitRepositorySupport.create!("git-prepare")
+    on_exit(fn -> File.rm_rf(repo.root) end)
+
+    base = SymphonyElixir.GitRepositorySupport.run!(repo.workspace, ["rev-parse", "HEAD"])
+
+    assert {:ok, %{branch: "symphony/YQE-1/YQE-2", head_sha: ^base}} =
+             Command.prepare_private_branch(
+               repo.workspace,
+               nil,
+               "origin",
+               "symphony/YQE-1/YQE-2",
+               base
+             )
+
+    assert :ok = Command.checkout_commit(repo.workspace, nil, base)
+    assert "" == SymphonyElixir.GitRepositorySupport.run!(repo.workspace, ["branch", "--show-current"])
+  end
+
+  test "stub 可以注入 compare_and_swap_ref 竞争结果" do
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      compare_and_swap_ref: {:error, {:stale_remote_ref, "rejected"}}
+    })
+
+    assert {:error, {:stale_remote_ref, "rejected"}} =
+             SymphonyElixir.WorkflowGitAdapterStub.compare_and_swap_ref(
+               "/workspace",
+               nil,
+               "origin",
+               "main",
+               "old",
+               "new"
+             )
+  end
 end

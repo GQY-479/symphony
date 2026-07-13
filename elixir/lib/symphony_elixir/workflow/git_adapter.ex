@@ -48,6 +48,54 @@ defmodule SymphonyElixir.Workflow.GitAdapter do
     driver().ancestor?(workspace, worker_host, ancestor_sha, descendant_sha)
   end
 
+  @spec initialize_candidate(Path.t(), worker_host(), String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def initialize_candidate(workspace, worker_host, remote, target_branch, candidate_branch) do
+    driver().initialize_candidate(workspace, worker_host, remote, target_branch, candidate_branch)
+  end
+
+  @spec prepare_private_branch(Path.t(), worker_host(), String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def prepare_private_branch(workspace, worker_host, remote, branch, base_sha) do
+    driver().prepare_private_branch(workspace, worker_host, remote, branch, base_sha)
+  end
+
+  @spec checkout_commit(Path.t(), worker_host(), String.t()) :: :ok | {:error, term()}
+  def checkout_commit(workspace, worker_host, sha) do
+    driver().checkout_commit(workspace, worker_host, sha)
+  end
+
+  @spec push_private_branch(Path.t(), worker_host(), String.t(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def push_private_branch(workspace, worker_host, remote, branch, head_sha) do
+    driver().push_private_branch(workspace, worker_host, remote, branch, head_sha)
+  end
+
+  @spec fetch_ref(Path.t(), worker_host(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def fetch_ref(workspace, worker_host, remote, branch) do
+    driver().fetch_ref(workspace, worker_host, remote, branch)
+  end
+
+  @spec compare_and_swap_ref(
+          Path.t(),
+          worker_host(),
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t()
+        ) :: {:ok, String.t()} | {:error, term()}
+  def compare_and_swap_ref(workspace, worker_host, remote, branch, expected_sha, new_sha) do
+    driver().compare_and_swap_ref(
+      workspace,
+      worker_host,
+      remote,
+      branch,
+      expected_sha,
+      new_sha
+    )
+  end
+
   @spec hash_artifact(Path.t()) :: {:ok, String.t()} | {:error, term()}
   def hash_artifact(path), do: hash_artifact(path, nil)
 
