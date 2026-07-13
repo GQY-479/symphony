@@ -17,6 +17,7 @@ defmodule SymphonyElixir.Workflow.Registry do
       "checkpoints" => [],
       "subjects" => %{},
       "reviews" => %{},
+      "publication" => %{"status" => "pending"},
       "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
     }
   end
@@ -42,11 +43,47 @@ defmodule SymphonyElixir.Workflow.Registry do
     |> Map.put("updated_at", DateTime.utc_now() |> DateTime.to_iso8601())
   end
 
+  @spec put_node_git(map(), String.t(), map()) :: map()
+  def put_node_git(registry, node_key, attrs)
+      when is_map(registry) and is_binary(node_key) and is_map(attrs) do
+    update_in(registry, ["nodes", node_key], fn node ->
+      Map.merge(node || %{}, normalize_map(attrs))
+    end)
+  end
+
+  @spec put_node_continuation(map(), String.t(), map()) :: map()
+  def put_node_continuation(registry, node_key, continuation)
+      when is_map(registry) and is_binary(node_key) and is_map(continuation) do
+    put_in(registry, ["nodes", node_key, "continuation"], normalize_map(continuation))
+  end
+
+  @spec clear_node_continuation(map(), String.t()) :: map()
+  def clear_node_continuation(registry, node_key)
+      when is_map(registry) and is_binary(node_key) do
+    update_in(registry, ["nodes", node_key], &Map.delete(&1 || %{}, "continuation"))
+  end
+
   @spec add_checkpoint(map(), map()) :: map()
   def add_checkpoint(registry, checkpoint) when is_map(registry) and is_map(checkpoint) do
     update_in(registry, ["checkpoints"], fn checkpoints ->
       (checkpoints || []) ++ [normalize_map(checkpoint)]
     end)
+  end
+
+  @spec add_checkpoint_once(map(), map()) :: map()
+  def add_checkpoint_once(registry, %{"id" => checkpoint_id} = checkpoint)
+      when is_map(registry) do
+    if Enum.any?(registry["checkpoints"] || [], &(&1["id"] == checkpoint_id)) do
+      registry
+    else
+      add_checkpoint(registry, checkpoint)
+    end
+  end
+
+  @spec put_publication(map(), map()) :: map()
+  def put_publication(registry, publication)
+      when is_map(registry) and is_map(publication) do
+    Map.put(registry, "publication", normalize_map(publication))
   end
 
   @spec put_subject(map(), String.t(), map()) :: map()
@@ -260,7 +297,8 @@ defmodule SymphonyElixir.Workflow.Registry do
   defp valid_optional_registry_collections?(registry) when is_map(registry) do
     valid_optional_list?(Map.get(registry, "checkpoints") || Map.get(registry, :checkpoints)) and
       valid_optional_map?(Map.get(registry, "subjects") || Map.get(registry, :subjects)) and
-      valid_optional_map?(Map.get(registry, "reviews") || Map.get(registry, :reviews))
+      valid_optional_map?(Map.get(registry, "reviews") || Map.get(registry, :reviews)) and
+      valid_optional_map?(Map.get(registry, "publication") || Map.get(registry, :publication))
   end
 
   defp valid_optional_list?(nil), do: true
