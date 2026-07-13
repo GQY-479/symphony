@@ -50,6 +50,151 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     issue_result(node_key, "review", summary, Map.merge(%{"outcome" => outcome, "reviews" => reviews}, overrides))
   end
 
+  defp completion_fixture!(suffix, opts \\ []) do
+    workspace_root =
+      Path.join(System.tmp_dir!(), "workflow-controller-completion-#{suffix}-#{System.unique_integer([:positive])}")
+
+    completion_max_continuations = Keyword.get(opts, :completion_max_continuations, 3)
+    task_type = Keyword.get(opts, :task_type, "implementation")
+    node_key = Keyword.get(opts, :node_key, if(task_type == "review", do: "review", else: "implementation"))
+    candidate_sha = Keyword.get(opts, :candidate_sha, "candidate-base")
+    base_candidate_sha = Keyword.get(opts, :base_candidate_sha, candidate_sha)
+    git? = Keyword.get(opts, :git?, true)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_terminal_states: ["Closed"],
+      workspace_root: workspace_root,
+      orchestration: %{
+        enabled: true,
+        artifact_dir: ".symphony",
+        completion_max_continuations: completion_max_continuations
+      }
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    root_issue = %Issue{
+      id: "root-completion-#{suffix}",
+      identifier: "YQE-COMPLETION-#{String.upcase(suffix)}",
+      title: "root",
+      state: "In Progress"
+    }
+
+    issue = %Issue{
+      id: "issue-completion-#{suffix}",
+      identifier: "YQE-COMPLETION-#{String.upcase(suffix)}-1",
+      title: task_type,
+      state: "In Progress"
+    }
+
+    registry = Registry.new_root(root_issue)
+
+    registry =
+      if git? do
+        Registry.put_workflow_git(registry, %{
+          "remote" => "origin",
+          "target_branch" => "main",
+          "target_base_sha" => "target-base",
+          "candidate_branch" => "symphony/#{root_issue.identifier}/candidate",
+          "candidate_head_sha" => candidate_sha
+        })
+      else
+        registry
+      end
+
+    node = %{
+      "node_key" => node_key,
+      "issue_id" => issue.id,
+      "issue_identifier" => issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => task_type,
+      "workflow_semantics" => "executable",
+      "status" => "running",
+      "dependencies" => []
+    }
+
+    {registry, node} =
+      if task_type == "review" do
+        subject_id = "#{node_key}:subject"
+        subject_head = Keyword.get(opts, :subject_head, candidate_sha)
+
+        registry =
+          Registry.put_subject(registry, subject_id, %{
+            "type" => "candidate_range",
+            "base_sha" => "subject-base",
+            "head_sha" => subject_head,
+            "status" => "pending"
+          })
+
+        {registry, Map.put(node, "subject_id", subject_id)}
+      else
+        continuation = Keyword.get(opts, :continuation)
+
+        node =
+          node
+          |> Map.put("branch", "symphony/#{root_issue.identifier}/#{issue.identifier}")
+          |> Map.put("base_candidate_sha", base_candidate_sha)
+
+        node = if is_map(continuation), do: Map.put(node, "continuation", continuation), else: node
+        {registry, node}
+      end
+
+    registry
+    |> Registry.put_node(node_key, node)
+    |> Map.put("status", "planning_complete")
+    |> Registry.save!()
+
+    workspace = Path.join(workspace_root, issue.identifier)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    result =
+      if task_type == "review" do
+        review_result(node_key, ["implementation"], "pass", "审查通过")
+      else
+        issue_result(node_key, task_type, "任务完成", %{})
+      end
+
+    write_issue_result!(workspace, result)
+
+    %{root_issue: root_issue, issue: issue, workspace: workspace, node_key: node_key}
+  end
+
+  defp finalize_completion_registry(registry) do
+    candidate_sha = "candidate-base"
+    root_identifier = registry["root_issue_identifier"]
+
+    registry =
+      Registry.put_workflow_git(registry, %{
+        "remote" => "origin",
+        "target_branch" => "main",
+        "target_base_sha" => "target-base",
+        "candidate_branch" => "symphony/#{root_identifier}/candidate",
+        "candidate_head_sha" => candidate_sha
+      })
+
+    Enum.reduce(registry["nodes"] || %{}, registry, fn {node_key, node}, acc ->
+      if node["task_type"] == "review" do
+        subject_id = "#{node_key}:subject"
+
+        acc
+        |> Registry.put_subject(subject_id, %{
+          "type" => "candidate_range",
+          "base_sha" => "subject-base",
+          "head_sha" => candidate_sha,
+          "status" => "pending"
+        })
+        |> Registry.put_node_git(node_key, %{"subject_id" => subject_id})
+      else
+        Registry.put_node_git(acc, node_key, %{
+          "branch" => "symphony/#{root_identifier}/#{node["issue_identifier"] || node_key}",
+          "base_candidate_sha" => candidate_sha
+        })
+      end
+    end)
+  end
+
   test "single implementation issue_graph materializes implementation node and final review" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-direct-#{System.unique_integer([:positive])}")
@@ -965,6 +1110,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "dependencies" => []
     })
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     assert {:ok, metadata} = Controller.issue_dispatch_metadata(derived_issue.id)
@@ -1018,6 +1164,150 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     refute File.exists?(hook_marker)
   end
 
+  test "dirty workspace 触发 agent continuation 而不完成 issue" do
+    fixture = completion_fixture!("dirty")
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "issue-head",
+           business_dirty_paths: ["lib/pending.ex"],
+           business_changed_paths: ["lib/pending.ex"]
+         }}
+    })
+
+    assert {:ok, {:continue_agent, issue_id, :dirty_worktree, context}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert issue_id == fixture.issue.id
+    assert context["dirty_paths"] == ["lib/pending.ex"]
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    assert Registry.node(registry, fixture.node_key)["status"] == "running"
+    assert Registry.node(registry, fixture.node_key)["continuation"]["attempt"] == 1
+    refute_receive {:memory_tracker_state_update, ^issue_id, _state}
+  end
+
+  test "无业务变更时记录 no_change checkpoint 并完成 issue" do
+    fixture = completion_fixture!("no-change")
+
+    assert {:ok, {:completed, issue_id}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert issue_id == fixture.issue.id
+    assert {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    assert [%{"kind" => "no_change"}] = registry["checkpoints"]
+    assert Registry.node(registry, fixture.node_key)["status"] == "completed"
+    assert_receive {:memory_tracker_comment, ^issue_id, _body}
+    assert_receive {:memory_tracker_state_update, ^issue_id, "Closed"}
+  end
+
+  test "candidate 前进时触发 agent continuation" do
+    fixture =
+      completion_fixture!("candidate-advanced",
+        candidate_sha: "candidate-old",
+        base_candidate_sha: "candidate-old"
+      )
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "issue-head",
+           business_dirty_paths: [],
+           business_changed_paths: ["lib/change.ex"]
+         }},
+      fetch_ref: {:ok, "candidate-new"}
+    })
+
+    assert {:ok, {:continue_agent, issue_id, :candidate_advanced, context}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert issue_id == fixture.issue.id
+    assert context["previous_candidate_sha"] == "candidate-old"
+    assert context["current_candidate_sha"] == "candidate-new"
+    refute_receive {:memory_tracker_state_update, ^issue_id, _state}
+  end
+
+  test "review workspace 被修改时拒绝审查结果" do
+    fixture = completion_fixture!("review-modified", task_type: "review", subject_head: "review-head")
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "",
+           head_sha: "review-head",
+           business_dirty_paths: ["lib/changed.ex"],
+           business_changed_paths: []
+         }}
+    })
+
+    assert {:ok, {:needs_human, issue_id, reason}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert issue_id == fixture.issue.id
+    assert reason =~ "审查 workspace 已改变"
+    refute_receive {:memory_tracker_state_update, ^issue_id, _state}
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "",
+           head_sha: "other-head",
+           business_dirty_paths: [],
+           business_changed_paths: []
+         }}
+    })
+
+    assert {:ok, {:needs_human, ^issue_id, head_reason}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert head_reason =~ "expected_head=review-head actual_head=other-head"
+    refute_receive {:memory_tracker_state_update, ^issue_id, _state}
+  end
+
+  test "存量 active Registry 缺少 Git 事实时需要人工处理" do
+    fixture = completion_fixture!("legacy-missing-git", git?: false)
+
+    assert {:ok, {:needs_human, issue_id, reason}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert issue_id == fixture.issue.id
+    assert reason =~ "缺少 workflow Git 事实"
+    refute_receive {:memory_tracker_state_update, ^issue_id, _state}
+  end
+
+  test "completion continuation 超过上限时需要人工处理" do
+    fixture =
+      completion_fixture!("continuation-limit",
+        completion_max_continuations: 3,
+        continuation: %{"reason" => "dirty_worktree", "attempt" => 3}
+      )
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "issue-head",
+           business_dirty_paths: ["lib/pending.ex"],
+           business_changed_paths: ["lib/pending.ex"]
+         }}
+    })
+
+    assert {:ok, {:needs_human, issue_id, reason}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert issue_id == fixture.issue.id
+    assert reason =~ "continuation 已超过上限"
+    refute_receive {:memory_tracker_state_update, ^issue_id, _state}
+  end
+
   test "issue completion stores issue result and unlocks downstream nodes" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-issue-result-#{System.unique_integer([:positive])}")
@@ -1057,6 +1347,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "dependencies" => ["research"]
     })
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     workspace = Path.join(workspace_root, issue.identifier)
@@ -1166,6 +1457,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "status" => "pending"
     })
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     workspace = Path.join(workspace_root, review_issue.identifier)
@@ -1252,6 +1544,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     })
     |> Registry.add_edge(%{"from" => "implementation_review", "to" => "downstream", "kind" => "handoff"})
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     workspace = Path.join(workspace_root, review_issue.identifier)
@@ -1342,6 +1635,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     })
     |> Registry.add_edge(%{"from" => "implementation", "to" => "final_review", "kind" => "review"})
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     review_workspace = Path.join(workspace_root, review_issue.identifier)
@@ -1392,7 +1686,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert registry["status"] == "planning_complete"
   end
 
-  test "review issue completion 读取 issue result、回写评论并完成 issue" do
+  test "review issue 缺少 Registry 时不得回退为完成" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-review-#{System.unique_integer([:positive])}")
 
@@ -1419,13 +1713,8 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       review_result("implementation_review", ["implementation"], "pass", "实现满足当前 Task 7 的最小验收要求")
     )
 
-    assert {:ok, {:completed, "derived-review"}} =
-             Controller.handle_issue_completion(issue, workspace)
-
-    assert_receive {:memory_tracker_comment, "derived-review", body}
-    assert body =~ "Issue Result"
-    assert body =~ "pass"
-    assert body =~ "实现满足当前 Task 7"
+    assert {:error, :not_found} = Controller.handle_issue_completion(issue, workspace)
+    refute_receive {:memory_tracker_comment, "derived-review", _body}
   end
 
   test "review issue needs_rework 会创建返工 issue 并让下游等待返工节点" do
@@ -1492,6 +1781,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     })
     |> Registry.add_edge(%{"from" => "implementation_review", "to" => "verification", "kind" => "handoff"})
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     workspace = Path.join(workspace_root, review_issue.identifier)
@@ -1606,6 +1896,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "subject_selector" => %{"type" => "candidate_range"}
     })
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     workspace = Path.join(workspace_root, review_issue.identifier)
@@ -1713,6 +2004,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "dependencies" => ["implementation_review"]
     })
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     workspace = Path.join(workspace_root, review_issue.identifier)
@@ -1783,6 +2075,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "subject_selector" => %{"type" => "candidate_range"}
     })
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     workspace = Path.join(workspace_root, review_issue.identifier)
@@ -1856,6 +2149,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "subject_selector" => %{"type" => "candidate_range"}
     })
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     workspace = Path.join(workspace_root, review_issue.identifier)
@@ -1973,6 +2267,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "dependencies" => ["research"]
     })
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     assert {:ok, metadata} = Controller.issue_dispatch_metadata(implementation_issue.id)
@@ -2050,6 +2345,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
       "subject_selector" => %{"type" => "candidate_range"}
     })
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     workspace = Path.join(workspace_root, review_issue.identifier)

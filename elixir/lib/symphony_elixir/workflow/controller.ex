@@ -61,6 +61,7 @@ defmodule SymphonyElixir.Workflow.Controller do
           {:ok,
            {:completed, String.t()}
            | {:pass, String.t()}
+           | {:continue_agent, String.t(), atom(), map()}
            | {:needs_human, String.t(), String.t()}
            | {:needs_replan, String.t(), String.t()}
            | {:needs_rework, String.t(), String.t()}
@@ -76,6 +77,7 @@ defmodule SymphonyElixir.Workflow.Controller do
           {:ok,
            {:completed, String.t()}
            | {:pass, String.t()}
+           | {:continue_agent, String.t(), atom(), map()}
            | {:needs_human, String.t(), String.t()}
            | {:needs_replan, String.t(), String.t()}
            | {:needs_rework, String.t(), String.t()}
@@ -86,8 +88,29 @@ defmodule SymphonyElixir.Workflow.Controller do
     worker_host = Keyword.get(opts, :worker_host)
 
     with {:ok, result} <- Artifacts.load_issue_result(workspace, worker_host),
-         :ok <- Tracker.create_comment(issue.id, render_issue_result_comment(issue, result)) do
-      apply_issue_result(issue, result)
+         {:ok, registry, node_key, node} <- Registry.load_by_issue_id(issue.id),
+         :ok <- validate_result_matches_node(result, node_key, node) do
+      if node["task_type"] == "review" do
+        validate_review_completion(
+          issue,
+          workspace,
+          registry,
+          node_key,
+          node,
+          result,
+          opts
+        )
+      else
+        validate_writable_completion(
+          issue,
+          workspace,
+          registry,
+          node_key,
+          node,
+          result,
+          opts
+        )
+      end
     end
   end
 
@@ -441,6 +464,253 @@ defmodule SymphonyElixir.Workflow.Controller do
   end
 
   defp maybe_comment_root(_root_issue, _plan, _registry), do: :ok
+
+  defp validate_result_matches_node(result, node_key, node) do
+    cond do
+      result["node_key"] != node_key ->
+        {:error, {:issue_result_node_mismatch, node_key, result["node_key"]}}
+
+      result["task_type"] != node["task_type"] ->
+        {:error, {:issue_result_task_type_mismatch, node["task_type"], result["task_type"]}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_review_completion(
+         issue,
+         workspace,
+         registry,
+         _node_key,
+         node,
+         result,
+         opts
+       ) do
+    worker_host = Keyword.get(opts, :worker_host)
+
+    with :ok <- validate_registry_git_facts(registry),
+         {:ok, subject_head_sha} <- strict_review_subject_head(registry, node),
+         {:ok, facts} <-
+           GitAdapter.inspect_completion(
+             workspace,
+             worker_host,
+             subject_head_sha,
+             allowed_control_paths(workspace)
+           ) do
+      dirty_paths = facts.business_dirty_paths || []
+
+      if dirty_paths == [] and facts.head_sha == subject_head_sha do
+        apply_review_result(issue, result)
+      else
+        needs_human(
+          issue.id,
+          "审查 workspace 已改变：dirty_paths=#{inspect(dirty_paths)} " <>
+            "expected_head=#{subject_head_sha} actual_head=#{facts.head_sha}"
+        )
+      end
+    else
+      {:needs_human, reason} -> needs_human(issue.id, reason)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_writable_completion(
+         issue,
+         workspace,
+         registry,
+         node_key,
+         node,
+         result,
+         opts
+       ) do
+    worker_host = Keyword.get(opts, :worker_host)
+
+    with :ok <- validate_registry_git_facts(registry),
+         :ok <- validate_writable_node_git_facts(node),
+         {:ok, facts} <-
+           GitAdapter.inspect_completion(
+             workspace,
+             worker_host,
+             node["base_candidate_sha"],
+             allowed_control_paths(workspace)
+           ) do
+      cond do
+        facts.business_dirty_paths != [] ->
+          continue_agent(registry, node_key, issue.id, :dirty_worktree, %{
+            "dirty_paths" => facts.business_dirty_paths,
+            "head_sha" => facts.head_sha
+          })
+
+        facts.business_changed_paths == [] ->
+          complete_no_change(issue, workspace, registry, node_key, result, opts)
+
+        true ->
+          validate_candidate_ancestry(
+            issue,
+            workspace,
+            registry,
+            node_key,
+            node,
+            facts,
+            result,
+            opts
+          )
+      end
+    else
+      {:needs_human, reason} -> needs_human(issue.id, reason)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_registry_git_facts(registry) do
+    required = ["remote", "target_branch", "candidate_branch", "candidate_head_sha"]
+    missing = Enum.reject(required, &non_blank?(registry[&1]))
+
+    if missing == [] do
+      :ok
+    else
+      {:needs_human, "缺少 workflow Git 事实：#{Enum.join(missing, ", ")}"}
+    end
+  end
+
+  defp validate_writable_node_git_facts(node) do
+    required = ["branch", "base_candidate_sha"]
+    missing = Enum.reject(required, &non_blank?(node[&1]))
+
+    if missing == [] do
+      :ok
+    else
+      {:needs_human, "可写节点缺少 Git 事实：#{Enum.join(missing, ", ")}"}
+    end
+  end
+
+  defp strict_review_subject_head(registry, node) do
+    case get_in(registry, ["subjects", node["subject_id"]]) do
+      %{"head_sha" => sha} when is_binary(sha) and sha != "" -> {:ok, sha}
+      %{"candidate_sha" => sha} when is_binary(sha) and sha != "" -> {:ok, sha}
+      _subject -> {:needs_human, "审查节点缺少 Controller 记录的 subject HEAD"}
+    end
+  end
+
+  defp continue_agent(registry, node_key, issue_id, reason, context) do
+    previous_attempt = get_in(registry, ["nodes", node_key, "continuation", "attempt"]) || 0
+    attempt = previous_attempt + 1
+    max_attempts = Config.settings!().orchestration.completion_max_continuations
+
+    if attempt > max_attempts do
+      needs_human(
+        issue_id,
+        "completion continuation 已超过上限 #{max_attempts}：reason=#{reason}"
+      )
+    else
+      continuation =
+        context
+        |> Map.put("reason", Atom.to_string(reason))
+        |> Map.put("attempt", attempt)
+
+      updated_registry =
+        registry
+        |> Registry.put_node_continuation(node_key, continuation)
+        |> put_node_status(node_key, "running")
+
+      with :ok <- Registry.save!(updated_registry) do
+        {:ok, {:continue_agent, issue_id, reason, continuation}}
+      end
+    end
+  end
+
+  defp complete_no_change(issue, workspace, registry, node_key, result, opts) do
+    worker_host = Keyword.get(opts, :worker_host)
+
+    with {:ok, artifact_hash} <-
+           GitAdapter.hash_artifact(Artifacts.issue_result_path(workspace), worker_host) do
+      checkpoint_id = "#{node_key}:no-change:#{artifact_hash}"
+
+      updated_registry =
+        registry
+        |> Registry.add_checkpoint_once(%{
+          "id" => checkpoint_id,
+          "kind" => "no_change",
+          "node_key" => node_key,
+          "artifact_hash" => artifact_hash
+        })
+        |> put_node_issue_result(node_key, result)
+        |> Registry.put_node_git(node_key, %{"checkpoint_id" => checkpoint_id})
+        |> Registry.clear_node_continuation(node_key)
+        |> put_node_status(node_key, "completed")
+        |> unlock_ready_nodes()
+        |> maybe_complete_registry()
+
+      with :ok <- Registry.save!(updated_registry),
+           :ok <- Tracker.create_comment(issue.id, render_issue_result_comment(issue, result)),
+           :ok <- Tracker.update_issue_state(issue.id, workflow_terminal_state()),
+           :ok <- maybe_close_root_issue(updated_registry, issue.id) do
+        {:ok, {:completed, issue.id}}
+      end
+    end
+  end
+
+  defp validate_candidate_ancestry(
+         issue,
+         workspace,
+         registry,
+         node_key,
+         node,
+         facts,
+         _result,
+         opts
+       ) do
+    worker_host = Keyword.get(opts, :worker_host)
+
+    with {:ok, current_candidate_sha} <-
+           GitAdapter.fetch_ref(
+             workspace,
+             worker_host,
+             registry["remote"],
+             registry["candidate_branch"]
+           ) do
+      if current_candidate_sha != node["base_candidate_sha"] do
+        continue_agent(registry, node_key, issue.id, :candidate_advanced, %{
+          "previous_candidate_sha" => node["base_candidate_sha"],
+          "current_candidate_sha" => current_candidate_sha,
+          "head_sha" => facts.head_sha
+        })
+      else
+        case GitAdapter.ancestor?(
+               workspace,
+               worker_host,
+               current_candidate_sha,
+               facts.head_sha
+             ) do
+          {:ok, true} -> {:error, :candidate_promotion_pending}
+          {:ok, false} -> needs_human(issue.id, "issue HEAD 不包含当前 candidate 基线")
+          {:error, reason} -> {:error, reason}
+        end
+      end
+    end
+  end
+
+  defp apply_review_result(issue, result) do
+    case apply_issue_result(issue, result) do
+      {:ok, _outcome} = ok ->
+        case Tracker.create_comment(issue.id, render_issue_result_comment(issue, result)) do
+          :ok -> ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp needs_human(issue_id, reason) when is_binary(issue_id) and is_binary(reason) do
+    {:ok, {:needs_human, issue_id, reason}}
+  end
+
+  defp allowed_control_paths(workspace) do
+    [Path.relative_to(Artifacts.issue_result_path(workspace), workspace)]
+  end
 
   defp render_issue_result_comment(issue, result) do
     """
@@ -1031,6 +1301,12 @@ defmodule SymphonyElixir.Workflow.Controller do
       "workflow_semantics" => "executable",
       "status" => readiness_for_existing_dependencies(registry, dependencies),
       "title" => rework_issue.title,
+      "branch" =>
+        private_branch_name(
+          registry["root_issue_identifier"],
+          rework_issue.identifier
+        ),
+      "base_candidate_sha" => registry["candidate_head_sha"],
       "rework_of" => original_node_key,
       "review_summary" => decision["summary"],
       "previous_issue_result" => original_node["issue_result"]
@@ -1317,7 +1593,8 @@ defmodule SymphonyElixir.Workflow.Controller do
       "issue_identifier" => node["issue_identifier"],
       "rework_of" => node["rework_of"],
       "review_summary" => node["review_summary"],
-      "previous_issue_result" => node["previous_issue_result"]
+      "previous_issue_result" => node["previous_issue_result"],
+      "completion_continuation" => node["continuation"]
     }
   end
 
