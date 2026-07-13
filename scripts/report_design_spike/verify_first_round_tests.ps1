@@ -90,6 +90,25 @@ function Invoke-Verifier {
     return $result.ExitCode
 }
 
+function Test-OutputDiagnostic {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Output,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $compactOutput = $Output -replace "\s", ""
+    $compactMessage = $Message -replace "\s", ""
+    $compactPath = $Path -replace "\s", ""
+    return $compactOutput -match [regex]::Escape($compactMessage) -and
+        $compactOutput -match [regex]::Escape($compactPath)
+}
+
 function Write-ValidCase {
     param(
         [Parameter(Mandatory = $true)]
@@ -183,14 +202,82 @@ try {
         throw "场景 2 失败：完整合法 artifact 应返回 0"
     }
 
+    $zeroByteTextPaths = @(
+        (Join-Path $validCase "case-brief\index.html"),
+        (Join-Path $validCase "case-brief\summary.md"),
+        (Join-Path $validCase "case-brief\review.md")
+    )
+    foreach ($zeroByteTextPath in $zeroByteTextPaths) {
+        $originalContent = Get-Content -Raw -Encoding UTF8 -LiteralPath $zeroByteTextPath
+        try {
+            [System.IO.File]::WriteAllBytes($zeroByteTextPath, [byte[]]@())
+            $zeroByteTextResult = Invoke-PowerShellScript -ScriptPath $verifier `
+                -Arguments @("-CaseDir", $validCase)
+            if ($zeroByteTextResult.ExitCode -eq 0) {
+                throw "零字节文本回归失败：$zeroByteTextPath 必须返回非 0"
+            }
+            if (-not (Test-OutputDiagnostic -Output $zeroByteTextResult.Output `
+                    -Message "文件不能为空" -Path $zeroByteTextPath)) {
+                throw "零字节文本回归失败：缺少带路径的内容无效诊断（$zeroByteTextPath）"
+            }
+        }
+        finally {
+            $originalContent | Set-Content -LiteralPath $zeroByteTextPath -Encoding UTF8
+        }
+    }
+
     $briefPath = Join-Path $validCase "case-brief\report_brief.json"
     $manifestPath = Join-Path $validCase "case-brief\manifest.json"
+    $contextPath = Join-Path $validCase "report_context.json"
     $originalBrief = Get-Content -Raw -Encoding UTF8 -LiteralPath $briefPath
     $originalManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath
+    $zeroByteJsonPaths = @($contextPath, $briefPath, $manifestPath)
+    foreach ($zeroByteJsonPath in $zeroByteJsonPaths) {
+        $originalContent = Get-Content -Raw -Encoding UTF8 -LiteralPath $zeroByteJsonPath
+        try {
+            [System.IO.File]::WriteAllBytes($zeroByteJsonPath, [byte[]]@())
+            $zeroByteJsonResult = Invoke-PowerShellScript -ScriptPath $verifier `
+                -Arguments @("-CaseDir", $validCase)
+            if ($zeroByteJsonResult.ExitCode -eq 0) {
+                throw "零字节 JSON 回归失败：$zeroByteJsonPath 必须返回非 0"
+            }
+            if (-not (Test-OutputDiagnostic -Output $zeroByteJsonResult.Output `
+                    -Message "JSON 无法解析" -Path $zeroByteJsonPath)) {
+                throw "零字节 JSON 回归失败：缺少带路径的解析诊断（$zeroByteJsonPath）"
+            }
+        }
+        finally {
+            $originalContent | Set-Content -LiteralPath $zeroByteJsonPath -Encoding UTF8
+        }
+    }
+
+    $reviewAfterZeroJsonPath = Join-Path $validCase "decision-memo\review.md"
+    $originalContext = Get-Content -Raw -Encoding UTF8 -LiteralPath $contextPath
+    $originalReviewAfterZeroJson = Get-Content -Raw -Encoding UTF8 -LiteralPath $reviewAfterZeroJsonPath
+    try {
+        [System.IO.File]::WriteAllBytes($contextPath, [byte[]]@())
+        Remove-Item -LiteralPath $reviewAfterZeroJsonPath -Force
+        $zeroJsonAndMissingReviewResult = Invoke-PowerShellScript -ScriptPath $verifier `
+            -Arguments @("-CaseDir", $validCase)
+        if (-not (Test-OutputDiagnostic -Output $zeroJsonAndMissingReviewResult.Output `
+                -Message "JSON 无法解析" -Path $contextPath)) {
+            throw "零字节 JSON 累计回归失败：缺少共享事实包解析诊断"
+        }
+        if (-not (Test-OutputDiagnostic -Output $zeroJsonAndMissingReviewResult.Output `
+                -Message "缺少文件" -Path $reviewAfterZeroJsonPath)) {
+            throw "零字节 JSON 累计回归失败：未累计后续 review.md 缺失问题"
+        }
+    }
+    finally {
+        $originalContext | Set-Content -LiteralPath $contextPath -Encoding UTF8
+        $originalReviewAfterZeroJson |
+            Set-Content -LiteralPath $reviewAfterZeroJsonPath -Encoding UTF8
+    }
+
     $invalidTopLevels = @(
         [ordered]@{
             Name = "report_context.json 顶层 null"
-            Path = Join-Path $validCase "report_context.json"
+            Path = $contextPath
             Content = "null"
         }
         [ordered]@{
@@ -260,15 +347,12 @@ exit $LASTEXITCODE
         if ($textReadResult.ExitCode -eq 0) {
             throw "文本读取回归失败：不可读文件必须返回非 0"
         }
-        $compactOutput = $textReadResult.Output -replace "\s", ""
-        $compactSummaryPath = $summaryPath -replace "\s", ""
-        $compactReviewPath = $reviewPath -replace "\s", ""
-        if ($compactOutput -notmatch "文本无法读取" -or
-            $compactOutput -notmatch [regex]::Escape($compactSummaryPath)) {
+        if (-not (Test-OutputDiagnostic -Output $textReadResult.Output `
+                -Message "文本无法读取" -Path $summaryPath)) {
             throw "文本读取回归失败：缺少不可读 summary.md 诊断；子进程输出：$($textReadResult.Output)"
         }
-        if ($compactOutput -notmatch "缺少文件" -or
-            $compactOutput -notmatch [regex]::Escape($compactReviewPath)) {
+        if (-not (Test-OutputDiagnostic -Output $textReadResult.Output `
+                -Message "缺少文件" -Path $reviewPath)) {
             throw "文本读取回归失败：未累计后续 review.md 缺失问题"
         }
     }

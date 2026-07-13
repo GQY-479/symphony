@@ -28,6 +28,10 @@ function Read-Json {
 
     try {
         $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path
+        if ([string]::IsNullOrWhiteSpace([string]$content)) {
+            Add-Problem "JSON 无法解析：$Path"
+            return $null
+        }
         $value = $content | ConvertFrom-Json
     }
     catch {
@@ -51,11 +55,21 @@ function Read-Text {
     )
 
     try {
-        return Get-Content -Raw -Encoding UTF8 -LiteralPath $Path
+        $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path
+        if ($null -eq $content) {
+            $content = ""
+        }
+        return [pscustomobject]@{
+            Success = $true
+            Content = [string]$content
+        }
     }
     catch {
         Add-Problem "文本无法读取：$Path"
-        return $null
+        return [pscustomobject]@{
+            Success = $false
+            Content = $null
+        }
     }
 }
 
@@ -129,11 +143,11 @@ function Test-NonEmptyFile {
         return
     }
 
-    $content = Read-Text -Path $Path
-    if ($null -eq $content) {
+    $readResult = Read-Text -Path $Path
+    if (-not $readResult.Success) {
         return
     }
-    if ([string]::IsNullOrWhiteSpace($content)) {
+    if ([string]::IsNullOrWhiteSpace($readResult.Content)) {
         Add-Problem "文件不能为空：$Path"
     }
 }
@@ -274,7 +288,15 @@ foreach ($variant in $variantValues) {
         Add-Problem "缺少文件：$htmlPath"
     }
     else {
-        $html = Read-Text -Path $htmlPath
+        $html = $null
+        $htmlReadResult = Read-Text -Path $htmlPath
+        if ($htmlReadResult.Success) {
+            $html = $htmlReadResult.Content
+            if ([string]::IsNullOrWhiteSpace($html)) {
+                Add-Problem "文件不能为空：$htmlPath"
+                $html = $null
+            }
+        }
         if ($null -ne $html) {
             foreach ($requiredIssue in @("YQE-134", "YQE-142", "YQE-143")) {
                 if ($html -notmatch [regex]::Escape($requiredIssue)) {
