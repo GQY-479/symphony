@@ -1,5 +1,9 @@
 # Report Readability Spike Implementation Plan
 
+> **状态：已停止执行。** 当前设计依据为
+> `../specs/2026-07-13-report-design-pattern-spike-design.md`。本文描述的
+> fixture、renderer 和规则校验任务仅作为历史草稿，不再继续实施。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a local spike that generates inspectable engineering HTML report samples before any Linear, publish, or dashboard integration work continues.

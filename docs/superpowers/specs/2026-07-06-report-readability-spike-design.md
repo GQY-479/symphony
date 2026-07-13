@@ -1,5 +1,9 @@
 # 工程 HTML 汇报可读性验证设计
 
+> **状态：已被取代。** 当前设计依据为
+> `2026-07-13-report-design-pattern-spike-design.md`。本文仅保留为旧的
+> renderer-first 可读性方案记录，不再作为实施依据。
+
 ## 目标
 
 在继续投入 Linear 通知、发布 adapter、dashboard 接入之前，先证明 Symphony 生成的工程 HTML 汇报有可能达到人工可读要求。
