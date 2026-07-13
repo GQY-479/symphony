@@ -9,7 +9,10 @@ defmodule SymphonyElixir.TestSupport do
     "reviewer_agent" => Schema.default_agent_id(),
     "artifact_dir" => ".symphony",
     "planning_max_turns" => 1,
-    "review_max_turns" => 1
+    "review_max_turns" => 1,
+    "git_remote" => "origin",
+    "target_branch" => "main",
+    "completion_max_continuations" => 3
   }
 
   defmacro __using__(_opts) do
@@ -358,7 +361,10 @@ defmodule SymphonyElixir.TestSupport do
       "  reviewer_agent: #{yaml_value(Map.get(config, "reviewer_agent"))}",
       "  artifact_dir: #{yaml_value(Map.get(config, "artifact_dir"))}",
       "  planning_max_turns: #{yaml_value(Map.get(config, "planning_max_turns"))}",
-      "  review_max_turns: #{yaml_value(Map.get(config, "review_max_turns"))}"
+      "  review_max_turns: #{yaml_value(Map.get(config, "review_max_turns"))}",
+      "  git_remote: #{yaml_value(Map.get(config, "git_remote"))}",
+      "  target_branch: #{yaml_value(Map.get(config, "target_branch"))}",
+      "  completion_max_continuations: #{yaml_value(Map.get(config, "completion_max_continuations"))}"
     ]
     |> Enum.join("\n")
   end
