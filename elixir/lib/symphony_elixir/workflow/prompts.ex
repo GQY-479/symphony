@@ -154,6 +154,9 @@ defmodule SymphonyElixir.Workflow.Prompts do
     root_workspace = Map.get(context, :root_workspace) || Map.get(context, "root_workspace")
     root_issue_identifier = Map.get(context, :root_issue_identifier) || Map.get(context, "root_issue_identifier")
     result_path = artifact_path_text(workspace, :issue_result)
+    writable_rules = writable_task_rules(task_type, context)
+    continuation_rules = continuation_rules(context)
+    integration_rules = integration_rules(task_type, context)
 
     upstream_summaries =
       context
@@ -202,7 +205,7 @@ defmodule SymphonyElixir.Workflow.Prompts do
     Issue 阶段附加要求:
 
     - 这是 workflow issue node；输出会被控制层消费，不是普通进度记录。
-    - 生成或更新 `issue_result.json`；这是当前 issue node 的唯一完成 artifact。
+    - 生成或更新 `issue_result.json`；这是当前 issue node 的结构化完成申请，不是完成证明。
     - 不要通过移动当前 Linear issue 状态来表示完成、交接、审查通过或关闭；当前 issue 的交接只能通过 `issue_result.json`。
     - `issue_result.json` 必须写入：`#{result_path}`。
     - `issue_result.json` 必须包含所有字段，且 `evidence` 必须是非空数组:
@@ -223,16 +226,105 @@ defmodule SymphonyElixir.Workflow.Prompts do
     - 当前派生 issue workspace: #{workspace_text(workspace)}
     - Root workflow issue: #{value_or_dash(root_issue_identifier)}
     - Root workflow workspace: #{workspace_text(root_workspace)}
-    - 如果任务说明要求在 root workflow workspace 中读取或写入文件，可以在那里操作目标业务文件；但当前 issue artifact 仍然必须写在当前派生 issue workspace 的 `.symphony` 目录中。
-    - 先检查依赖节点 workspace；如果当前节点依赖上游实现，必须在当前派生 issue workspace 中合入、cherry-pick 或移植必要代码后再继续，不要只依赖摘要。
+    - 先检查依赖节点 workspace；它们只用于理解上游上下文，不得直接修改。
     - 依赖节点 workspaces:
     #{value_or_dash(upstream_workspace_lines)}
+    #{writable_rules}
+    #{continuation_rules}
+    #{integration_rules}
     #{review_rules}
     - 写入并读回 `issue_result.json` 后立即结束，等待控制层推进 workflow graph。
     - 上游摘要:
     #{upstream_summaries}
     """
   end
+
+  defp writable_task_rules("review", _context), do: ""
+
+  defp writable_task_rules(_task_type, _context) do
+    """
+
+    可写任务 Git 交付规则:
+
+    - 所有受版本控制的业务修改只能发生在当前 issue workspace。
+    - Root workflow workspace 只读；上游 workspace 同样只读，只能用于理解上下文。
+    - 完成前检查 tracked、staged、unstaged 和 untracked 文件。
+    - 提交所有需要交付的业务变更，清理不属于当前 issue 的临时修改。
+    - 不要直接 push 或更新 candidate/target；共享引用由 Controller 推进。
+    - 完成提交和验证后再更新 `issue_result.json`。
+    """
+  end
+
+  defp continuation_rules(context) do
+    case Map.get(context, :completion_continuation) || Map.get(context, "completion_continuation") do
+      %{} = continuation ->
+        continuation_details(continuation)
+
+      _continuation ->
+        ""
+    end
+  end
+
+  defp continuation_details(continuation) do
+    reason = Map.get(continuation, :reason) || Map.get(continuation, "reason")
+
+    case reason do
+      "candidate_advanced" ->
+        previous =
+          Map.get(continuation, :previous_candidate_sha) ||
+            Map.get(continuation, "previous_candidate_sha") || "-"
+
+        current =
+          Map.get(continuation, :current_candidate_sha) ||
+            Map.get(continuation, "current_candidate_sha") || "-"
+
+        """
+
+        Controller completion continuation:
+
+        - candidate 已从 #{previous} 前进到 #{current}。
+        - 合入 #{current} 到当前 preparation branch，解决冲突并重新验证。
+        - 只处理基线漂移和未完成交付，不要重新实现已经完成的功能。
+        """
+
+      "dirty_worktree" ->
+        dirty_paths =
+          Map.get(continuation, :dirty_paths) || Map.get(continuation, "dirty_paths") || []
+
+        """
+
+        Controller completion continuation:
+
+        - 当前仍有未提交业务变更: #{Enum.join(dirty_paths, ", ")}。
+        - 判断这些变更是否属于当前 issue；提交应交付内容，清理其余内容并重新验证。
+        - 不要重新实现已经完成的功能。
+        """
+
+      _reason ->
+        """
+
+        Controller completion continuation:
+
+        - 复用当前 workspace，只处理 Controller 指出的剩余完成条件。
+        - 不要重新实现已经完成的功能。
+        """
+    end
+  end
+
+  defp integration_rules("integration", context) do
+    target_sha = Map.get(context, :target_sha) || Map.get(context, "target_sha") || "-"
+
+    """
+
+    Integration 任务附加规则:
+
+    - 将 #{target_sha} 合入当前 preparation branch。
+    - 解决冲突、重新验证并提交完整集成结果。
+    - 不要直接 push candidate 或 target；Controller 会校验并推进共享引用。
+    """
+  end
+
+  defp integration_rules(_task_type, _context), do: ""
 
   defp context_map(context) when is_map(context), do: context
   defp context_map(_context), do: %{}

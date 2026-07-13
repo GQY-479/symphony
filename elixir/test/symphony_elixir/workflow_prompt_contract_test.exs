@@ -165,6 +165,76 @@ defmodule SymphonyElixir.WorkflowPromptContractTest do
     end
   end
 
+  test "issue prompt 固化提交、continuation、integration 和 review 责任" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      orchestration: %{enabled: true, artifact_dir: ".symphony"}
+    )
+
+    workspace = "/tmp/symphony-contract-workspace"
+
+    implementation =
+      Prompts.append(
+        "Base prompt",
+        :issue,
+        %{
+          "node_key" => "implementation",
+          "task_type" => "implementation",
+          "root_workspace" => "/tmp/root-workspace"
+        },
+        workspace
+      )
+
+    continuation =
+      Prompts.append(
+        "Base prompt",
+        :issue,
+        %{
+          "node_key" => "implementation",
+          "task_type" => "implementation",
+          "completion_continuation" => %{
+            "reason" => "candidate_advanced",
+            "previous_candidate_sha" => "candidate-old",
+            "current_candidate_sha" => "candidate-new"
+          }
+        },
+        workspace
+      )
+
+    integration =
+      Prompts.append(
+        "Base prompt",
+        :issue,
+        %{
+          "node_key" => "target_sync-1",
+          "task_type" => "integration",
+          "target_sha" => "target-new"
+        },
+        workspace
+      )
+
+    review =
+      Prompts.append(
+        "Base prompt",
+        :issue,
+        %{"node_key" => "review", "task_type" => "review"},
+        workspace
+      )
+
+    assert implementation =~ "提交所有需要交付的业务变更"
+    assert implementation =~ "不要直接 push 或更新 candidate/target"
+    assert implementation =~ "Root workflow workspace 只读"
+
+    assert continuation =~ "candidate 已从 candidate-old 前进到 candidate-new"
+    assert continuation =~ "合入 candidate-new"
+    assert continuation =~ "不要重新实现已经完成的功能"
+
+    assert integration =~ "将 target-new 合入当前 preparation branch"
+    assert integration =~ "解决冲突、重新验证并提交"
+
+    assert review =~ "不要执行 `git add`"
+    assert review =~ "不要修改源码、测试、文档或业务文件"
+  end
+
   test "active workflow code no longer exposes retired workflow phase artifact repair paths" do
     root = Path.expand("../..", __DIR__)
 
