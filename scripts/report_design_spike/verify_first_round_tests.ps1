@@ -56,22 +56,38 @@ function Write-TestImage {
     }
 }
 
-function Invoke-Verifier {
+function Invoke-PowerShellScript {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$CaseDir
+        [string]$ScriptPath,
+
+        [string[]]$Arguments = @()
     )
 
     $powershell = (Get-Process -Id $PID).Path
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        & $powershell -NoProfile -ExecutionPolicy Bypass -File $verifier -CaseDir $CaseDir *> $null
-        return $LASTEXITCODE
+        $output = & $powershell -NoProfile -ExecutionPolicy Bypass -File $ScriptPath @Arguments 2>&1 |
+            Out-String
+        return [pscustomobject]@{
+            ExitCode = $LASTEXITCODE
+            Output = $output
+        }
     }
     finally {
         $ErrorActionPreference = $previousErrorActionPreference
     }
+}
+
+function Invoke-Verifier {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CaseDir
+    )
+
+    $result = Invoke-PowerShellScript -ScriptPath $verifier -Arguments @("-CaseDir", $CaseDir)
+    return $result.ExitCode
 }
 
 function Write-ValidCase {
@@ -165,6 +181,102 @@ try {
     Write-ValidCase -CaseDir $validCase
     if ((Invoke-Verifier -CaseDir $validCase) -ne 0) {
         throw "场景 2 失败：完整合法 artifact 应返回 0"
+    }
+
+    $briefPath = Join-Path $validCase "case-brief\report_brief.json"
+    $manifestPath = Join-Path $validCase "case-brief\manifest.json"
+    $originalBrief = Get-Content -Raw -Encoding UTF8 -LiteralPath $briefPath
+    $originalManifest = Get-Content -Raw -Encoding UTF8 -LiteralPath $manifestPath
+    $invalidTopLevels = @(
+        [ordered]@{
+            Name = "report_context.json 顶层 null"
+            Path = Join-Path $validCase "report_context.json"
+            Content = "null"
+        }
+        [ordered]@{
+            Name = "report_brief.json 顶层数组"
+            Path = $briefPath
+            Content = "[$originalBrief]"
+        }
+        [ordered]@{
+            Name = "manifest.json 顶层数组"
+            Path = $manifestPath
+            Content = "[$originalManifest,$originalManifest]"
+        }
+    )
+    foreach ($invalidTopLevel in $invalidTopLevels) {
+        $originalContent = Get-Content -Raw -Encoding UTF8 -LiteralPath $invalidTopLevel.Path
+        try {
+            $invalidTopLevel.Content |
+                Set-Content -LiteralPath $invalidTopLevel.Path -Encoding UTF8
+            $invalidTopLevelResult = Invoke-PowerShellScript -ScriptPath $verifier `
+                -Arguments @("-CaseDir", $validCase)
+            if ($invalidTopLevelResult.ExitCode -eq 0) {
+                throw "顶层 JSON 回归失败：必须拒绝 $($invalidTopLevel.Name)"
+            }
+            if ($invalidTopLevelResult.Output -notmatch "JSON 顶层必须是对象" -or
+                $invalidTopLevelResult.Output -match "JSON 无法解析") {
+                throw "顶层 JSON 回归失败：诊断不清晰（$($invalidTopLevel.Name)）"
+            }
+        }
+        finally {
+            $originalContent | Set-Content -LiteralPath $invalidTopLevel.Path -Encoding UTF8
+        }
+    }
+
+    $emptyVariantsRunner = Join-Path $testRoot "invoke-empty-variants.ps1"
+    @'
+param(
+    [string]$Verifier,
+    [string]$CaseDir
+)
+
+& $Verifier -CaseDir $CaseDir -Variants @()
+exit $LASTEXITCODE
+'@ | Set-Content -LiteralPath $emptyVariantsRunner -Encoding UTF8
+    $emptyVariantsResult = Invoke-PowerShellScript -ScriptPath $emptyVariantsRunner `
+        -Arguments @("-Verifier", $verifier, "-CaseDir", $validCase)
+    if ($emptyVariantsResult.ExitCode -eq 0) {
+        throw "Variants 回归失败：空 Variants 必须返回非 0；子进程输出：$($emptyVariantsResult.Output)"
+    }
+    if ($emptyVariantsResult.Output -notmatch "至少提供一个候选") {
+        throw "Variants 回归失败：空 Variants 缺少清晰错误"
+    }
+
+    $summaryPath = Join-Path $validCase "case-brief\summary.md"
+    $reviewPath = Join-Path $validCase "case-brief\review.md"
+    $originalReview = Get-Content -Raw -Encoding UTF8 -LiteralPath $reviewPath
+    $summaryLock = $null
+    try {
+        $summaryLock = [System.IO.File]::Open(
+            $summaryPath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+        Remove-Item -LiteralPath $reviewPath -Force
+        $textReadResult = Invoke-PowerShellScript -ScriptPath $verifier `
+            -Arguments @("-CaseDir", $validCase)
+        if ($textReadResult.ExitCode -eq 0) {
+            throw "文本读取回归失败：不可读文件必须返回非 0"
+        }
+        $compactOutput = $textReadResult.Output -replace "\s", ""
+        $compactSummaryPath = $summaryPath -replace "\s", ""
+        $compactReviewPath = $reviewPath -replace "\s", ""
+        if ($compactOutput -notmatch "文本无法读取" -or
+            $compactOutput -notmatch [regex]::Escape($compactSummaryPath)) {
+            throw "文本读取回归失败：缺少不可读 summary.md 诊断；子进程输出：$($textReadResult.Output)"
+        }
+        if ($compactOutput -notmatch "缺少文件" -or
+            $compactOutput -notmatch [regex]::Escape($compactReviewPath)) {
+            throw "文本读取回归失败：未累计后续 review.md 缺失问题"
+        }
+    }
+    finally {
+        if ($null -ne $summaryLock) {
+            $summaryLock.Dispose()
+        }
+        $originalReview | Set-Content -LiteralPath $reviewPath -Encoding UTF8
     }
 
     Add-Content -LiteralPath (Join-Path $validCase "case-brief\index.html") `

@@ -27,10 +27,34 @@ function Read-Json {
     )
 
     try {
-        return Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Json
+        $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path
+        $value = $content | ConvertFrom-Json
     }
     catch {
         Add-Problem "JSON 无法解析：$Path"
+        return $null
+    }
+
+    $trimmedContent = $content.TrimStart()
+    if ($null -eq $value -or $trimmedContent.Length -eq 0 -or $trimmedContent[0] -ne "{") {
+        Add-Problem "JSON 顶层必须是对象：$Path"
+        return $null
+    }
+
+    return $value
+}
+
+function Read-Text {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    try {
+        return Get-Content -Raw -Encoding UTF8 -LiteralPath $Path
+    }
+    catch {
+        Add-Problem "文本无法读取：$Path"
         return $null
     }
 }
@@ -105,13 +129,34 @@ function Test-NonEmptyFile {
         return
     }
 
-    $content = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path
+    $content = Read-Text -Path $Path
+    if ($null -eq $content) {
+        return
+    }
     if ([string]::IsNullOrWhiteSpace($content)) {
         Add-Problem "文件不能为空：$Path"
     }
 }
 
 $CaseDir = [System.IO.Path]::GetFullPath($CaseDir)
+
+$canValidateVariants = $true
+$variantValues = @($Variants)
+if ($variantValues.Count -eq 0) {
+    Add-Problem "至少提供一个候选"
+    $canValidateVariants = $false
+}
+else {
+    foreach ($variantValue in $variantValues) {
+        if ([string]::IsNullOrWhiteSpace([string]$variantValue)) {
+            Add-Problem "候选名称不能为空"
+            $canValidateVariants = $false
+        }
+    }
+}
+if (-not $canValidateVariants) {
+    $variantValues = @()
+}
 
 $contextPath = Join-Path $CaseDir "report_context.json"
 $context = $null
@@ -165,7 +210,7 @@ $nonEmptyBriefFields = @(
     "visual_system"
 )
 
-foreach ($variant in $Variants) {
+foreach ($variant in $variantValues) {
     $variantDir = Join-Path $CaseDir $variant
     if (-not (Test-Path -LiteralPath $variantDir -PathType Container)) {
         Add-Problem "缺少候选目录：$variantDir"
@@ -229,24 +274,26 @@ foreach ($variant in $Variants) {
         Add-Problem "缺少文件：$htmlPath"
     }
     else {
-        $html = Get-Content -Raw -Encoding UTF8 -LiteralPath $htmlPath
-        foreach ($requiredIssue in @("YQE-134", "YQE-142", "YQE-143")) {
-            if ($html -notmatch [regex]::Escape($requiredIssue)) {
-                Add-Problem "index.html 缺少 issue：$requiredIssue（$variant）"
+        $html = Read-Text -Path $htmlPath
+        if ($null -ne $html) {
+            foreach ($requiredIssue in @("YQE-134", "YQE-142", "YQE-143")) {
+                if ($html -notmatch [regex]::Escape($requiredIssue)) {
+                    Add-Problem "index.html 缺少 issue：$requiredIssue（$variant）"
+                }
             }
-        }
 
-        $remoteResourcePatterns = @(
-            "(?is)<script\b[^>]*\bsrc\s*=",
-            "(?is)<link\b[^>]*\bhref\s*=",
-            "(?is)@import\b",
-            '(?is)url\s*\(\s*[''"]?https?://',
-            '(?is)<img\b[^>]*\bsrc\s*=\s*[''"]?https?://'
-        )
-        foreach ($pattern in $remoteResourcePatterns) {
-            if ($html -match $pattern) {
-                Add-Problem "index.html 包含远程资源：$variant"
-                break
+            $remoteResourcePatterns = @(
+                "(?is)<script\b[^>]*\bsrc\s*=",
+                "(?is)<link\b[^>]*\bhref\s*=",
+                "(?is)@import\b",
+                '(?is)url\s*\(\s*[''"]?https?://',
+                '(?is)<img\b[^>]*\bsrc\s*=\s*[''"]?https?://'
+            )
+            foreach ($pattern in $remoteResourcePatterns) {
+                if ($html -match $pattern) {
+                    Add-Problem "index.html 包含远程资源：$variant"
+                    break
+                }
             }
         }
     }
