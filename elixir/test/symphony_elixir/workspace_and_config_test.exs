@@ -232,6 +232,48 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "run_command 在指定 workspace 执行并保留退出状态" do
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "workspace-command-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(workspace)
+
+    assert {:ok, {"ok\n", 0}} = Workspace.run_command(workspace, "printf 'ok\\n'")
+
+    assert {:ok, {"failed\n", 7}} =
+             Workspace.run_command(workspace, "printf 'failed\\n'; exit 7")
+  end
+
+  test "run_command 超时会终止命令" do
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "workspace-timeout-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(workspace)
+
+    assert {:error, {:workspace_command_timeout, 20}} =
+             Workspace.run_command(workspace, "sleep 2", nil, timeout_ms: 20)
+  end
+
+  test "read_file 读取 workspace 文件" do
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "workspace-read-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "result.json"), "{\"ok\":true}")
+
+    assert {:ok, "{\"ok\":true}"} =
+             Workspace.read_file(Path.join(workspace, "result.json"))
+  end
+
   test "workspace creates an empty directory when no bootstrap hook is configured" do
     workspace_root =
       Path.join(
