@@ -101,7 +101,20 @@ Agent 不允许直接更新：
 
 Controller 不负责决定如何修改或解决冲突。Controller 只在校验通过后执行受保护的共享引用推进。
 
-### 3.4 任何仓库变更都必须发布
+### 3.4 Agent 角色不是独立实体
+
+系统中只有统一的 coding agent 执行能力，不存在长期驻留或具有独立身份的“执行 Agent”“Integration Agent”“Review Agent”。这些名称只描述当前 issue 的任务责任。
+
+具体行为由以下运行时上下文决定：
+
+- 当前 node 的 `task_type`；
+- Controller 生成的 workflow context；
+- 对应任务的 prompt 契约；
+- 当前 workspace、Git 状态和 review subject。
+
+任何可用 agent 实例都可以按路由规则执行这些任务。Registry 不保存 agent 角色实体，只保存 node、task type、所选 agent id 和执行结果。
+
+### 3.5 任何仓库变更都必须发布
 
 不引入可选 `completion_policy`。
 
@@ -123,9 +136,7 @@ AND candidate 已经进入远程 target
 | Orchestrator | 调度、claim、并发、agent continuation、controller retry、退避和 reconcile |
 | Workflow.Controller | 解释结果、完成校验、决定合法转换、推进共享引用、记录 checkpoint、更新 Tracker |
 | AgentRunner | 执行首次 agent turn 和后续 continuation，校验结果 artifact 契约 |
-| 执行 Agent | 修改、测试、判断 dirty 文件、提交、吸收最新 candidate、解决冲突 |
-| Integration Agent | 将最新 target 合入 candidate preparation branch，解决冲突并提交 |
-| Review Agent | 只读审查明确 subject，不修改代码和 Git 历史 |
+| Coding agent 执行能力 | 执行当前 issue；具体责任由 task type、prompt 和 workflow context 决定，不形成独立角色实体 |
 | GitAdapter | 读取 Git 事实、校验祖先关系、创建私有分支、push 私有分支、受保护地推进共享引用 |
 | Registry | 保存 candidate、issue head、checkpoint、subject、review 和 publication 事实 |
 | Planner | 规划业务和 review node，不规划机械 continuation |
@@ -326,7 +337,7 @@ task_type = integration
 node purpose = target_sync
 ```
 
-它是真正需要 agent 执行的 issue node，不是隐藏 phase。Integration agent 负责：
+它是真正需要 agent 执行的 issue node，不是隐藏 phase。接收该 integration issue 的 agent 负责：
 
 1. 从当前 candidate 创建私有 preparation branch。
 2. 合入 Controller 指定的最新 target SHA。
@@ -339,7 +350,7 @@ Controller 按普通 issue 的完成校验处理它，并在校验通过后快�
 
 ### 6.10 Final review 通过
 
-Final review agent 只审查 Controller 生成的不可漂移 subject。Subject 至少包含：
+接收 final review issue 的 agent 只审查 Controller 生成的不可漂移 subject。Subject 至少包含：
 
 ```json
 {
@@ -566,9 +577,11 @@ target remote confirmed
 
 Continuation 期间不写“已完成”评论，不把 issue 移到 terminal state。
 
-## 13. Agent Prompt 契约
+## 13. 不同任务的 Agent Prompt 契约
 
-### 13.1 普通执行和返工 Agent
+以下小节描述 task type 对当前 agent turn 的责任约束，不代表存在不同类型或长期驻留的 agent 实体。
+
+### 13.1 普通执行和返工任务
 
 必须：
 
@@ -585,17 +598,17 @@ Continuation 期间不写“已完成”评论，不把 issue 移到 terminal st
 - 修改 Linear 状态表示完成；
 - 把需要交付的修改留在未提交工作区。
 
-### 13.2 Continuation Agent
+### 13.2 Continuation 任务
 
 Continuation prompt 只描述当前未满足的完成条件，不要求重新实现任务。Agent 必须复用当前 workspace、Git 历史和 artifact。
 
-### 13.3 Integration Agent
+### 13.3 Integration 任务
 
-负责 target sync 或无法继续原 agent 的显式集成任务。它可以合并、解决冲突和提交，但仍不能更新共享引用。
+接收该任务的 agent 负责 target sync 或无法继续原 issue 时的显式集成工作。它可以合并、解决冲突和提交，但仍不能更新共享引用。
 
-### 13.4 Review Agent
+### 13.4 Review 任务
 
-保持只读。不得 add、commit、merge、push、创建 PR 或改写审查 subject。
+接收该任务的 agent 保持只读。不得 add、commit、merge、push、创建 PR 或改写审查 subject。
 
 ## 14. 完成判定
 
