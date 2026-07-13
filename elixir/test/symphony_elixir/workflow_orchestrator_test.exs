@@ -6,6 +6,67 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
   alias SymphonyElixir.Workflow.Controller
   alias SymphonyElixir.Workflow.Registry
 
+  test "continue_agent 保留 claim、workspace、agent 和 continuation context" do
+    issue = %Issue{
+      id: "issue-continuation",
+      identifier: "YQE-CONTINUATION",
+      title: "continuation",
+      state: "In Progress"
+    }
+
+    running_entry = running_entry(issue, "/tmp/issue-continuation", :issue)
+    state = %{workflow_state() | claimed: MapSet.new([issue.id])}
+
+    result =
+      {:continue_agent, issue.id, :candidate_advanced, %{"current_candidate_sha" => "candidate-new"}}
+
+    updated_state =
+      Orchestrator.apply_workflow_issue_result_for_test(
+        state,
+        issue.id,
+        running_entry,
+        result
+      )
+
+    assert MapSet.member?(updated_state.claimed, issue.id)
+    retry = updated_state.retry_attempts[issue.id]
+    assert retry.retry_kind == :agent
+    assert retry.workspace_path == "/tmp/issue-continuation"
+    assert retry.agent_id == "codex"
+
+    assert retry.workflow_context["completion_continuation"]["current_candidate_sha"] ==
+             "candidate-new"
+
+    assert retry.workflow_context["completion_continuation"]["reason"] ==
+             "candidate_advanced"
+  end
+
+  test "retry_controller 不派发 agent" do
+    issue = %Issue{
+      id: "issue-controller-retry",
+      identifier: "YQE-CONTROLLER-RETRY",
+      title: "controller retry",
+      state: "In Progress"
+    }
+
+    running_entry = running_entry(issue, "/tmp/issue-controller-retry", :issue)
+    state = %{workflow_state() | claimed: MapSet.new([issue.id])}
+    result = {:retry_controller, issue.id, :remote_unavailable, %{"operation" => "fetch"}}
+
+    updated_state =
+      Orchestrator.apply_workflow_issue_result_for_test(
+        state,
+        issue.id,
+        running_entry,
+        result
+      )
+
+    retry = updated_state.retry_attempts[issue.id]
+    assert retry.retry_kind == :controller
+    assert retry.workspace_path == "/tmp/issue-controller-retry"
+    assert retry.controller_context == %{"operation" => "fetch"}
+  end
+
   test "Registry.put_status merges attributes and writes an updated_at timestamp" do
     old_updated_at = "2000-01-01T00:00:00Z"
 
@@ -738,6 +799,27 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
 
+    %Issue{
+      id: "root-execution-down",
+      identifier: "YQE-711-ROOT",
+      title: "root",
+      state: "In Progress"
+    }
+    |> Registry.new_root()
+    |> Registry.put_node("implementation", %{
+      "node_key" => "implementation",
+      "issue_id" => issue.id,
+      "issue_identifier" => issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "implementation",
+      "workflow_semantics" => "executable",
+      "status" => "running",
+      "dependencies" => []
+    })
+    |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
+    |> Registry.save!()
+
     workspace = Path.join(workspace_root, issue.identifier)
     File.mkdir_p!(Path.join(workspace, ".symphony"))
 
@@ -820,6 +902,7 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     |> Registry.add_edge(%{"from" => "research", "to" => "research_review"})
     |> Registry.add_edge(%{"from" => "research_review", "to" => "implementation"})
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
@@ -891,12 +974,12 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     |> Registry.new_root()
     |> Registry.put_node("implementation", %{
       "node_key" => "implementation",
-      "issue_id" => reviewed_issue.id,
-      "issue_identifier" => reviewed_issue.identifier,
+      "issue_id" => "implementation-review-rework",
+      "issue_identifier" => "YQE-717-I",
       "agent_id" => "mimocode",
       "task_type" => "implementation",
       "workflow_semantics" => "executable",
-      "status" => "ready",
+      "status" => "completed",
       "dependencies" => [],
       "issue_result" => %{
         "schema_version" => 1,
@@ -909,7 +992,20 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
         "open_questions" => []
       }
     })
+    |> Registry.put_node("implementation_review", %{
+      "node_key" => "implementation_review",
+      "issue_id" => reviewed_issue.id,
+      "issue_identifier" => reviewed_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "review",
+      "workflow_semantics" => "executable",
+      "status" => "running",
+      "dependencies" => ["implementation"],
+      "reviews" => ["implementation"],
+      "subject_selector" => %{"type" => "candidate_range"}
+    })
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     workspace = Path.join(workspace_root, reviewed_issue.identifier)
@@ -988,12 +1084,12 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     |> Registry.new_root()
     |> Registry.put_node("implementation", %{
       "node_key" => "implementation",
-      "issue_id" => reviewed_issue.id,
-      "issue_identifier" => reviewed_issue.identifier,
+      "issue_id" => "implementation-review-replan",
+      "issue_identifier" => "YQE-721-I",
       "agent_id" => "codex",
       "task_type" => "implementation",
       "workflow_semantics" => "executable",
-      "status" => "ready",
+      "status" => "completed",
       "dependencies" => [],
       "issue_result" => %{
         "schema_version" => 1,
@@ -1006,7 +1102,20 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
         "open_questions" => []
       }
     })
+    |> Registry.put_node("implementation_review", %{
+      "node_key" => "implementation_review",
+      "issue_id" => reviewed_issue.id,
+      "issue_identifier" => reviewed_issue.identifier,
+      "agent_id" => "codex",
+      "task_type" => "review",
+      "workflow_semantics" => "executable",
+      "status" => "running",
+      "dependencies" => ["implementation"],
+      "reviews" => ["implementation"],
+      "subject_selector" => %{"type" => "candidate_range"}
+    })
     |> Map.put("status", "planning_complete")
+    |> finalize_completion_registry()
     |> Registry.save!()
 
     workspace = Path.join(workspace_root, reviewed_issue.identifier)
@@ -1165,6 +1274,40 @@ defmodule SymphonyElixir.WorkflowOrchestratorTest do
     assert metadata.workflow_phase == :issue
     assert metadata.workflow_root_issue_id == "YQE-705"
     assert metadata.agent_id == nil
+  end
+
+  defp finalize_completion_registry(registry) do
+    candidate_sha = "candidate-base"
+    root_identifier = registry["root_issue_identifier"]
+
+    registry =
+      Registry.put_workflow_git(registry, %{
+        "remote" => "origin",
+        "target_branch" => "main",
+        "target_base_sha" => "target-base",
+        "candidate_branch" => "symphony/#{root_identifier}/candidate",
+        "candidate_head_sha" => candidate_sha
+      })
+
+    Enum.reduce(registry["nodes"] || %{}, registry, fn {node_key, node}, acc ->
+      if node["task_type"] == "review" do
+        subject_id = "#{node_key}:subject"
+
+        acc
+        |> Registry.put_subject(subject_id, %{
+          "type" => "candidate_range",
+          "base_sha" => "subject-base",
+          "head_sha" => candidate_sha,
+          "status" => "pending"
+        })
+        |> Registry.put_node_git(node_key, %{"subject_id" => subject_id})
+      else
+        Registry.put_node_git(acc, node_key, %{
+          "branch" => "symphony/#{root_identifier}/#{node["issue_identifier"] || node_key}",
+          "base_candidate_sha" => candidate_sha
+        })
+      end
+    end)
   end
 
   defp workflow_state do
