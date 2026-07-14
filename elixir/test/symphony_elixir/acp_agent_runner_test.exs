@@ -792,7 +792,11 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
       })
 
       assert_raise AgentRunner.Error, fn ->
-        AgentRunner.run(issue, nil, workflow_phase: :issue, max_turns: 1)
+        AgentRunner.run(issue, nil,
+          workflow_phase: :issue,
+          prepare_workflow_workspace: true,
+          max_turns: 1
+        )
       end
 
       assert File.read!(trace_file) |> String.split("\n", trim: true) == ["prepare", "hook"]

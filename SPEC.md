@@ -143,6 +143,20 @@ Symphony is easiest to port when kept in these layers:
 - Coding-agent executable that supports the targeted Codex app-server mode.
 - Host environment authentication for the issue tracker and coding agent.
 
+### 3.4 Issue Graph Git 交付扩展
+
+启用 Issue Graph 编排的实现必须区分任务责任与 agent 实体：`implementation`、`integration` 和
+`review` 只是 node 的任务类型，不能被建模为长期驻留的独立 agent。Orchestrator 仍通过统一
+routing 为每个 issue 选择 coding agent。
+
+可写 issue 的 agent 必须在私有分支完成内容判断、工作区清理、提交和冲突解决，并且不得直接更新
+共享 candidate、target、Registry checkpoint 或 Tracker 终态。Workflow Controller 必须校验
+`issue_result`、工作区、提交范围和祖先关系，并以 compare-and-swap 受保护地推进远程共享引用。
+
+普通 review subject 必须由 Controller 从 checkpoint 生成。Final review subject 必须固定远程
+target SHA 和 candidate SHA；任一引用漂移都必须使旧 subject 和 review 失效。Root workflow
+只有在审查通过的 candidate 已发布到远程 target 且 publication checkpoint 已持久化后才能完成。
+
 ## 4. Core Domain Model
 
 ### 4.1 Entities

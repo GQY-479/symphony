@@ -26,6 +26,14 @@ skills can make raw Linear GraphQL calls.
 Issue 驱动的动态任务编排说明见
 [`docs/issue_driven_dynamic_workflow.md`](docs/issue_driven_dynamic_workflow.md)。
 
+Issue Graph 的 Git 交付采用 agent 准备、Controller 发布的责任边界：
+
+- `implementation`、`integration`、`review` 是 node 的任务责任，不是三类独立 agent 实体；
+- 可写任务由当前 coding agent 在私有 issue 分支完成判断、提交和冲突解决；
+- Controller 只读取 Git 事实，以 compare-and-swap 推进远程 candidate/target，并保存 checkpoint；
+- candidate 或 target 漂移会使旧 final review subject 失效；
+- root issue 只有在远程 target 已发布审查通过的 candidate 后才会进入终态。
+
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
 

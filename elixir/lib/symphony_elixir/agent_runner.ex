@@ -62,11 +62,11 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp maybe_prepare_workflow_workspace(issue, workspace, opts, worker_host) do
-    case Keyword.get(opts, :workflow_phase) do
-      phase when phase in [:issue, "issue"] ->
+    case {Keyword.get(opts, :workflow_phase), Keyword.get(opts, :prepare_workflow_workspace, false)} do
+      {phase, true} when phase in [:issue, "issue"] ->
         Controller.prepare_issue_workspace(issue, workspace, worker_host: worker_host)
 
-      _phase ->
+      _context ->
         :ok
     end
   end

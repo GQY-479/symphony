@@ -1232,6 +1232,637 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     refute_receive {:memory_tracker_state_update, ^issue_id, _state}
   end
 
+  test "推进 candidate 后记录 checkpoint 并为普通 review 创建 subject" do
+    fixture = completion_fixture!("candidate-promotion")
+
+    {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+
+    registry
+    |> Registry.put_node("implementation_review", %{
+      "node_key" => "implementation_review",
+      "issue_id" => "review-candidate-promotion",
+      "issue_identifier" => "YQE-COMPLETION-CANDIDATE-PROMOTION-2",
+      "agent_id" => "codex",
+      "task_type" => "review",
+      "workflow_semantics" => "executable",
+      "status" => "waiting",
+      "dependencies" => [fixture.node_key],
+      "reviews" => [fixture.node_key],
+      "subject_selector" => %{"type" => "candidate_range"}
+    })
+    |> Registry.save!()
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "issue-head",
+           business_dirty_paths: [],
+           business_changed_paths: ["lib/change.ex"]
+         }},
+      fetch_ref: {:ok, "candidate-base"},
+      push_private_branch: fn branch, head_sha ->
+        send(self(), {:private_branch_pushed, branch, head_sha})
+        {:ok, head_sha}
+      end,
+      compare_and_swap_ref: fn branch, expected_sha, new_sha ->
+        send(self(), {:candidate_cas, branch, expected_sha, new_sha})
+        {:ok, new_sha}
+      end
+    })
+
+    assert {:ok, {:completed, issue_id}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert issue_id == fixture.issue.id
+    assert_receive {:private_branch_pushed, _branch, "issue-head"}
+    assert_receive {:candidate_cas, _branch, "candidate-base", "issue-head"}
+
+    assert {:ok, saved_registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    assert saved_registry["candidate_head_sha"] == "issue-head"
+
+    checkpoint_id = "implementation:candidate:issue-head"
+
+    assert [checkpoint] =
+             Enum.filter(saved_registry["checkpoints"], &(&1["id"] == checkpoint_id))
+
+    assert checkpoint["kind"] == "candidate_promotion"
+    assert checkpoint["candidate_before_sha"] == "candidate-base"
+    assert checkpoint["candidate_after_sha"] == "issue-head"
+    assert checkpoint["paths"] == ["lib/change.ex"]
+
+    implementation = Registry.node(saved_registry, fixture.node_key)
+    assert implementation["status"] == "completed"
+    assert implementation["head_sha"] == "issue-head"
+    assert implementation["checkpoint_id"] == checkpoint_id
+
+    review = Registry.node(saved_registry, "implementation_review")
+    subject_id = "implementation_review:candidate:candidate-base:issue-head"
+    assert review["status"] == "ready"
+    assert review["subject_id"] == subject_id
+
+    assert saved_registry["subjects"][subject_id] == %{
+             "id" => subject_id,
+             "type" => "candidate_range",
+             "branch" => saved_registry["candidate_branch"],
+             "base_sha" => "candidate-base",
+             "head_sha" => "issue-head",
+             "paths" => ["lib/change.ex"],
+             "status" => "pending"
+           }
+
+    assert_receive {:memory_tracker_comment, ^issue_id, _body}
+    assert_receive {:memory_tracker_state_update, ^issue_id, "Closed"}
+  end
+
+  test "candidate CAS 竞争失败时触发 agent continuation" do
+    fixture = completion_fixture!("candidate-cas-stale")
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "issue-head",
+           business_dirty_paths: [],
+           business_changed_paths: ["lib/change.ex"]
+         }},
+      fetch_ref: fn _branch ->
+        count = Process.get(:candidate_fetch_count, 0)
+        Process.put(:candidate_fetch_count, count + 1)
+        {:ok, if(count == 0, do: "candidate-base", else: "candidate-new")}
+      end,
+      compare_and_swap_ref: {:error, {:stale_remote_ref, "远程引用已变化"}}
+    })
+
+    assert {:ok, {:continue_agent, issue_id, :candidate_advanced, context}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert issue_id == fixture.issue.id
+    assert context["previous_candidate_sha"] == "candidate-base"
+    assert context["current_candidate_sha"] == "candidate-new"
+    assert context["head_sha"] == "issue-head"
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    assert registry["candidate_head_sha"] == "candidate-base"
+    assert registry["checkpoints"] == []
+    refute_receive {:memory_tracker_state_update, ^issue_id, _state}
+  end
+
+  test "candidate 已推进但 Registry 未保存时补写 checkpoint 且不重复 CAS" do
+    fixture = completion_fixture!("candidate-promotion-recovery")
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "issue-head",
+           business_dirty_paths: [],
+           business_changed_paths: ["lib/change.ex"]
+         }},
+      fetch_ref: {:ok, "issue-head"},
+      compare_and_swap_ref: fn _branch, _expected_sha, _new_sha ->
+        flunk("恢复路径不应重复执行 candidate CAS")
+      end
+    })
+
+    assert {:ok, {:completed, issue_id}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    assert registry["candidate_head_sha"] == "issue-head"
+
+    assert [checkpoint] =
+             Enum.filter(
+               registry["checkpoints"],
+               &(&1["id"] == "implementation:candidate:issue-head")
+             )
+
+    assert checkpoint["candidate_before_sha"] == "candidate-base"
+    assert checkpoint["candidate_after_sha"] == "issue-head"
+    assert_receive {:memory_tracker_state_update, ^issue_id, "Closed"}
+  end
+
+  test "candidate 新 checkpoint 只使路径相交的 accepted subject 和 review 失效" do
+    fixture = completion_fixture!("subject-stale")
+
+    {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+
+    registry
+    |> Registry.put_subject("subject-overlap", %{
+      "id" => "subject-overlap",
+      "type" => "candidate_range",
+      "paths" => ["lib/change.ex"],
+      "status" => "accepted"
+    })
+    |> Registry.put_subject("subject-disjoint", %{
+      "id" => "subject-disjoint",
+      "type" => "candidate_range",
+      "paths" => ["docs/guide.md"],
+      "status" => "accepted"
+    })
+    |> Registry.put_review_state("review-overlap", %{
+      "status" => "accepted",
+      "subject_id" => "subject-overlap"
+    })
+    |> Registry.put_review_state("review-disjoint", %{
+      "status" => "accepted",
+      "subject_id" => "subject-disjoint"
+    })
+    |> Registry.save!()
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "issue-head",
+           business_dirty_paths: [],
+           business_changed_paths: ["lib/change.ex"]
+         }},
+      fetch_ref: {:ok, "candidate-base"}
+    })
+
+    assert {:ok, {:completed, _issue_id}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    assert registry["subjects"]["subject-overlap"]["status"] == "stale"
+    assert registry["reviews"]["review-overlap"]["status"] == "stale"
+    assert registry["subjects"]["subject-disjoint"]["status"] == "accepted"
+    assert registry["reviews"]["review-disjoint"]["status"] == "accepted"
+  end
+
+  test "candidate 推进的临时 Git 和 Tracker 失败返回 controller retry" do
+    fixture = completion_fixture!("candidate-controller-retry")
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "issue-head",
+           business_dirty_paths: [],
+           business_changed_paths: ["lib/change.ex"]
+         }},
+      fetch_ref: {:error, {:git_remote_unavailable, "连接超时"}}
+    })
+
+    assert {:ok, {:retry_controller, issue_id, :git_remote_unavailable, git_context}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert issue_id == fixture.issue.id
+    assert git_context["operation"] == "fetch_candidate"
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "issue-head",
+           business_dirty_paths: [],
+           business_changed_paths: ["lib/change.ex"]
+         }},
+      fetch_ref: {:error, {:git_fetch_failed, "candidate", "连接超时"}}
+    })
+
+    assert {:ok, {:retry_controller, ^issue_id, :git_fetch_failed, fetch_context}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert fetch_context["operation"] == "fetch_candidate"
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "issue-head",
+           business_dirty_paths: [],
+           business_changed_paths: ["lib/change.ex"]
+         }},
+      fetch_ref: {:ok, "candidate-base"}
+    })
+
+    Application.put_env(:symphony_elixir, :tracker_adapter_override, FailingTracker)
+    on_exit(fn -> Application.delete_env(:symphony_elixir, :tracker_adapter_override) end)
+
+    assert {:ok, {:retry_controller, ^issue_id, :comment_create_failed, tracker_context}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert tracker_context["operation"] == "create_issue_result_comment"
+  end
+
+  test "final review 依赖完成但 target 不在 candidate 历史中时物化 target sync" do
+    fixture = completion_fixture!("target-sync")
+
+    {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+
+    registry
+    |> Registry.put_node("final_review", %{
+      "node_key" => "final_review",
+      "issue_id" => "final-review-target-sync",
+      "issue_identifier" => "YQE-TARGET-SYNC-REVIEW",
+      "agent_id" => "codex",
+      "task_type" => "review",
+      "workflow_semantics" => "executable",
+      "status" => "waiting",
+      "dependencies" => [fixture.node_key],
+      "reviews" => ["__root_candidate__"],
+      "subject_selector" => %{"type" => "final_candidate_range"}
+    })
+    |> Registry.save!()
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+      fixture.root_issue,
+      fixture.issue
+    ])
+
+    Process.put(:target_sync_candidate_ref, "candidate-base")
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "candidate-head",
+           business_dirty_paths: [],
+           business_changed_paths: ["lib/change.ex"]
+         }},
+      fetch_ref: fn branch ->
+        if branch == "main" do
+          {:ok, "target-new"}
+        else
+          {:ok, Process.get(:target_sync_candidate_ref)}
+        end
+      end,
+      ancestor?: fn ancestor_sha, descendant_sha ->
+        {:ok, ancestor_sha == "candidate-base" and descendant_sha == "candidate-head"}
+      end,
+      compare_and_swap_ref: fn _branch, "candidate-base", "candidate-head" ->
+        Process.put(:target_sync_candidate_ref, "candidate-head")
+        {:ok, "candidate-head"}
+      end
+    })
+
+    assert {:ok, {:completed, _issue_id}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert_receive {:memory_tracker_issue_created, %Issue{} = sync_issue}
+    assert sync_issue.title =~ "同步 target"
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    sync_node = Registry.node(registry, "target_sync-1")
+    assert sync_node["task_type"] == "integration"
+    assert sync_node["issue_id"] == sync_issue.id
+    assert sync_node["base_candidate_sha"] == "candidate-head"
+    assert sync_node["target_sha"] == "target-new"
+    assert sync_node["status"] == "ready"
+    assert Registry.node(registry, "final_review")["status"] == "waiting"
+    assert Registry.node(registry, "final_review")["dependencies"] == ["target_sync-1"]
+
+    assert {:ok, metadata} = Controller.issue_dispatch_metadata(sync_issue.id)
+    assert metadata.workflow_context["target_sha"] == "target-new"
+    assert metadata.workflow_context["base_candidate_sha"] == "candidate-head"
+    assert metadata.workflow_context["branch"] == sync_node["branch"]
+  end
+
+  test "final review 依赖完成且 target 已在 candidate 历史中时创建新鲜 subject" do
+    fixture = completion_fixture!("final-subject")
+
+    {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+
+    registry
+    |> Registry.put_node("final_review", %{
+      "node_key" => "final_review",
+      "issue_id" => "final-review-subject",
+      "issue_identifier" => "YQE-FINAL-SUBJECT-REVIEW",
+      "agent_id" => "codex",
+      "task_type" => "review",
+      "workflow_semantics" => "executable",
+      "status" => "waiting",
+      "dependencies" => [fixture.node_key],
+      "reviews" => ["__root_candidate__"],
+      "subject_selector" => %{"type" => "final_candidate_range"}
+    })
+    |> Registry.save!()
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+      fixture.root_issue,
+      fixture.issue
+    ])
+
+    Process.put(:final_subject_candidate_ref, "candidate-base")
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "symphony/test/issue",
+           head_sha: "candidate-head",
+           business_dirty_paths: [],
+           business_changed_paths: ["lib/change.ex"]
+         }},
+      fetch_ref: fn branch ->
+        if branch == "main" do
+          {:ok, "target-base"}
+        else
+          {:ok, Process.get(:final_subject_candidate_ref)}
+        end
+      end,
+      ancestor?: fn ancestor_sha, descendant_sha ->
+        {:ok,
+         {ancestor_sha, descendant_sha} in [
+           {"candidate-base", "candidate-head"},
+           {"target-base", "candidate-head"}
+         ]}
+      end,
+      compare_and_swap_ref: fn _branch, "candidate-base", "candidate-head" ->
+        Process.put(:final_subject_candidate_ref, "candidate-head")
+        {:ok, "candidate-head"}
+      end
+    })
+
+    assert {:ok, {:completed, _issue_id}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    final_review = Registry.node(registry, "final_review")
+    assert final_review["status"] == "ready"
+
+    subject = registry["subjects"][final_review["subject_id"]]
+    assert subject["type"] == "final_candidate_range"
+    assert subject["target_sha"] == "target-base"
+    assert subject["candidate_sha"] == "candidate-head"
+    assert subject["head_sha"] == "candidate-head"
+    refute_receive {:memory_tracker_issue_created, %Issue{}}
+  end
+
+  test "final review 通过后发布 candidate 到 target 并最后关闭 root" do
+    fixture =
+      completion_fixture!("final-publication",
+        task_type: "review",
+        node_key: "final_review",
+        candidate_sha: "candidate-reviewed",
+        subject_head: "candidate-reviewed"
+      )
+
+    {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    final_node = Registry.node(registry, "final_review")
+    subject_id = final_node["subject_id"]
+
+    registry
+    |> Registry.put_node_git("final_review", %{
+      "reviews" => ["__root_candidate__"],
+      "subject_selector" => %{"type" => "final_candidate_range"}
+    })
+    |> Registry.put_subject(subject_id, %{
+      "id" => subject_id,
+      "type" => "final_candidate_range",
+      "target_sha" => "target-reviewed",
+      "candidate_sha" => "candidate-reviewed",
+      "head_sha" => "candidate-reviewed",
+      "status" => "pending"
+    })
+    |> Registry.save!()
+
+    write_issue_result!(
+      fixture.workspace,
+      review_result("final_review", ["__root_candidate__"], "pass", "最终审查通过")
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+      fixture.root_issue,
+      fixture.issue
+    ])
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "",
+           head_sha: "candidate-reviewed",
+           business_dirty_paths: [],
+           business_changed_paths: []
+         }},
+      fetch_ref: fn branch ->
+        if branch == "main", do: {:ok, "target-reviewed"}, else: {:ok, "candidate-reviewed"}
+      end,
+      compare_and_swap_ref: fn branch, expected_sha, new_sha ->
+        send(self(), {:target_publication, branch, expected_sha, new_sha})
+        {:ok, new_sha}
+      end
+    })
+
+    assert {:ok, {:completed, final_issue_id}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert_receive {:target_publication, "main", "target-reviewed", "candidate-reviewed"}
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    assert registry["status"] == "completed"
+
+    assert registry["publication"] == %{
+             "status" => "published",
+             "reviewed_candidate_sha" => "candidate-reviewed",
+             "expected_target_sha" => "target-reviewed",
+             "published_target_sha" => "candidate-reviewed"
+           }
+
+    assert Registry.node(registry, "final_review")["status"] == "completed"
+    assert_receive {:memory_tracker_state_update, ^final_issue_id, "Closed"}
+    assert_receive {:memory_tracker_state_update, root_issue_id, "Closed"}
+    assert root_issue_id == fixture.root_issue.id
+  end
+
+  test "target 已发布但 Registry 未保存时补写 publication 且不重复 CAS" do
+    fixture =
+      completion_fixture!("final-publication-recovery",
+        task_type: "review",
+        node_key: "final_review",
+        candidate_sha: "candidate-reviewed",
+        subject_head: "candidate-reviewed"
+      )
+
+    {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    final_node = Registry.node(registry, "final_review")
+    subject_id = final_node["subject_id"]
+
+    registry
+    |> Registry.put_node_git("final_review", %{
+      "reviews" => ["__root_candidate__"],
+      "subject_selector" => %{"type" => "final_candidate_range"}
+    })
+    |> Registry.put_subject(subject_id, %{
+      "id" => subject_id,
+      "type" => "final_candidate_range",
+      "target_sha" => "target-reviewed",
+      "candidate_sha" => "candidate-reviewed",
+      "head_sha" => "candidate-reviewed",
+      "status" => "pending"
+    })
+    |> Registry.save!()
+
+    write_issue_result!(
+      fixture.workspace,
+      review_result("final_review", ["__root_candidate__"], "pass", "最终审查通过")
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+      fixture.root_issue,
+      fixture.issue
+    ])
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "",
+           head_sha: "candidate-reviewed",
+           business_dirty_paths: [],
+           business_changed_paths: []
+         }},
+      fetch_ref: {:ok, "candidate-reviewed"},
+      compare_and_swap_ref: fn _branch, _expected_sha, _new_sha ->
+        flunk("publication 恢复路径不应重复执行 target CAS")
+      end
+    })
+
+    assert {:ok, {:completed, _final_issue_id}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    assert registry["publication"]["status"] == "published"
+    assert registry["publication"]["expected_target_sha"] == "target-reviewed"
+    assert registry["publication"]["published_target_sha"] == "candidate-reviewed"
+
+    assert Enum.any?(
+             registry["checkpoints"],
+             &(&1["kind"] == "publication" and
+                 &1["published_target_sha"] == "candidate-reviewed")
+           )
+  end
+
+  test "final review 的 candidate 漂移时旧审查失效且 root 保持未完成" do
+    fixture =
+      completion_fixture!("final-stale",
+        task_type: "review",
+        node_key: "final_review",
+        candidate_sha: "candidate-reviewed",
+        subject_head: "candidate-reviewed"
+      )
+
+    {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    final_node = Registry.node(registry, "final_review")
+    subject_id = final_node["subject_id"]
+
+    registry
+    |> Registry.put_node_git("final_review", %{
+      "reviews" => ["__root_candidate__"],
+      "subject_selector" => %{"type" => "final_candidate_range"}
+    })
+    |> Registry.put_subject(subject_id, %{
+      "id" => subject_id,
+      "type" => "final_candidate_range",
+      "target_sha" => "target-reviewed",
+      "candidate_sha" => "candidate-reviewed",
+      "head_sha" => "candidate-reviewed",
+      "status" => "pending"
+    })
+    |> Registry.save!()
+
+    write_issue_result!(
+      fixture.workspace,
+      review_result("final_review", ["__root_candidate__"], "pass", "最终审查通过")
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+      fixture.root_issue,
+      fixture.issue
+    ])
+
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+      inspect_completion:
+        {:ok,
+         %{
+           branch: "",
+           head_sha: "candidate-reviewed",
+           business_dirty_paths: [],
+           business_changed_paths: []
+         }},
+      fetch_ref: fn branch ->
+        if branch == "main", do: {:ok, "target-reviewed"}, else: {:ok, "candidate-new"}
+      end,
+      ancestor?: {:ok, true}
+    })
+
+    assert {:ok, {:completed, final_issue_id}} =
+             Controller.handle_issue_completion(fixture.issue, fixture.workspace)
+
+    assert_receive {:memory_tracker_issue_created, %Issue{} = replacement_review}
+    assert replacement_review.title =~ "最终审查"
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(fixture.root_issue.identifier)
+    assert registry["subjects"][subject_id]["status"] == "stale"
+    assert registry["reviews"]["final_review"]["status"] == "stale"
+    assert Registry.node(registry, "final_review")["status"] == "superseded"
+    assert Registry.node(registry, "final_review")["workflow_semantics"] == "superseded"
+
+    replacement_node =
+      registry["nodes"]
+      |> Map.values()
+      |> Enum.find(&(&1["issue_id"] == replacement_review.id))
+
+    assert replacement_node["status"] == "ready"
+    replacement_subject = registry["subjects"][replacement_node["subject_id"]]
+    assert replacement_subject["candidate_sha"] == "candidate-new"
+    assert replacement_subject["target_sha"] == "target-reviewed"
+    assert_receive {:memory_tracker_state_update, ^final_issue_id, "Closed"}
+    root_issue_id = fixture.root_issue.id
+    refute_receive {:memory_tracker_state_update, ^root_issue_id, _state}
+  end
+
   test "review workspace 被修改时拒绝审查结果" do
     fixture = completion_fixture!("review-modified", task_type: "review", subject_head: "review-head")
 
@@ -2284,7 +2915,7 @@ defmodule SymphonyElixir.WorkflowControllerTest do
     assert upstream_workspace == Path.join(workspace_root, research_issue.identifier)
   end
 
-  test "review issue pass 会关闭当前 issue，并在所有可执行节点完成后关闭 root issue" do
+  test "普通 review pass 只关闭当前 issue，root 等待远程 target 发布" do
     workspace_root =
       Path.join(System.tmp_dir!(), "workflow-controller-review-close-#{System.unique_integer([:positive])}")
 
@@ -2362,15 +2993,15 @@ defmodule SymphonyElixir.WorkflowControllerTest do
              Controller.handle_issue_completion(review_issue, workspace)
 
     assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
-    assert registry["status"] == "completed"
+    assert registry["status"] == "planning_complete"
     assert Registry.node(registry, "implementation")["status"] == "completed"
     assert Registry.node(registry, "implementation_review")["status"] == "completed"
 
     issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
-    assert Enum.find(issues, &(&1.id == root_issue.id)).state == "Closed"
+    assert Enum.find(issues, &(&1.id == root_issue.id)).state == "In Progress"
     assert Enum.find(issues, &(&1.id == review_issue.id)).state == "Closed"
 
     assert_receive {:memory_tracker_state_update, "derived-close-review", "Closed"}
-    assert_receive {:memory_tracker_state_update, "root-close", "Closed"}
+    refute_receive {:memory_tracker_state_update, "root-close", _state}
   end
 end

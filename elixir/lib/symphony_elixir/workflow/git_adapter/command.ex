@@ -175,9 +175,8 @@ defmodule SymphonyElixir.Workflow.GitAdapter.Command do
   end
 
   defp git_value(workspace, worker_host, args) do
-    with {:ok, {output, 0}} <- git(workspace, worker_host, args) do
-      {:ok, String.trim(output)}
-    else
+    case git(workspace, worker_host, args) do
+      {:ok, {output, 0}} -> {:ok, String.trim(output)}
       {:ok, {output, status}} -> {:error, {:git_command_failed, status, output}}
       {:error, reason} -> {:error, reason}
     end

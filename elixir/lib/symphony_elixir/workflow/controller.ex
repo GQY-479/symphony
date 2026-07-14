@@ -62,6 +62,7 @@ defmodule SymphonyElixir.Workflow.Controller do
            {:completed, String.t()}
            | {:pass, String.t()}
            | {:continue_agent, String.t(), atom(), map()}
+           | {:retry_controller, String.t(), atom(), map()}
            | {:needs_human, String.t(), String.t()}
            | {:needs_replan, String.t(), String.t()}
            | {:needs_rework, String.t(), String.t()}
@@ -78,6 +79,7 @@ defmodule SymphonyElixir.Workflow.Controller do
            {:completed, String.t()}
            | {:pass, String.t()}
            | {:continue_agent, String.t(), atom(), map()}
+           | {:retry_controller, String.t(), atom(), map()}
            | {:needs_human, String.t(), String.t()}
            | {:needs_replan, String.t(), String.t()}
            | {:needs_rework, String.t(), String.t()}
@@ -482,7 +484,7 @@ defmodule SymphonyElixir.Workflow.Controller do
          issue,
          workspace,
          registry,
-         _node_key,
+         node_key,
          node,
          result,
          opts
@@ -500,14 +502,35 @@ defmodule SymphonyElixir.Workflow.Controller do
            ) do
       dirty_paths = facts.business_dirty_paths || []
 
-      if dirty_paths == [] and facts.head_sha == subject_head_sha do
-        apply_review_result(issue, result)
-      else
-        needs_human(
-          issue.id,
-          "审查 workspace 已改变：dirty_paths=#{inspect(dirty_paths)} " <>
-            "expected_head=#{subject_head_sha} actual_head=#{facts.head_sha}"
-        )
+      cond do
+        dirty_paths != [] or facts.head_sha != subject_head_sha ->
+          needs_human(
+            issue.id,
+            "审查 workspace 已改变：dirty_paths=#{inspect(dirty_paths)} " <>
+              "expected_head=#{subject_head_sha} actual_head=#{facts.head_sha}"
+          )
+
+        final_review_node?(node) and result["outcome"] == "pass" ->
+          apply_final_review_result(
+            issue,
+            workspace,
+            registry,
+            node_key,
+            node,
+            result,
+            opts
+          )
+
+        true ->
+          apply_review_result(
+            issue,
+            workspace,
+            registry,
+            node_key,
+            node,
+            result,
+            opts
+          )
       end
     else
       {:needs_human, reason} -> needs_human(issue.id, reason)
@@ -642,12 +665,14 @@ defmodule SymphonyElixir.Workflow.Controller do
         |> unlock_ready_nodes()
         |> maybe_complete_registry()
 
-      with :ok <- Registry.save!(updated_registry),
-           :ok <- Tracker.create_comment(issue.id, render_issue_result_comment(issue, result)),
-           :ok <- Tracker.update_issue_state(issue.id, workflow_terminal_state()),
-           :ok <- maybe_close_root_issue(updated_registry, issue.id) do
-        {:ok, {:completed, issue.id}}
-      end
+      persist_candidate_completion(
+        issue,
+        workspace,
+        worker_host,
+        updated_registry,
+        result,
+        checkpoint_id
+      )
     end
   end
 
@@ -658,50 +683,910 @@ defmodule SymphonyElixir.Workflow.Controller do
          node_key,
          node,
          facts,
-         _result,
+         result,
          opts
        ) do
     worker_host = Keyword.get(opts, :worker_host)
 
-    with {:ok, current_candidate_sha} <-
+    case GitAdapter.fetch_ref(
+           workspace,
+           worker_host,
+           registry["remote"],
+           registry["candidate_branch"]
+         ) do
+      {:ok, current_candidate_sha} ->
+        validate_candidate_state(
+          issue,
+          workspace,
+          worker_host,
+          registry,
+          node_key,
+          node,
+          facts,
+          result,
+          current_candidate_sha
+        )
+
+      {:error, reason} ->
+        controller_git_failure(issue.id, reason, "fetch_candidate", %{
+          "candidate_branch" => registry["candidate_branch"]
+        })
+    end
+  end
+
+  defp validate_candidate_state(
+         issue,
+         workspace,
+         worker_host,
+         registry,
+         node_key,
+         node,
+         facts,
+         result,
+         current_candidate_sha
+       ) do
+    cond do
+      current_candidate_sha != node["base_candidate_sha"] and
+          current_candidate_sha != facts.head_sha ->
+        continue_candidate_advanced(
+          registry,
+          node_key,
+          issue.id,
+          node["base_candidate_sha"],
+          current_candidate_sha,
+          facts.head_sha
+        )
+
+      true ->
+        expected_ancestor_sha =
+          if current_candidate_sha == facts.head_sha,
+            do: node["base_candidate_sha"],
+            else: current_candidate_sha
+
+        case GitAdapter.ancestor?(
+               workspace,
+               worker_host,
+               expected_ancestor_sha,
+               facts.head_sha
+             ) do
+          {:ok, true} ->
+            promote_candidate_completion(
+              issue,
+              workspace,
+              worker_host,
+              registry,
+              node_key,
+              node,
+              facts,
+              result,
+              current_candidate_sha
+            )
+
+          {:ok, false} ->
+            needs_human(issue.id, "issue HEAD 不包含当前 candidate 基线")
+
+          {:error, reason} ->
+            needs_human(issue.id, "无法验证 issue HEAD 的 candidate 祖先关系：#{inspect(reason)}")
+        end
+    end
+  end
+
+  defp promote_candidate_completion(
+         issue,
+         workspace,
+         worker_host,
+         registry,
+         node_key,
+         node,
+         facts,
+         result,
+         current_candidate_sha
+       ) do
+    case GitAdapter.push_private_branch(
+           workspace,
+           worker_host,
+           registry["remote"],
+           node["branch"],
+           facts.head_sha
+         ) do
+      {:ok, _private_sha} ->
+        promote_or_confirm_candidate(
+          issue,
+          workspace,
+          worker_host,
+          registry,
+          node_key,
+          node,
+          facts,
+          result,
+          current_candidate_sha
+        )
+
+      {:error, reason} ->
+        controller_git_failure(issue.id, reason, "push_private_branch", %{
+          "branch" => node["branch"],
+          "head_sha" => facts.head_sha
+        })
+    end
+  end
+
+  defp promote_or_confirm_candidate(
+         issue,
+         workspace,
+         worker_host,
+         registry,
+         node_key,
+         node,
+         facts,
+         result,
+         current_candidate_sha
+       ) do
+    promotion_result =
+      if current_candidate_sha == facts.head_sha do
+        {:ok, facts.head_sha}
+      else
+        GitAdapter.compare_and_swap_ref(
+          workspace,
+          worker_host,
+          registry["remote"],
+          registry["candidate_branch"],
+          current_candidate_sha,
+          facts.head_sha
+        )
+      end
+
+    case promotion_result do
+      {:ok, promoted_sha} when promoted_sha == facts.head_sha ->
+        record_candidate_completion(
+          issue,
+          workspace,
+          worker_host,
+          registry,
+          node_key,
+          node,
+          facts,
+          result,
+          promoted_sha
+        )
+
+      {:ok, promoted_sha} ->
+        controller_git_failure(
+          issue.id,
+          {:remote_ref_mismatch, facts.head_sha, promoted_sha},
+          "promote_candidate",
+          %{"head_sha" => facts.head_sha}
+        )
+
+      {:error, {:stale_remote_ref, _detail}} ->
+        handle_stale_candidate_promotion(
+          issue,
+          workspace,
+          worker_host,
+          registry,
+          node_key,
+          node,
+          facts,
+          result,
+          current_candidate_sha
+        )
+
+      {:error, {:remote_ref_mismatch, _expected_sha, _actual_sha}} ->
+        handle_stale_candidate_promotion(
+          issue,
+          workspace,
+          worker_host,
+          registry,
+          node_key,
+          node,
+          facts,
+          result,
+          current_candidate_sha
+        )
+
+      {:error, reason} ->
+        controller_git_failure(issue.id, reason, "promote_candidate", %{
+          "candidate_branch" => registry["candidate_branch"],
+          "expected_sha" => current_candidate_sha,
+          "head_sha" => facts.head_sha
+        })
+    end
+  end
+
+  defp handle_stale_candidate_promotion(
+         issue,
+         workspace,
+         worker_host,
+         registry,
+         node_key,
+         node,
+         facts,
+         result,
+         previous_candidate_sha
+       ) do
+    case GitAdapter.fetch_ref(
+           workspace,
+           worker_host,
+           registry["remote"],
+           registry["candidate_branch"]
+         ) do
+      {:ok, current_candidate_sha} when current_candidate_sha == facts.head_sha ->
+        record_candidate_completion(
+          issue,
+          workspace,
+          worker_host,
+          registry,
+          node_key,
+          node,
+          facts,
+          result,
+          current_candidate_sha
+        )
+
+      {:ok, current_candidate_sha} ->
+        continue_candidate_advanced(
+          registry,
+          node_key,
+          issue.id,
+          previous_candidate_sha,
+          current_candidate_sha,
+          facts.head_sha
+        )
+
+      {:error, reason} ->
+        controller_git_failure(issue.id, reason, "refresh_candidate_after_cas", %{
+          "candidate_branch" => registry["candidate_branch"],
+          "previous_candidate_sha" => previous_candidate_sha,
+          "head_sha" => facts.head_sha
+        })
+    end
+  end
+
+  defp continue_candidate_advanced(
+         registry,
+         node_key,
+         issue_id,
+         previous_candidate_sha,
+         current_candidate_sha,
+         head_sha
+       ) do
+    continue_agent(registry, node_key, issue_id, :candidate_advanced, %{
+      "previous_candidate_sha" => previous_candidate_sha,
+      "current_candidate_sha" => current_candidate_sha,
+      "head_sha" => head_sha
+    })
+  end
+
+  defp record_candidate_completion(
+         issue,
+         workspace,
+         worker_host,
+         registry,
+         node_key,
+         node,
+         facts,
+         result,
+         promoted_sha
+       ) do
+    case GitAdapter.hash_artifact(Artifacts.issue_result_path(workspace), worker_host) do
+      {:ok, artifact_hash} ->
+        checkpoint_id = "#{node_key}:candidate:#{facts.head_sha}"
+
+        updated_registry =
+          registry
+          |> invalidate_overlapping_subjects(facts.business_changed_paths)
+          |> Registry.add_checkpoint_once(%{
+            "id" => checkpoint_id,
+            "kind" => "candidate_promotion",
+            "node_key" => node_key,
+            "issue_branch" => node["branch"],
+            "base_candidate_sha" => node["base_candidate_sha"],
+            "issue_head_sha" => facts.head_sha,
+            "candidate_before_sha" => node["base_candidate_sha"],
+            "candidate_after_sha" => promoted_sha,
+            "result_artifact_hash" => artifact_hash,
+            "paths" => facts.business_changed_paths
+          })
+          |> Registry.put_workflow_git(%{"candidate_head_sha" => promoted_sha})
+          |> put_node_issue_result(node_key, result)
+          |> Registry.put_node_git(node_key, %{
+            "head_sha" => facts.head_sha,
+            "checkpoint_id" => checkpoint_id
+          })
+          |> Registry.clear_node_continuation(node_key)
+          |> put_node_status(node_key, "completed")
+          |> unlock_ready_nodes()
+          |> maybe_complete_registry()
+
+        persist_candidate_completion(
+          issue,
+          workspace,
+          worker_host,
+          updated_registry,
+          result,
+          checkpoint_id
+        )
+
+      {:error, reason} ->
+        retry_controller(issue.id, reason, "hash_issue_result", %{
+          "node_key" => node_key,
+          "head_sha" => facts.head_sha
+        })
+    end
+  end
+
+  defp persist_candidate_completion(
+         issue,
+         workspace,
+         worker_host,
+         registry,
+         result,
+         checkpoint_id
+       ) do
+    case save_registry(registry) do
+      :ok ->
+        case prepare_ready_final_reviews(registry, workspace, worker_host) do
+          {:ok, prepared_registry} ->
+            prepared_registry = maybe_complete_registry(prepared_registry)
+
+            case save_registry(prepared_registry) do
+              :ok ->
+                persist_candidate_tracker_updates(
+                  issue,
+                  prepared_registry,
+                  result,
+                  checkpoint_id
+                )
+
+              {:error, reason} ->
+                retry_controller(issue.id, reason, "save_final_review_preparation", %{
+                  "checkpoint_id" => checkpoint_id
+                })
+            end
+
+          {:retry, reason, operation, context} ->
+            retry_controller(issue.id, reason, operation, context)
+        end
+
+      {:error, reason} ->
+        retry_controller(issue.id, reason, "save_candidate_checkpoint", %{
+          "checkpoint_id" => checkpoint_id
+        })
+    end
+  end
+
+  defp persist_candidate_tracker_updates(issue, registry, result, checkpoint_id) do
+    case Tracker.create_comment(issue.id, render_issue_result_comment(issue, result)) do
+      :ok ->
+        case Tracker.update_issue_state(issue.id, workflow_terminal_state()) do
+          :ok ->
+            case maybe_close_root_issue(registry, issue.id) do
+              :ok ->
+                {:ok, {:completed, issue.id}}
+
+              {:error, reason} ->
+                retry_controller(issue.id, reason, "close_root_issue", %{
+                  "checkpoint_id" => checkpoint_id
+                })
+            end
+
+          {:error, reason} ->
+            retry_controller(issue.id, reason, "update_issue_state", %{
+              "checkpoint_id" => checkpoint_id
+            })
+        end
+
+      {:error, reason} ->
+        retry_controller(issue.id, reason, "create_issue_result_comment", %{
+          "checkpoint_id" => checkpoint_id
+        })
+    end
+  end
+
+  defp save_registry(registry) do
+    Registry.save!(registry)
+  rescue
+    error -> {:error, {:registry_save_failed, Exception.message(error)}}
+  catch
+    kind, reason -> {:error, {:registry_save_failed, {kind, reason}}}
+  end
+
+  defp controller_git_failure(issue_id, reason, operation, context) do
+    if retryable_git_error?(reason) do
+      retry_controller(issue_id, reason, operation, context)
+    else
+      needs_human(issue_id, "Git 操作 #{operation} 无法安全完成：#{inspect(reason)}")
+    end
+  end
+
+  defp retryable_git_error?({reason, _detail})
+       when reason in [
+              :git_remote_unavailable,
+              :git_push_failed,
+              :git_command_failed,
+              :workspace_command_timeout,
+              :workspace_hook_timeout
+            ],
+       do: true
+
+  defp retryable_git_error?({reason, _context, _detail})
+       when reason in [:git_fetch_failed, :git_command_failed],
+       do: true
+
+  defp retryable_git_error?(_reason), do: false
+
+  defp retry_controller(issue_id, reason, operation, context) do
+    retry_reason =
+      case reason do
+        {name, _context, _detail} when is_atom(name) -> name
+        {name, _detail} when is_atom(name) -> name
+        name when is_atom(name) -> name
+        _other -> :controller_operation_failed
+      end
+
+    retry_context =
+      context
+      |> Map.put("operation", operation)
+      |> Map.put("error", inspect(reason))
+
+    {:ok, {:retry_controller, issue_id, retry_reason, retry_context}}
+  end
+
+  defp apply_review_result(issue, workspace, registry, node_key, node, result, opts) do
+    if result["outcome"] == "pass" do
+      complete_regular_review(issue, workspace, registry, node_key, node, result, opts)
+    else
+      case apply_issue_result(issue, result) do
+        {:ok, _outcome} = ok ->
+          case Tracker.create_comment(issue.id, render_issue_result_comment(issue, result)) do
+            :ok -> ok
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:error, _reason} = error ->
+          error
+      end
+    end
+  end
+
+  defp complete_regular_review(issue, workspace, registry, node_key, node, result, opts) do
+    worker_host = Keyword.get(opts, :worker_host)
+
+    updated_registry =
+      registry
+      |> put_node_issue_result(node_key, result)
+      |> put_node_status(node_key, "completed")
+      |> accept_review_subject(node)
+      |> Registry.put_review_state(
+        node_key,
+        review_state(result, "accepted", node["subject_id"])
+      )
+      |> unlock_ready_nodes()
+      |> maybe_complete_registry()
+
+    persist_candidate_completion(
+      issue,
+      workspace,
+      worker_host,
+      updated_registry,
+      result,
+      "#{node_key}:review"
+    )
+  end
+
+  defp apply_final_review_result(issue, workspace, registry, node_key, node, result, opts) do
+    worker_host = Keyword.get(opts, :worker_host)
+    subject = get_in(registry, ["subjects", node["subject_id"]]) || %{}
+
+    with {:ok, current_target_sha} <-
+           GitAdapter.fetch_ref(
+             workspace,
+             worker_host,
+             registry["remote"],
+             registry["target_branch"]
+           ),
+         {:ok, current_candidate_sha} <-
            GitAdapter.fetch_ref(
              workspace,
              worker_host,
              registry["remote"],
              registry["candidate_branch"]
            ) do
-      if current_candidate_sha != node["base_candidate_sha"] do
-        continue_agent(registry, node_key, issue.id, :candidate_advanced, %{
-          "previous_candidate_sha" => node["base_candidate_sha"],
-          "current_candidate_sha" => current_candidate_sha,
-          "head_sha" => facts.head_sha
-        })
-      else
-        case GitAdapter.ancestor?(
-               workspace,
-               worker_host,
-               current_candidate_sha,
-               facts.head_sha
-             ) do
-          {:ok, true} -> {:error, :candidate_promotion_pending}
-          {:ok, false} -> needs_human(issue.id, "issue HEAD 不包含当前 candidate 基线")
-          {:error, reason} -> {:error, reason}
-        end
+      cond do
+        subject["candidate_sha"] == current_candidate_sha and
+            current_target_sha == current_candidate_sha ->
+          record_final_publication(
+            issue,
+            registry,
+            node_key,
+            node,
+            result,
+            subject,
+            current_target_sha
+          )
+
+        subject["candidate_sha"] != current_candidate_sha ->
+          stale_final_review(
+            issue,
+            workspace,
+            worker_host,
+            registry,
+            node_key,
+            node,
+            result,
+            subject,
+            current_target_sha,
+            current_candidate_sha,
+            :candidate_changed
+          )
+
+        subject["target_sha"] != current_target_sha ->
+          stale_final_review(
+            issue,
+            workspace,
+            worker_host,
+            registry,
+            node_key,
+            node,
+            result,
+            subject,
+            current_target_sha,
+            current_candidate_sha,
+            :target_changed
+          )
+
+        true ->
+          validate_final_review_publication(
+            issue,
+            workspace,
+            worker_host,
+            registry,
+            node_key,
+            node,
+            result,
+            subject,
+            current_target_sha,
+            current_candidate_sha
+          )
       end
+    else
+      {:error, reason} ->
+        retry_controller(issue.id, reason, "fetch_final_review_refs", %{
+          "node_key" => node_key,
+          "subject_id" => node["subject_id"]
+        })
     end
   end
 
-  defp apply_review_result(issue, result) do
-    case apply_issue_result(issue, result) do
-      {:ok, _outcome} = ok ->
-        case Tracker.create_comment(issue.id, render_issue_result_comment(issue, result)) do
-          :ok -> ok
-          {:error, reason} -> {:error, reason}
-        end
+  defp validate_final_review_publication(
+         issue,
+         workspace,
+         worker_host,
+         registry,
+         node_key,
+         node,
+         result,
+         subject,
+         current_target_sha,
+         current_candidate_sha
+       ) do
+    case GitAdapter.ancestor?(
+           workspace,
+           worker_host,
+           current_target_sha,
+           current_candidate_sha
+         ) do
+      {:ok, true} ->
+        publish_reviewed_candidate(
+          issue,
+          workspace,
+          worker_host,
+          registry,
+          node_key,
+          node,
+          result,
+          subject
+        )
 
-      {:error, _reason} = error ->
-        error
+      {:ok, false} ->
+        stale_final_review(
+          issue,
+          workspace,
+          worker_host,
+          registry,
+          node_key,
+          node,
+          result,
+          subject,
+          current_target_sha,
+          current_candidate_sha,
+          :target_not_in_candidate
+        )
+
+      {:error, reason} ->
+        retry_controller(issue.id, reason, "validate_final_review_ancestry", %{
+          "node_key" => node_key,
+          "target_sha" => current_target_sha,
+          "candidate_sha" => current_candidate_sha
+        })
     end
+  end
+
+  defp publish_reviewed_candidate(
+         issue,
+         workspace,
+         worker_host,
+         registry,
+         node_key,
+         node,
+         result,
+         subject
+       ) do
+    expected_candidate_sha = subject["candidate_sha"]
+
+    case GitAdapter.compare_and_swap_ref(
+           workspace,
+           worker_host,
+           registry["remote"],
+           registry["target_branch"],
+           subject["target_sha"],
+           subject["candidate_sha"]
+         ) do
+      {:ok, published_sha} when published_sha == expected_candidate_sha ->
+        record_final_publication(
+          issue,
+          registry,
+          node_key,
+          node,
+          result,
+          subject,
+          published_sha
+        )
+
+      {:ok, published_sha} ->
+        retry_controller(issue.id, {:remote_ref_mismatch, subject["candidate_sha"], published_sha}, "publish_target", %{
+          "node_key" => node_key
+        })
+
+      {:error, {:stale_remote_ref, _detail}} ->
+        refresh_stale_final_review(
+          issue,
+          workspace,
+          worker_host,
+          registry,
+          node_key,
+          node,
+          result,
+          subject
+        )
+
+      {:error, reason} ->
+        controller_git_failure(issue.id, reason, "publish_target", %{
+          "node_key" => node_key,
+          "target_sha" => subject["target_sha"],
+          "candidate_sha" => subject["candidate_sha"]
+        })
+    end
+  end
+
+  defp refresh_stale_final_review(
+         issue,
+         workspace,
+         worker_host,
+         registry,
+         node_key,
+         node,
+         result,
+         subject
+       ) do
+    with {:ok, current_target_sha} <-
+           GitAdapter.fetch_ref(
+             workspace,
+             worker_host,
+             registry["remote"],
+             registry["target_branch"]
+           ),
+         {:ok, current_candidate_sha} <-
+           GitAdapter.fetch_ref(
+             workspace,
+             worker_host,
+             registry["remote"],
+             registry["candidate_branch"]
+           ) do
+      if subject["candidate_sha"] == current_candidate_sha and
+           current_target_sha == current_candidate_sha do
+        record_final_publication(
+          issue,
+          registry,
+          node_key,
+          node,
+          result,
+          subject,
+          current_target_sha
+        )
+      else
+        stale_final_review(
+          issue,
+          workspace,
+          worker_host,
+          registry,
+          node_key,
+          node,
+          result,
+          subject,
+          current_target_sha,
+          current_candidate_sha,
+          :target_changed_during_publication
+        )
+      end
+    else
+      {:error, reason} ->
+        retry_controller(issue.id, reason, "refresh_final_review_refs", %{
+          "node_key" => node_key
+        })
+    end
+  end
+
+  defp record_final_publication(
+         issue,
+         registry,
+         node_key,
+         node,
+         result,
+         subject,
+         published_sha
+       ) do
+    checkpoint_id = "publication:#{registry["target_branch"]}:#{published_sha}"
+
+    updated_registry =
+      registry
+      |> Registry.add_checkpoint_once(%{
+        "id" => checkpoint_id,
+        "kind" => "publication",
+        "node_key" => node_key,
+        "expected_target_sha" => subject["target_sha"],
+        "published_target_sha" => published_sha
+      })
+      |> put_node_issue_result(node_key, result)
+      |> put_node_status(node_key, "completed")
+      |> accept_review_subject(node)
+      |> Registry.put_review_state(
+        node_key,
+        review_state(result, "accepted", node["subject_id"])
+      )
+      |> Registry.put_publication(%{
+        "status" => "published",
+        "reviewed_candidate_sha" => subject["candidate_sha"],
+        "expected_target_sha" => subject["target_sha"],
+        "published_target_sha" => published_sha
+      })
+      |> maybe_complete_registry()
+
+    case save_registry(updated_registry) do
+      :ok ->
+        persist_candidate_tracker_updates(issue, updated_registry, result, checkpoint_id)
+
+      {:error, reason} ->
+        retry_controller(issue.id, reason, "save_publication_checkpoint", %{
+          "checkpoint_id" => checkpoint_id
+        })
+    end
+  end
+
+  defp stale_final_review(
+         issue,
+         workspace,
+         worker_host,
+         registry,
+         node_key,
+         node,
+         result,
+         subject,
+         current_target_sha,
+         current_candidate_sha,
+         reason
+       ) do
+    with {:ok, root_issue} <- fetch_root_issue(registry),
+         {:ok, %Issue{} = replacement_issue} <-
+           Tracker.create_issue(
+             %{
+               title: "重新执行最终审查",
+               description:
+                 replacement_final_review_description(
+                   registry,
+                   reason,
+                   current_target_sha,
+                   current_candidate_sha
+                 ),
+               state: "Todo",
+               assignee_id: root_issue.assignee_id,
+               labels: inherited_labels(root_issue)
+             }
+             |> Map.merge(issue_tracker_context(root_issue))
+           ) do
+      replacement_node_key = next_numbered_node_key(registry, "final_review-retry")
+
+      stale_registry =
+        registry
+        |> put_in(["subjects", node["subject_id"], "status"], "stale")
+        |> Registry.put_review_state(
+          node_key,
+          review_state(result, "stale", node["subject_id"])
+        )
+        |> update_in(["nodes", node_key], fn old_node ->
+          old_node
+          |> Map.put("status", "superseded")
+          |> Map.put("workflow_semantics", "superseded")
+          |> Map.put("stale_reason", Atom.to_string(reason))
+          |> Map.put("issue_result", result)
+        end)
+        |> Registry.put_node(replacement_node_key, %{
+          "node_key" => replacement_node_key,
+          "issue_id" => replacement_issue.id,
+          "issue_identifier" => replacement_issue.identifier,
+          "agent_id" => node["agent_id"],
+          "task_type" => "review",
+          "workflow_semantics" => "executable",
+          "status" => "waiting",
+          "dependencies" => node["dependencies"] || [],
+          "reviews" => ["__root_candidate__"],
+          "subject_selector" => %{"type" => "final_candidate_range"},
+          "instructions" => node["instructions"],
+          "title" => replacement_issue.title,
+          "replaces" => node_key
+        })
+        |> Registry.put_publication(%{"status" => "pending"})
+        |> Registry.put_status("planning_complete", %{})
+
+      case prepare_ready_final_reviews(stale_registry, workspace, worker_host) do
+        {:ok, prepared_registry} ->
+          case save_registry(prepared_registry) do
+            :ok ->
+              close_stale_final_review_issue(issue, result)
+
+            {:error, save_reason} ->
+              retry_controller(issue.id, save_reason, "save_stale_final_review", %{
+                "node_key" => node_key,
+                "replacement_node_key" => replacement_node_key
+              })
+          end
+
+        {:retry, retry_reason, operation, context} ->
+          retry_controller(issue.id, retry_reason, operation, context)
+      end
+    else
+      {:error, stale_error} ->
+        retry_controller(issue.id, stale_error, "replace_stale_final_review", %{
+          "node_key" => node_key,
+          "subject_id" => subject["id"] || node["subject_id"]
+        })
+    end
+  end
+
+  defp close_stale_final_review_issue(issue, result) do
+    with :ok <- Tracker.create_comment(issue.id, render_issue_result_comment(issue, result)),
+         :ok <- Tracker.update_issue_state(issue.id, workflow_terminal_state()) do
+      {:ok, {:completed, issue.id}}
+    else
+      {:error, reason} ->
+        retry_controller(issue.id, reason, "close_stale_final_review", %{})
+    end
+  end
+
+  defp replacement_final_review_description(
+         registry,
+         reason,
+         current_target_sha,
+         current_candidate_sha
+       ) do
+    """
+    Root issue: #{registry["root_issue_identifier"]}
+    Previous final review is stale: #{reason}
+    Current target SHA: #{current_target_sha}
+    Current candidate SHA: #{current_candidate_sha}
+
+    仅审查 Controller 新生成的 final candidate subject，不修改仓库或共享引用。
+    """
+    |> String.trim()
   end
 
   defp needs_human(issue_id, reason) when is_binary(issue_id) and is_binary(reason) do
@@ -736,12 +1621,16 @@ defmodule SymphonyElixir.Workflow.Controller do
 
   defp apply_issue_result(%Issue{} = issue, %{"task_type" => "review", "outcome" => "pass"} = result) do
     case Registry.load_by_issue_id(issue.id) do
-      {:ok, registry, node_key, _node} ->
+      {:ok, registry, node_key, node} ->
         updated_registry =
           registry
           |> put_node_issue_result(node_key, result)
           |> put_node_status(node_key, "completed")
-          |> Registry.put_review_state(node_key, review_state(result, "accepted"))
+          |> accept_review_subject(node)
+          |> Registry.put_review_state(
+            node_key,
+            review_state(result, "accepted", node["subject_id"])
+          )
           |> unlock_ready_nodes()
           |> maybe_complete_registry()
 
@@ -791,15 +1680,26 @@ defmodule SymphonyElixir.Workflow.Controller do
     end
   end
 
-  defp review_state(result, status) do
-    %{
+  defp review_state(result, status, subject_id) do
+    state = %{
       "decision" => result["outcome"],
       "status" => status,
       "summary" => result["summary"],
       "reviews" => result["reviews"] || [],
       "decided_at" => DateTime.utc_now() |> DateTime.to_iso8601()
     }
+
+    if is_binary(subject_id), do: Map.put(state, "subject_id", subject_id), else: state
   end
+
+  defp accept_review_subject(registry, %{"subject_id" => subject_id}) when is_binary(subject_id) do
+    update_in(registry, ["subjects", subject_id], fn
+      %{} = subject -> Map.put(subject, "status", "accepted")
+      subject -> subject
+    end)
+  end
+
+  defp accept_review_subject(registry, _node), do: registry
 
   defp review_result_to_outcome(result) do
     %{
@@ -1395,6 +2295,42 @@ defmodule SymphonyElixir.Workflow.Controller do
     end)
   end
 
+  defp invalidate_overlapping_subjects(registry, changed_paths) do
+    changed_path_set = MapSet.new(changed_paths || [])
+
+    Enum.reduce(registry["subjects"] || %{}, registry, fn {subject_id, subject}, acc ->
+      subject_path_set = MapSet.new(subject["paths"] || [])
+
+      if subject["status"] == "accepted" and
+           not MapSet.disjoint?(subject_path_set, changed_path_set) do
+        acc
+        |> put_in(["subjects", subject_id, "status"], "stale")
+        |> stale_reviews_for_subject(subject_id)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp stale_reviews_for_subject(registry, subject_id) do
+    review_node_keys =
+      registry
+      |> Map.get("nodes", %{})
+      |> Enum.filter(fn {_node_key, node} -> node["subject_id"] == subject_id end)
+      |> Enum.map(&elem(&1, 0))
+      |> MapSet.new()
+
+    update_in(registry, ["reviews"], fn reviews ->
+      Enum.into(reviews || %{}, %{}, fn {review_node_key, review} ->
+        if review["subject_id"] == subject_id or MapSet.member?(review_node_keys, review_node_key) do
+          {review_node_key, Map.put(review, "status", "stale")}
+        else
+          {review_node_key, review}
+        end
+      end)
+    end)
+  end
+
   defp maybe_complete_registry(registry) do
     if workflow_completed?(registry) do
       Registry.put_status(registry, "completed", %{})
@@ -1410,7 +2346,9 @@ defmodule SymphonyElixir.Workflow.Controller do
       |> Map.values()
       |> Enum.filter(&executable_node?/1)
 
-    executable_nodes != [] and Enum.all?(executable_nodes, &completed_status?(&1["status"]))
+    executable_nodes != [] and Enum.all?(executable_nodes, &completed_status?(&1["status"])) and
+      get_in(registry, ["publication", "status"]) == "published" and
+      non_blank?(get_in(registry, ["publication", "published_target_sha"]))
   end
 
   defp workflow_completed?(_registry), do: false
@@ -1436,11 +2374,258 @@ defmodule SymphonyElixir.Workflow.Controller do
   defp unlock_ready_nodes(registry) do
     Enum.reduce(registry["nodes"] || %{}, registry, fn {node_key, node}, acc ->
       if node["status"] == "waiting" and dependencies_completed?(acc, node["dependencies"] || []) do
-        put_node_status(acc, node_key, "ready")
+        if final_review_node?(node) do
+          acc
+        else
+          acc
+          |> attach_ready_review_subject(node_key, node)
+          |> put_node_status(node_key, "ready")
+        end
       else
         acc
       end
     end)
+  end
+
+  defp final_review_node?(node) do
+    node["task_type"] == "review" and
+      (get_in(node, ["subject_selector", "type"]) == "final_candidate_range" or
+         "__root_candidate__" in (node["reviews"] || []))
+  end
+
+  defp prepare_ready_final_reviews(registry, workspace, worker_host) do
+    Enum.reduce_while(registry["nodes"] || %{}, {:ok, registry}, fn {node_key, node}, {:ok, acc} ->
+      if node["status"] == "waiting" and final_review_node?(node) and
+           dependencies_completed?(acc, node["dependencies"] || []) do
+        case prepare_final_review(acc, node_key, node, workspace, worker_host) do
+          {:ok, updated_registry} -> {:cont, {:ok, updated_registry}}
+          {:retry, _reason, _operation, _context} = retry -> {:halt, retry}
+        end
+      else
+        {:cont, {:ok, acc}}
+      end
+    end)
+  end
+
+  defp prepare_final_review(registry, node_key, node, workspace, worker_host) do
+    with {:ok, target_sha} <-
+           GitAdapter.fetch_ref(
+             workspace,
+             worker_host,
+             registry["remote"],
+             registry["target_branch"]
+           ),
+         {:ok, candidate_sha} <-
+           GitAdapter.fetch_ref(
+             workspace,
+             worker_host,
+             registry["remote"],
+             registry["candidate_branch"]
+           ),
+         {:ok, contains_target?} <-
+           GitAdapter.ancestor?(workspace, worker_host, target_sha, candidate_sha) do
+      registry = Registry.put_workflow_git(registry, %{"candidate_head_sha" => candidate_sha})
+
+      if contains_target? do
+        {:ok, attach_final_subject_and_ready(registry, node_key, target_sha, candidate_sha)}
+      else
+        materialize_target_sync(registry, node_key, node, target_sha, candidate_sha)
+      end
+    else
+      {:error, reason} ->
+        {:retry, reason, "prepare_final_review_git_facts", %{"node_key" => node_key}}
+    end
+  end
+
+  defp attach_final_subject_and_ready(registry, node_key, target_sha, candidate_sha) do
+    subject_id = "#{node_key}:final:#{target_sha}:#{candidate_sha}"
+
+    subject = %{
+      "id" => subject_id,
+      "type" => "final_candidate_range",
+      "branch" => registry["candidate_branch"],
+      "target_sha" => target_sha,
+      "candidate_sha" => candidate_sha,
+      "base_sha" => target_sha,
+      "head_sha" => candidate_sha,
+      "paths" => all_checkpoint_paths(registry),
+      "status" => "pending"
+    }
+
+    registry
+    |> Registry.put_subject(subject_id, subject)
+    |> Registry.put_node_git(node_key, %{"subject_id" => subject_id})
+    |> put_node_status(node_key, "ready")
+  end
+
+  defp all_checkpoint_paths(registry) do
+    (registry["checkpoints"] || [])
+    |> Enum.flat_map(&(&1["paths"] || []))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp materialize_target_sync(registry, final_node_key, final_node, target_sha, candidate_sha) do
+    with {:ok, root_issue} <- fetch_root_issue(registry),
+         {:ok, %Issue{} = sync_issue} <-
+           Tracker.create_issue(
+             %{
+               title: "同步 target 到 candidate",
+               description: target_sync_issue_description(registry, target_sha, candidate_sha),
+               state: "Todo",
+               assignee_id: root_issue.assignee_id,
+               labels: inherited_labels(root_issue)
+             }
+             |> Map.merge(issue_tracker_context(root_issue))
+           ) do
+      sync_node_key = next_target_sync_node_key(registry)
+
+      updated_registry =
+        registry
+        |> Registry.put_node(sync_node_key, %{
+          "node_key" => sync_node_key,
+          "issue_id" => sync_issue.id,
+          "issue_identifier" => sync_issue.identifier,
+          "agent_id" => nil,
+          "task_type" => "integration",
+          "workflow_semantics" => "executable",
+          "status" => "ready",
+          "dependencies" => final_node["dependencies"] || [],
+          "instructions" => target_sync_instructions(target_sha, candidate_sha),
+          "title" => sync_issue.title,
+          "branch" => private_branch_name(registry["root_issue_identifier"], sync_issue.identifier),
+          "base_candidate_sha" => candidate_sha,
+          "target_sha" => target_sha,
+          "integration_purpose" => "target_sync"
+        })
+        |> Registry.add_edge(%{
+          "from" => sync_node_key,
+          "to" => final_node_key,
+          "kind" => "target_sync"
+        })
+        |> update_in(["nodes", final_node_key], fn node ->
+          node
+          |> Map.put("status", "waiting")
+          |> Map.put("dependencies", [sync_node_key])
+          |> Map.delete("subject_id")
+        end)
+        |> Registry.put_status("planning_complete", %{})
+
+      {:ok, updated_registry}
+    else
+      {:error, reason} ->
+        {:retry, reason, "materialize_target_sync",
+         %{
+           "final_node_key" => final_node_key,
+           "target_sha" => target_sha,
+           "candidate_sha" => candidate_sha
+         }}
+    end
+  end
+
+  defp fetch_root_issue(registry) do
+    case Tracker.fetch_issue_states_by_ids([registry["root_issue_id"]]) do
+      {:ok, [%Issue{} = root_issue | _rest]} -> {:ok, root_issue}
+      {:ok, []} -> {:error, :root_issue_not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp next_target_sync_node_key(registry) do
+    next_numbered_node_key(registry, "target_sync")
+  end
+
+  defp next_numbered_node_key(registry, prefix) do
+    existing_keys = registry |> Map.get("nodes", %{}) |> Map.keys() |> MapSet.new()
+
+    Stream.iterate(1, &(&1 + 1))
+    |> Stream.map(&"#{prefix}-#{&1}")
+    |> Enum.find(&(not MapSet.member?(existing_keys, &1)))
+  end
+
+  defp target_sync_issue_description(registry, target_sha, candidate_sha) do
+    """
+    Root issue: #{registry["root_issue_identifier"]}
+    Task type: integration
+    Purpose: target_sync
+    Target SHA: #{target_sha}
+    Candidate SHA: #{candidate_sha}
+
+    将指定 target 合入当前 candidate，在私有分支解决冲突、运行验证并提交结果。
+    """
+    |> String.trim()
+  end
+
+  defp target_sync_instructions(target_sha, candidate_sha) do
+    """
+    从 candidate #{candidate_sha} 开始，将 target #{target_sha} 合入当前私有分支。
+    解决冲突、运行受影响验证、提交完整结果，并更新 issue_result.json。
+    不得直接更新共享 candidate 或 target 引用。
+    """
+    |> String.trim()
+  end
+
+  defp attach_ready_review_subject(registry, node_key, node) do
+    cond do
+      not ordinary_review_node?(node) ->
+        registry
+
+      valid_node_subject?(registry, node) ->
+        registry
+
+      true ->
+        checkpoints = checkpoints_for_reviewed_nodes(registry, node["reviews"] || [])
+        base_sha = first_checkpoint_base_sha(checkpoints, registry["candidate_head_sha"])
+        head_sha = registry["candidate_head_sha"]
+        subject_id = "#{node_key}:candidate:#{base_sha}:#{head_sha}"
+
+        subject = %{
+          "id" => subject_id,
+          "type" => "candidate_range",
+          "branch" => registry["candidate_branch"],
+          "base_sha" => base_sha,
+          "head_sha" => head_sha,
+          "paths" =>
+            checkpoints
+            |> Enum.flat_map(&(&1["paths"] || []))
+            |> Enum.uniq()
+            |> Enum.sort(),
+          "status" => "pending"
+        }
+
+        registry
+        |> Registry.put_subject(subject_id, subject)
+        |> Registry.put_node_git(node_key, %{"subject_id" => subject_id})
+    end
+  end
+
+  defp ordinary_review_node?(node) do
+    node["task_type"] == "review" and
+      get_in(node, ["subject_selector", "type"]) != "final_candidate_range" and
+      "__root_candidate__" not in (node["reviews"] || [])
+  end
+
+  defp valid_node_subject?(registry, %{"subject_id" => subject_id}) when is_binary(subject_id) do
+    is_map(get_in(registry, ["subjects", subject_id]))
+  end
+
+  defp valid_node_subject?(_registry, _node), do: false
+
+  defp checkpoints_for_reviewed_nodes(registry, reviewed_node_keys) do
+    Enum.flat_map(reviewed_node_keys, fn reviewed_node_key ->
+      with %{} = reviewed_node <- Registry.node(registry, reviewed_node_key),
+           checkpoint_id when is_binary(checkpoint_id) <- reviewed_node["checkpoint_id"],
+           %{} = checkpoint <-
+             Enum.find(registry["checkpoints"] || [], &(&1["id"] == checkpoint_id)) do
+        [checkpoint]
+      else
+        _missing -> []
+      end
+    end)
+  end
+
+  defp first_checkpoint_base_sha(checkpoints, fallback_sha) do
+    Enum.find_value(checkpoints, fallback_sha, & &1["candidate_before_sha"])
   end
 
   defp node_description(root_issue, node, dependencies, handoffs, plan) do
@@ -1594,7 +2779,15 @@ defmodule SymphonyElixir.Workflow.Controller do
       "rework_of" => node["rework_of"],
       "review_summary" => node["review_summary"],
       "previous_issue_result" => node["previous_issue_result"],
-      "completion_continuation" => node["continuation"]
+      "completion_continuation" => node["continuation"],
+      "remote" => registry["remote"],
+      "target_branch" => registry["target_branch"],
+      "candidate_branch" => registry["candidate_branch"],
+      "candidate_head_sha" => registry["candidate_head_sha"],
+      "branch" => node["branch"],
+      "base_candidate_sha" => node["base_candidate_sha"],
+      "target_sha" => node["target_sha"],
+      "subject" => get_in(registry, ["subjects", node["subject_id"]])
     }
   end
 

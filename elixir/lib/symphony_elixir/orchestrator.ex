@@ -1782,7 +1782,16 @@ defmodule SymphonyElixir.Orchestrator do
     |> maybe_put_runner_opt(:workflow_phase, metadata_value(metadata, :workflow_phase))
     |> maybe_put_runner_opt(:workflow_context, metadata_value(metadata, :workflow_context))
     |> maybe_put_runner_opt(:workflow_root_issue_id, metadata_value(metadata, :workflow_root_issue_id))
+    |> maybe_put_runner_opt(
+      :prepare_workflow_workspace,
+      prepare_workflow_workspace?(metadata)
+    )
     |> maybe_put_runner_opt(:max_turns, metadata_value(metadata, :max_turns))
+  end
+
+  defp prepare_workflow_workspace?(metadata) do
+    metadata_value(metadata, :workflow_phase) in [:issue, "issue"] and
+      is_binary(metadata_value(metadata, :workflow_root_issue_id))
   end
 
   defp metadata_value(metadata, key) when is_map(metadata) and is_atom(key) do

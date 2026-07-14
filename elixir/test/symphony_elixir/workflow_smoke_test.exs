@@ -5,6 +5,256 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
 
   @moduletag timeout: 120_000
 
+  defmodule StatefulGitAdapter do
+    @state_name __MODULE__.State
+
+    def reset! do
+      case Process.whereis(@state_name) do
+        nil ->
+          {:ok, _pid} = Agent.start(fn -> initial_state() end, name: @state_name)
+
+        _pid ->
+          Agent.update(@state_name, fn _state -> initial_state() end)
+      end
+
+      :ok
+    end
+
+    def configure!(options) when is_list(options) do
+      Agent.update(@state_name, fn state ->
+        %{state | scenario: Map.merge(state.scenario, Map.new(options))}
+      end)
+    end
+
+    def initialize_candidate(_workspace, _worker_host, remote, target_branch, candidate_branch) do
+      Agent.get_and_update(@state_name, fn state ->
+        refs =
+          state.refs
+          |> Map.put_new(target_branch, "target-base")
+          |> Map.put_new(candidate_branch, "candidate-base")
+
+        parents = Map.put_new(state.parents, "candidate-base", ["target-base"])
+
+        state = %{
+          state
+          | refs: refs,
+            parents: parents,
+            target_branch: target_branch,
+            candidate_branch: candidate_branch
+        }
+
+        result = %{
+          target_sha: refs[target_branch],
+          candidate_sha: refs[candidate_branch],
+          candidate_branch: candidate_branch,
+          remote: remote
+        }
+
+        {{:ok, result}, state}
+      end)
+    end
+
+    def prepare_private_branch(workspace, _worker_host, remote, branch, base_sha) do
+      Agent.get_and_update(@state_name, fn state ->
+        counter = state.counter + 1
+        head_sha = "smoke-head-#{counter}"
+        target_sha = state.refs[state.target_branch]
+        dirty? = state.scenario.dirty_once and not state.scenario.dirty_consumed
+
+        parents =
+          [base_sha, target_sha]
+          |> Enum.reject(&is_nil/1)
+          |> Enum.uniq()
+
+        workspaces =
+          Map.put(state.workspaces, workspace, %{
+            branch: branch,
+            head_sha: head_sha,
+            changed_paths: ["lib/smoke_change_#{counter}.ex"],
+            dirty_paths: if(dirty?, do: ["lib/pending_change.ex"], else: [])
+          })
+
+        state = %{
+          state
+          | counter: counter,
+            parents: Map.put(state.parents, head_sha, parents),
+            workspaces: workspaces,
+            scenario: Map.put(state.scenario, :dirty_consumed, state.scenario.dirty_consumed or dirty?)
+        }
+
+        {{:ok, %{remote: remote, branch: branch, head_sha: head_sha}}, state}
+      end)
+    end
+
+    def checkout_commit(workspace, _worker_host, sha) do
+      Agent.update(@state_name, fn state ->
+        {state, _drift_sha} = maybe_drift_candidate_for_final_review(state)
+        facts = %{branch: "", head_sha: sha, changed_paths: [], dirty_paths: []}
+        %{state | workspaces: Map.put(state.workspaces, workspace, facts)}
+      end)
+
+      :ok
+    end
+
+    def inspect_completion(workspace, _worker_host, _base_sha, _allowed_paths) do
+      facts =
+        Agent.get(@state_name, fn state ->
+          Map.get(state.workspaces, workspace, %{
+            branch: "",
+            head_sha: state.refs[state.candidate_branch] || "candidate-base",
+            changed_paths: [],
+            dirty_paths: []
+          })
+        end)
+
+      {:ok,
+       %{
+         branch: facts.branch,
+         head_sha: facts.head_sha,
+         business_dirty_paths: facts.dirty_paths || [],
+         business_changed_paths: facts.changed_paths
+       }}
+    end
+
+    def ancestor?(_workspace, _worker_host, ancestor_sha, descendant_sha) do
+      {:ok, Agent.get(@state_name, &ancestor_in_state?(&1, ancestor_sha, descendant_sha))}
+    end
+
+    def fetch_ref(_workspace, _worker_host, _remote, branch) do
+      Agent.get(@state_name, fn state ->
+        case Map.fetch(state.refs, branch) do
+          {:ok, sha} -> {:ok, sha}
+          :error -> {:error, {:git_ref_not_found, branch}}
+        end
+      end)
+    end
+
+    def push_private_branch(_workspace, _worker_host, _remote, branch, head_sha) do
+      Agent.update(@state_name, fn state ->
+        %{state | refs: Map.put(state.refs, branch, head_sha)}
+      end)
+
+      {:ok, head_sha}
+    end
+
+    def compare_and_swap_ref(
+          _workspace,
+          _worker_host,
+          _remote,
+          branch,
+          expected_sha,
+          new_sha
+        ) do
+      Agent.get_and_update(@state_name, fn state ->
+        cond do
+          state.refs[branch] != expected_sha ->
+            {{:error, {:stale_remote_ref, "expected=#{expected_sha} actual=#{state.refs[branch]}"}}, state}
+
+          not ancestor_in_state?(state, expected_sha, new_sha) ->
+            {{:error, {:non_fast_forward, expected_sha, new_sha}}, state}
+
+          true ->
+            refs = Map.put(state.refs, branch, new_sha)
+            state = %{state | refs: refs}
+            state = maybe_drift_target_after_candidate(state, branch)
+            {{:ok, new_sha}, state}
+        end
+      end)
+    end
+
+    def hash_artifact(_path, _worker_host), do: {:ok, "smoke-artifact-hash"}
+
+    defp initial_state do
+      %{
+        refs: %{},
+        parents: %{},
+        workspaces: %{},
+        counter: 0,
+        target_branch: nil,
+        candidate_branch: nil,
+        scenario: %{
+          dirty_once: false,
+          dirty_consumed: false,
+          drift_target_after_candidate: false,
+          target_drift_consumed: false,
+          stale_final_once: false,
+          final_drift_consumed: false
+        }
+      }
+    end
+
+    defp maybe_drift_target_after_candidate(state, branch) do
+      scenario = state.scenario
+
+      if branch == state.candidate_branch and scenario.drift_target_after_candidate and
+           not scenario.target_drift_consumed do
+        counter = state.counter + 1
+        target_sha = "smoke-target-drift-#{counter}"
+        previous_target_sha = state.refs[state.target_branch]
+
+        %{
+          state
+          | counter: counter,
+            refs: Map.put(state.refs, state.target_branch, target_sha),
+            parents: Map.put(state.parents, target_sha, [previous_target_sha]),
+            scenario: Map.put(scenario, :target_drift_consumed, true)
+        }
+      else
+        state
+      end
+    end
+
+    defp maybe_drift_candidate_for_final_review(state) do
+      scenario = state.scenario
+
+      if scenario.stale_final_once and not scenario.final_drift_consumed do
+        counter = state.counter + 1
+        candidate_sha = "smoke-candidate-drift-#{counter}"
+        previous_candidate_sha = state.refs[state.candidate_branch]
+
+        updated_state = %{
+          state
+          | counter: counter,
+            refs: Map.put(state.refs, state.candidate_branch, candidate_sha),
+            parents: Map.put(state.parents, candidate_sha, [previous_candidate_sha]),
+            scenario: Map.put(scenario, :final_drift_consumed, true)
+        }
+
+        {updated_state, candidate_sha}
+      else
+        {state, nil}
+      end
+    end
+
+    defp ancestor_in_state?(_state, sha, sha), do: true
+
+    defp ancestor_in_state?(state, ancestor_sha, descendant_sha) do
+      visit_ancestors(state.parents, ancestor_sha, [descendant_sha], MapSet.new())
+    end
+
+    defp visit_ancestors(_parents, _ancestor_sha, [], _visited), do: false
+
+    defp visit_ancestors(parents, ancestor_sha, [sha | rest], visited) do
+      cond do
+        sha == ancestor_sha ->
+          true
+
+        MapSet.member?(visited, sha) ->
+          visit_ancestors(parents, ancestor_sha, rest, visited)
+
+        true ->
+          next = Map.get(parents, sha, [])
+          visit_ancestors(parents, ancestor_sha, next ++ rest, MapSet.put(visited, sha))
+      end
+    end
+  end
+
+  setup do
+    StatefulGitAdapter.reset!()
+    Application.put_env(:symphony_elixir, :workflow_git_adapter_driver, StatefulGitAdapter)
+    :ok
+  end
+
   test "真实 Orchestrator 通过 implementation 跑通 root execution review 闭环" do
     stop_default_orchestrator()
 
@@ -96,6 +346,18 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     implementation_node = Registry.node(registry, "implementation")
     assert implementation_node["task_type"] == "implementation"
     assert implementation_node["status"] == "completed"
+
+    assert implementation_node["checkpoint_id"] ==
+             "implementation:candidate:#{implementation_node["head_sha"]}"
+
+    assert registry["candidate_head_sha"] == implementation_node["head_sha"]
+
+    assert Enum.any?(
+             registry["checkpoints"],
+             &(&1["id"] == implementation_node["checkpoint_id"] and
+                 &1["kind"] == "candidate_promotion")
+           )
+
     assert Registry.node(registry, "final_review")["status"] == "completed"
 
     issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
@@ -105,6 +367,103 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
     assert %{"phase" => "planning", "issue_identifier" => root_issue.identifier, "workspace" => root_issue.identifier} in runs
     assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "implementation"))
     assert Enum.any?(runs, &(&1["phase"] == "issue" and &1["task_type"] == "review"))
+  end
+
+  test "真实 Orchestrator 经 continuation、target sync 和替代审查后发布 root" do
+    stop_default_orchestrator()
+
+    test_root =
+      Path.join(System.tmp_dir!(), "workflow-smoke-protected-publication-#{System.unique_integer([:positive])}")
+
+    workspace_root = Path.join(test_root, "workspaces")
+    log_path = Path.join(test_root, "agent_runs.jsonl")
+
+    agent_script =
+      "import json, os, sys; " <>
+        "p=sys.argv[1]; log=#{Jason.encode!(log_path)}; os.makedirs('.symphony', exist_ok=True); os.makedirs(os.path.dirname(log), exist_ok=True); " <>
+        "phase='planning' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
+        ~s|is_review='"task_type": "review"' in p or 'Review issue' in p; is_integration='"task_type": "integration"' in p or 'target_sync-1' in p; is_replacement='final_review-retry-1' in p; | <>
+        "node=('final_review-retry-1' if is_replacement else ('final_review' if is_review else ('target_sync-1' if is_integration else 'implementation'))); " <>
+        "task_type=('review' if is_review else ('integration' if is_integration else 'implementation')); " <>
+        "plan={'kind':'issue_graph','summary':'protected publication smoke','confidence':'high','nodes':[{'node_key':'implementation','task_type':'implementation','title':'Prepare implementation','goal':'Prepare a committed result','agent_id':'codex','instructions':'Commit the implementation result.','evidence_expectations':['issue result exists']},{'node_key':'final_review','task_type':'review','title':'Final review','goal':'Review the publishable candidate','agent_id':'codex','reviews':['__root_candidate__'],'subject_selector':{'type':'final_candidate_range'}}],'edges':[{'from':'implementation','to':'final_review'}]}; " <>
+        "result={'schema_version':1,'node_key':node,'task_type':task_type,'outcome':('pass' if is_review else 'completed'),'summary':'protected publication '+task_type+' completed','evidence':['fake cli wrote issue_result.json'],'decisions':[],'open_questions':[]}; " <>
+        "result.update({'reviews':['__root_candidate__']}) if is_review else None; payload=plan if phase=='planning' else result; path='.symphony/workflow_plan.json' if phase=='planning' else '.symphony/issue_result.json'; " <>
+        "phase or sys.exit(2); open(log,'a',encoding='utf-8').write(json.dumps({'phase':phase,'node_key':node if phase=='issue' else None,'task_type':task_type if phase=='issue' else None},ensure_ascii=False)+chr(10)); open(path,'w',encoding='utf-8').write(json.dumps(payload,ensure_ascii=False))"
+
+    StatefulGitAdapter.configure!(
+      dirty_once: true,
+      drift_target_after_candidate: true,
+      stale_final_once: true
+    )
+
+    write_issue_graph_workflow!(workspace_root, agent_script)
+
+    root_issue = %Issue{
+      id: "workflow-smoke-protected-publication-root",
+      identifier: "SMOKE-PROTECTED-PUBLICATION-1",
+      title: "Protected publication root issue",
+      state: "In Progress",
+      url: "https://linear.app/example/issue/SMOKE-PROTECTED-PUBLICATION-1"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [root_issue])
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    orchestrator_name = Module.concat(__MODULE__, :SmokeProtectedPublicationOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    Orchestrator.request_refresh(orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+      restart_default_orchestrator()
+      File.rm_rf(test_root)
+    end)
+
+    workflow_closed? =
+      eventually?(
+        fn ->
+          issues = Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+          root = Enum.find(issues, &(&1.id == root_issue.id))
+
+          root && root.state == "Done" && Enum.all?(issues, &(&1.state == "Done")) &&
+            orchestrator_idle?(orchestrator_name)
+        end,
+        160
+      )
+
+    unless workflow_closed? do
+      flunk("""
+      protected publication smoke did not close
+
+      issues:
+      #{inspect(Application.get_env(:symphony_elixir, :memory_tracker_issues, []), pretty: true)}
+
+      registry:
+      #{inspect(Registry.load_by_root_identifier(root_issue.identifier), pretty: true)}
+
+      snapshot:
+      #{inspect(Orchestrator.snapshot(orchestrator_name, 1_000), pretty: true)}
+
+      agent runs:
+      #{inspect(read_agent_runs(log_path), pretty: true)}
+      """)
+    end
+
+    assert {:ok, registry} = Registry.load_by_root_identifier(root_issue.identifier)
+    assert registry["status"] == "completed"
+    assert registry["publication"]["status"] == "published"
+    assert Registry.node(registry, "implementation")["status"] == "completed"
+    assert Registry.node(registry, "implementation")["continuation"] == nil
+    assert Registry.node(registry, "target_sync-1")["status"] == "completed"
+    assert Registry.node(registry, "final_review")["status"] == "superseded"
+    assert registry["reviews"]["final_review"]["status"] == "stale"
+    assert Registry.node(registry, "final_review-retry-1")["status"] == "completed"
+
+    runs = read_agent_runs(log_path)
+
+    assert Enum.count(runs, &(&1["node_key"] == "implementation")) >= 2
+    assert Enum.any?(runs, &(&1["node_key"] == "target_sync-1"))
+    assert Enum.any?(runs, &(&1["node_key"] == "final_review-retry-1"))
   end
 
   test "真实 Orchestrator 拒绝缺少 evidence 的 implementation issue result" do
@@ -953,7 +1312,7 @@ defmodule SymphonyElixir.WorkflowSmokeTest do
         "p=sys.argv[1]; os.makedirs('.symphony', exist_ok=True); " <>
         "phase='plan' if 'workflow_plan.json' in p else ('issue' if 'issue_result.json' in p else ''); " <>
         ~s|is_review='"task_type": "review"' in p or 'Review issue' in p; is_final='final_review' in p or '__root_candidate__' in p; | <>
-        "replanning='重规划原因' in p; key='implementation-v2' if replanning else 'implementation-v1'; title='Smoke replanned implementation' if replanning else 'Smoke initial implementation'; summary='smoke replanning created replacement issue' if replanning else 'smoke planning created initial issue'; " <>
+        "replanning='重规划原因' in p or 'implementation-v2' in p; key='implementation-v2' if replanning else 'implementation-v1'; title='Smoke replanned implementation' if replanning else 'Smoke initial implementation'; summary='smoke replanning created replacement issue' if replanning else 'smoke planning created initial issue'; " <>
         "decision='pass' if is_final else 'needs_replan'; " <>
         "payloads={" <>
         "'plan': {'kind':'issue_graph','summary':summary,'confidence':'high','nodes':([{'node_key':key,'task_type':'implementation','title':title,'goal':'Prove replan closes through a replacement issue','agent_id':'codex','instructions':'Write issue result for replan smoke.','evidence_expectations':['issue result exists']},{'node_key':'final_review','task_type':'review','title':'Final review','goal':'Review the root candidate result','agent_id':'codex','reviews':['__root_candidate__'],'subject_selector':{'type':'final_candidate_range'}}] if replanning else [{'node_key':key,'task_type':'implementation','title':title,'goal':'Prove replan closes through a replacement issue','agent_id':'codex','instructions':'Write issue result for replan smoke.','evidence_expectations':['issue result exists']},{'node_key':'implementation_review','task_type':'review','title':'Review initial implementation','goal':'Request replanning for the initial result','agent_id':'codex','reviews':['implementation-v1'],'subject_selector':{'type':'candidate_range'}},{'node_key':'final_review','task_type':'review','title':'Final review','goal':'Review the root candidate result','agent_id':'codex','reviews':['__root_candidate__'],'subject_selector':{'type':'final_candidate_range'}}]),'edges':([{'from':key,'to':'final_review'}] if replanning else [{'from':'implementation-v1','to':'implementation_review'},{'from':'implementation_review','to':'final_review'}])}, " <>
