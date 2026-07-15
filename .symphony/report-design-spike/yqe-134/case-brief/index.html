@@ -1,0 +1,1154 @@
+<!--
+假设：读者先需要结论，再决定是否展开原始评论；Linear 链接只作为证据入口，不承担页面视觉。
+推理与形式：事实关系像一份相互矛盾的案件卷宗，因此按情况、冲突、判定、证据链和处置组织阅读。
+事实边界：只使用 report_context.json；评论中的检索、差异与测试证据是冻结事实，不冒充本轮代码复验。
+占位：无内容占位；人工评审仍待用户完成。
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>YQE-134 案件 brief</title>
+  <style>
+    :root {
+      --paper: #fcfcfb;
+      --ground: #e9ebec;
+      --ink: #151617;
+      --muted: #595e63;
+      --line: #c8cccf;
+      --soft: #f1f2f2;
+      --warning: #b42318;
+      --warning-dark: #7f1d16;
+      --link: #0b57a1;
+    }
+
+    * {
+      box-sizing: border-box;
+      letter-spacing: 0;
+    }
+
+    html {
+      background: var(--ground);
+      color: var(--ink);
+      font-size: 16px;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", "PingFang SC", sans-serif;
+      font-size: 16px;
+      line-height: 1.65;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--link);
+      text-underline-offset: 0.2em;
+      overflow-wrap: anywhere;
+    }
+
+    a:hover {
+      text-decoration-thickness: 2px;
+    }
+
+    a:focus-visible,
+    summary:focus-visible {
+      outline: 3px solid #78a9d6;
+      outline-offset: 3px;
+    }
+
+    code {
+      font-family: Consolas, "Microsoft YaHei", monospace;
+      font-size: 0.94em;
+      overflow-wrap: anywhere;
+    }
+
+    .document {
+      width: min(1260px, calc(100% - 40px));
+      margin: 20px auto 48px;
+      background: var(--paper);
+      border-top: 6px solid var(--warning);
+      box-shadow: 0 12px 32px rgba(17, 20, 22, 0.12);
+    }
+
+    .document-header {
+      min-height: 70px;
+      display: grid;
+      grid-template-columns: 176px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 24px;
+      padding: 14px 34px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .document-type,
+    .document-scope,
+    .snapshot {
+      margin: 0;
+      font-size: 12.5px;
+      line-height: 1.35;
+      color: var(--muted);
+    }
+
+    .document-type {
+      font-weight: 750;
+      color: var(--ink);
+      text-transform: uppercase;
+    }
+
+    .snapshot {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .opening {
+      display: grid;
+      grid-template-columns: 176px minmax(0, 1fr);
+      min-height: 690px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .case-file {
+      padding: 30px 24px 28px 34px;
+      border-right: 1px solid var(--line);
+      background: #f5f6f6;
+    }
+
+    .case-number-label,
+    .eyebrow,
+    .status-label,
+    .entry-label,
+    .section-kicker,
+    .evidence-id,
+    .responsibility,
+    .margin-label {
+      margin: 0;
+      font-size: 12.5px;
+      line-height: 1.4;
+      font-weight: 750;
+      color: var(--muted);
+    }
+
+    .case-number {
+      margin: 5px 0 22px;
+      font-family: Georgia, "Songti SC", "SimSun", serif;
+      font-size: 29px;
+      line-height: 1.1;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .case-meta {
+      margin: 0 0 28px;
+    }
+
+    .case-meta dt {
+      margin-top: 14px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--muted);
+    }
+
+    .case-meta dd {
+      margin: 2px 0 0;
+      font-size: 14px;
+      line-height: 1.45;
+      font-weight: 650;
+      overflow-wrap: anywhere;
+    }
+
+    .evidence-doors {
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .evidence-doors a {
+      display: block;
+      padding: 8px 0;
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .opening-main {
+      min-width: 0;
+      padding: 28px 38px 34px;
+    }
+
+    .eyebrow {
+      color: var(--warning-dark);
+    }
+
+    h1,
+    h2,
+    h3 {
+      font-family: Georgia, "Songti SC", "SimSun", serif;
+      font-weight: 700;
+      text-wrap: balance;
+    }
+
+    h1 {
+      max-width: 820px;
+      margin: 8px 0 12px;
+      font-size: 44px;
+      line-height: 1.13;
+    }
+
+    .dek {
+      max-width: 830px;
+      margin: 0 0 22px;
+      font-size: 17px;
+      line-height: 1.6;
+      color: #393d40;
+    }
+
+    .status-contrast {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 108px minmax(0, 1fr);
+      align-items: stretch;
+      border-top: 2px solid var(--ink);
+      border-bottom: 1px solid var(--ink);
+      background: #fff;
+    }
+
+    .status-side {
+      min-width: 0;
+      padding: 18px 20px 16px 0;
+    }
+
+    .status-side:last-child {
+      padding-right: 0;
+      padding-left: 20px;
+    }
+
+    .status-value {
+      margin: 3px 0 1px;
+      font-family: Georgia, "Songti SC", "SimSun", serif;
+      font-size: 34px;
+      line-height: 1.12;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .status-side:last-child .status-value {
+      color: var(--warning);
+    }
+
+    .status-note {
+      margin: 4px 0 0;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .not-equal {
+      display: grid;
+      place-items: center;
+      padding: 10px 8px;
+      border-right: 1px solid var(--line);
+      border-left: 1px solid var(--line);
+      color: var(--warning-dark);
+      font-size: 13px;
+      line-height: 1.35;
+      text-align: center;
+      font-weight: 750;
+    }
+
+    .verdict-line {
+      margin: 18px 0 0;
+      padding-left: 16px;
+      border-left: 4px solid var(--warning);
+      font-family: Georgia, "Songti SC", "SimSun", serif;
+      font-size: 22px;
+      line-height: 1.45;
+      font-weight: 700;
+    }
+
+    .opening-entries {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+      gap: 28px;
+      margin-top: 22px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    .opening-entry {
+      min-width: 0;
+    }
+
+    .opening-entry p {
+      margin: 5px 0 0;
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .entry-link {
+      display: inline-block;
+      margin-top: 7px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .case-section {
+      display: grid;
+      grid-template-columns: 176px minmax(0, 1fr);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .section-rail {
+      padding: 34px 24px 30px 34px;
+      border-right: 1px solid var(--line);
+      background: #f8f8f7;
+    }
+
+    .section-number {
+      display: block;
+      margin-bottom: 5px;
+      font-family: Georgia, serif;
+      font-size: 26px;
+      line-height: 1;
+      color: var(--warning);
+    }
+
+    .section-body {
+      min-width: 0;
+      padding: 34px 38px 40px;
+    }
+
+    .section-body h2 {
+      margin: 0 0 18px;
+      font-size: 30px;
+      line-height: 1.2;
+    }
+
+    .section-lead {
+      max-width: 880px;
+      margin: 0 0 24px;
+      font-size: 17px;
+      color: #34383b;
+    }
+
+    .situation-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0;
+      border-top: 1px solid var(--ink);
+      border-bottom: 1px solid var(--ink);
+    }
+
+    .situation-item {
+      min-width: 0;
+      padding: 18px 22px 20px 0;
+    }
+
+    .situation-item + .situation-item {
+      padding-left: 22px;
+      border-left: 1px solid var(--line);
+    }
+
+    .situation-item strong {
+      display: block;
+      margin-bottom: 6px;
+      font-family: Georgia, "Songti SC", "SimSun", serif;
+      font-size: 19px;
+      line-height: 1.35;
+    }
+
+    .situation-item p {
+      margin: 0;
+      font-size: 14px;
+      color: #44494d;
+    }
+
+    .conflict-list {
+      border-top: 2px solid var(--ink);
+    }
+
+    .conflict-row {
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr) 58px minmax(0, 1fr);
+      align-items: start;
+      gap: 18px;
+      padding: 20px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .conflict-id {
+      font-family: Consolas, monospace;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--warning-dark);
+    }
+
+    .conflict-claim,
+    .conflict-answer {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .conflict-marker {
+      padding-top: 1px;
+      color: var(--warning);
+      font-size: 13px;
+      font-weight: 750;
+      text-align: center;
+    }
+
+    .decision-band {
+      background: var(--ink);
+      color: #fff;
+    }
+
+    .decision-band .section-rail {
+      background: #202224;
+      border-color: #45494c;
+    }
+
+    .decision-band .section-kicker {
+      color: #d8dadb;
+    }
+
+    .decision-band .section-body {
+      padding-top: 38px;
+      padding-bottom: 42px;
+    }
+
+    .decision-band h2 {
+      max-width: 880px;
+      margin-bottom: 16px;
+      font-size: 36px;
+      color: #fff;
+    }
+
+    .decision-band p {
+      max-width: 860px;
+      margin: 0;
+      font-size: 16px;
+      color: #e1e3e4;
+    }
+
+    .decision-band strong {
+      color: #fff;
+    }
+
+    .evidence-chain {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 28px;
+      margin: 30px 0 26px;
+    }
+
+    .evidence-chain::before {
+      content: "";
+      position: absolute;
+      top: 13px;
+      right: 0;
+      left: 0;
+      height: 2px;
+      background: var(--warning);
+    }
+
+    .evidence-step {
+      position: relative;
+      z-index: 1;
+      min-width: 0;
+      padding-top: 35px;
+    }
+
+    .evidence-step::before {
+      content: "";
+      position: absolute;
+      top: 6px;
+      left: 0;
+      width: 14px;
+      height: 14px;
+      border: 3px solid var(--paper);
+      background: var(--warning);
+    }
+
+    .evidence-id {
+      color: var(--warning-dark);
+      font-family: Consolas, monospace;
+    }
+
+    .evidence-step h3 {
+      margin: 5px 0 7px;
+      font-size: 19px;
+      line-height: 1.35;
+    }
+
+    .evidence-step p {
+      margin: 0;
+      font-size: 14px;
+      color: #3f4448;
+    }
+
+    .proof-meaning {
+      display: block;
+      margin-top: 9px;
+      padding-top: 9px;
+      border-top: 1px solid var(--line);
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .evidence-note {
+      display: grid;
+      grid-template-columns: 104px minmax(0, 1fr);
+      gap: 20px;
+      margin-top: 18px;
+      padding: 18px 0;
+      border-top: 1px solid var(--ink);
+      border-bottom: 1px solid var(--ink);
+    }
+
+    .evidence-note p {
+      margin: 0;
+      font-size: 15px;
+    }
+
+    .margin-timeline {
+      display: grid;
+      grid-template-columns: 104px minmax(0, 1fr);
+      gap: 20px;
+      margin-top: 20px;
+    }
+
+    .margin-timeline p {
+      margin: 0;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .action-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      border-top: 2px solid var(--ink);
+      counter-reset: actions;
+    }
+
+    .action-list li {
+      display: grid;
+      grid-template-columns: 54px minmax(0, 1fr) 168px;
+      align-items: start;
+      gap: 20px;
+      padding: 20px 0;
+      border-bottom: 1px solid var(--line);
+      counter-increment: actions;
+    }
+
+    .action-list li::before {
+      content: "0" counter(actions);
+      font-family: Georgia, serif;
+      font-size: 25px;
+      line-height: 1.2;
+      color: var(--warning);
+    }
+
+    .action-copy {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 650;
+    }
+
+    .responsibility {
+      padding-top: 3px;
+      text-align: right;
+    }
+
+    .raw-material {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
+      margin-top: 30px;
+    }
+
+    details {
+      min-width: 0;
+      border-top: 1px solid var(--ink);
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+
+    summary {
+      padding: 14px 4px;
+      cursor: pointer;
+      font-size: 15px;
+      font-weight: 750;
+    }
+
+    .details-body {
+      padding: 0 4px 16px;
+      font-size: 14px;
+      color: #3f4448;
+    }
+
+    .details-body p {
+      margin: 0 0 10px;
+    }
+
+    .details-body ol {
+      margin: 0;
+      padding-left: 22px;
+    }
+
+    .details-body li {
+      margin: 6px 0;
+      overflow-wrap: anywhere;
+    }
+
+    .claim-warning {
+      color: var(--warning-dark);
+      font-weight: 750;
+    }
+
+    .document-footer {
+      display: grid;
+      grid-template-columns: 176px minmax(0, 1fr);
+      color: var(--muted);
+      font-size: 12.5px;
+    }
+
+    .document-footer p {
+      margin: 0;
+      padding: 18px 34px;
+    }
+
+    .document-footer p:first-child {
+      border-right: 1px solid var(--line);
+      font-weight: 700;
+    }
+
+    @media (max-width: 800px) {
+      .document {
+        width: 100%;
+        margin: 0;
+        box-shadow: none;
+      }
+
+      .document-header {
+        grid-template-columns: 1fr auto;
+        gap: 8px 14px;
+        min-height: auto;
+        padding: 14px 18px;
+      }
+
+      .document-scope {
+        grid-column: 1 / -1;
+        grid-row: 2;
+      }
+
+      .opening,
+      .case-section {
+        display: block;
+        min-height: 0;
+      }
+
+      .case-file {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 0 20px;
+        padding: 20px 18px;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .case-number-label,
+      .case-number {
+        grid-column: 1;
+      }
+
+      .case-number {
+        margin-bottom: 12px;
+        font-size: 27px;
+      }
+
+      .case-meta {
+        grid-column: 2;
+        grid-row: 1 / span 3;
+        margin-bottom: 0;
+      }
+
+      .case-meta dt:first-child {
+        margin-top: 0;
+      }
+
+      .evidence-doors {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        padding-top: 12px;
+      }
+
+      .evidence-doors a {
+        font-size: 13px;
+      }
+
+      .opening-main,
+      .section-body {
+        padding: 26px 18px 32px;
+      }
+
+      h1 {
+        font-size: 34px;
+      }
+
+      .dek {
+        font-size: 16px;
+      }
+
+      .status-contrast {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .status-side,
+      .status-side:last-child {
+        padding: 15px 0;
+      }
+
+      .not-equal {
+        min-height: 38px;
+        border: 0;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .status-value {
+        font-size: 29px;
+      }
+
+      .verdict-line {
+        font-size: 20px;
+      }
+
+      .opening-entries,
+      .situation-grid,
+      .raw-material {
+        grid-template-columns: 1fr;
+      }
+
+      .opening-entries {
+        gap: 18px;
+      }
+
+      .section-rail {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding: 17px 18px 14px;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .section-number {
+        margin-bottom: 0;
+        font-size: 21px;
+      }
+
+      .section-body h2 {
+        font-size: 27px;
+      }
+
+      .situation-item,
+      .situation-item + .situation-item {
+        padding: 16px 0;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .situation-item:first-child {
+        border-top: 0;
+      }
+
+      .conflict-row {
+        grid-template-columns: 58px minmax(0, 1fr);
+        gap: 8px 14px;
+      }
+
+      .conflict-marker {
+        grid-column: 1;
+        text-align: left;
+      }
+
+      .conflict-answer {
+        grid-column: 2;
+      }
+
+      .decision-band .section-rail {
+        border-color: #45494c;
+      }
+
+      .decision-band .section-body {
+        padding: 28px 18px 34px;
+      }
+
+      .decision-band h2 {
+        font-size: 30px;
+      }
+
+      .evidence-chain {
+        grid-template-columns: 1fr;
+        gap: 22px;
+        margin-top: 22px;
+        padding-left: 22px;
+      }
+
+      .evidence-chain::before {
+        top: 0;
+        right: auto;
+        bottom: 0;
+        left: 7px;
+        width: 2px;
+        height: auto;
+      }
+
+      .evidence-step {
+        padding-top: 0;
+      }
+
+      .evidence-step::before {
+        top: 5px;
+        left: -22px;
+      }
+
+      .evidence-note,
+      .margin-timeline {
+        grid-template-columns: 1fr;
+        gap: 7px;
+      }
+
+      .action-list li {
+        grid-template-columns: 42px minmax(0, 1fr);
+        gap: 12px;
+      }
+
+      .responsibility {
+        grid-column: 2;
+        padding-top: 0;
+        text-align: left;
+      }
+
+      .raw-material {
+        gap: 18px;
+      }
+
+      .document-footer {
+        display: block;
+      }
+
+      .document-footer p {
+        padding: 13px 18px;
+      }
+
+      .document-footer p:first-child {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+    }
+
+    @media (max-width: 430px) {
+      body {
+        font-size: 15px;
+      }
+
+      .document-header {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .snapshot {
+        grid-row: 3;
+        text-align: left;
+      }
+
+      .case-file {
+        display: block;
+      }
+
+      .case-meta {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0 18px;
+        margin-bottom: 16px;
+      }
+
+      .evidence-doors {
+        grid-template-columns: 1fr;
+        gap: 0;
+      }
+
+      h1 {
+        font-size: 31px;
+      }
+
+      .opening-main,
+      .section-body {
+        padding-right: 16px;
+        padding-left: 16px;
+      }
+
+      .section-rail {
+        padding-right: 16px;
+        padding-left: 16px;
+      }
+
+      .status-value {
+        font-size: 27px;
+      }
+
+      .conflict-row {
+        grid-template-columns: 1fr;
+      }
+
+      .conflict-marker,
+      .conflict-answer {
+        grid-column: 1;
+      }
+
+      .conflict-marker {
+        text-align: left;
+      }
+
+      .action-list li {
+        grid-template-columns: 38px minmax(0, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="document">
+    <header class="document-header">
+      <p class="document-type">工程案件 brief</p>
+      <p class="document-scope">可信完成审查 · 表面状态与证据结论冲突</p>
+      <p class="snapshot">事实快照 · 2026-07-13</p>
+    </header>
+
+    <section class="opening" aria-labelledby="case-title">
+      <aside class="case-file" aria-label="案件元信息与证据入口">
+        <p class="case-number-label">案号</p>
+        <p class="case-number">YQE-134</p>
+        <dl class="case-meta">
+          <div>
+            <dt>读者</dt>
+            <dd>workflow owner</dd>
+          </div>
+          <div>
+            <dt>当前表面状态</dt>
+            <dd>Done</dd>
+          </div>
+          <div>
+            <dt>最新审查结论</dt>
+            <dd>needs_rework</dd>
+          </div>
+        </dl>
+        <nav class="evidence-doors" aria-label="Linear 证据入口">
+          <p class="entry-label">证据入口</p>
+          <a href="https://linear.app/yqeeqy/issue/YQE-134/我希望当在一个issue里引用其他issue的时候是一个可达的链接这个操作最好是不耗token的" target="_blank" rel="noreferrer" aria-label="打开 Linear 中的 YQE-134 root issue">YQE-134 · root</a>
+          <a href="https://linear.app/yqeeqy/issue/YQE-142/issue-identifier-链接化" target="_blank" rel="noreferrer" aria-label="打开 Linear 中的 YQE-142 实现 issue">YQE-142 · 实现</a>
+          <a href="https://linear.app/yqeeqy/issue/YQE-143/最终审查" target="_blank" rel="noreferrer" aria-label="打开 Linear 中的 YQE-143 最终审查 issue">YQE-143 · 审查</a>
+        </nav>
+      </aside>
+
+      <div class="opening-main">
+        <p class="eyebrow">可信完成审查 / 当前判定</p>
+        <h1 id="case-title">Done 只是表面状态，<br>不是可信完成。</h1>
+        <p class="dek">YQE-142 自报链接实现与测试完成；YQE-143 的最终审查记录却显示目标函数定义未检出、目标渲染仍为纯文本。案件状态已经终止，交付证据没有闭合。</p>
+
+        <div class="status-contrast" aria-label="表面状态与可信结论对照">
+          <div class="status-side">
+            <p class="status-label">Linear 表面状态</p>
+            <p class="status-value">Done</p>
+            <p class="status-note">YQE-134 当前状态</p>
+          </div>
+          <div class="not-equal">不能推出<br>可信完成</div>
+          <div class="status-side">
+            <p class="status-label">证据支持的结论</p>
+            <p class="status-value">needs_rework</p>
+            <p class="status-note">YQE-143 最新 review outcome</p>
+          </div>
+        </div>
+
+        <p class="verdict-line">当前不能把 YQE-134 视为可信完成：应恢复 active / needs_rework，补齐实现或反证后重新验证。</p>
+
+        <div class="opening-entries">
+          <div class="opening-entry">
+            <p class="entry-label">最关键证据</p>
+            <p><strong>E-003</strong>：两个目标 <code>controller.ex</code> 中检索三项函数定义均为 0 matches；这不等于整个 workspace 没有调用引用。</p>
+            <a class="entry-link" href="#evidence">进入连续证据链</a>
+          </div>
+          <div class="opening-entry">
+            <p class="entry-label">下一步动作</p>
+            <p>停止传播错误 Done，补实现或反证，重跑测试，再由独立 reviewer 审查。</p>
+            <a class="entry-link" href="#actions">查看四项处置令</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="case-section" aria-labelledby="situation-title">
+      <div class="section-rail">
+        <span class="section-number">01</span>
+        <p class="section-kicker">情况</p>
+      </div>
+      <div class="section-body">
+        <h2 id="situation-title">三张工单，三种“完成”含义</h2>
+        <p class="section-lead">只有把 root、实现任务和最终审查分开读，才能看见 Done 在这里掩盖的语义差异。</p>
+        <div class="situation-grid">
+          <article class="situation-item">
+            <strong>YQE-134 · root</strong>
+            <p>表面状态为 Done，但最终审查后还发生过 Done、In Progress、Done 往返。</p>
+          </article>
+          <article class="situation-item">
+            <strong>YQE-142 · 实现</strong>
+            <p>自报 completed，并声称三个函数已经实现、28 tests / 0 failures。</p>
+          </article>
+          <article class="situation-item">
+            <strong>YQE-143 · 审查</strong>
+            <p>任务状态为 Done，只表示审查任务完成；其 outcome 是 fail / needs_rework，不表示审查通过。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="case-section" aria-labelledby="conflict-title">
+      <div class="section-rail">
+        <span class="section-number">02</span>
+        <p class="section-kicker">冲突</p>
+      </div>
+      <div class="section-body">
+        <h2 id="conflict-title">表面记录与代码证据逐项相撞</h2>
+        <div class="conflict-list">
+          <div class="conflict-row">
+            <span class="conflict-id">C-001</span>
+            <p class="conflict-claim"><strong>表面：</strong>YQE-134 当前状态为 Done。</p>
+            <span class="conflict-marker">反证</span>
+            <p class="conflict-answer">YQE-143 最终审查结论为 needs_rework，terminal state 不能单独作为可信完成证明。</p>
+          </div>
+          <div class="conflict-row">
+            <span class="conflict-id">C-002</span>
+            <p class="conflict-claim"><strong>表面：</strong>YQE-142 自报三个链接函数已经实现且测试通过。</p>
+            <span class="conflict-marker">反证</span>
+            <p class="conflict-answer">审查记录未检出目标定义，目标渲染仍输出纯文本，测试引用与缺失定义相互冲突。</p>
+          </div>
+          <div class="conflict-row">
+            <span class="conflict-id">C-003</span>
+            <p class="conflict-claim"><strong>表面：</strong>YQE-143 issue 自身状态为 Done。</p>
+            <span class="conflict-marker">反证</span>
+            <p class="conflict-answer">审查任务完成不等于被审查实现通过；其两个 outcome 分别为 fail 与 needs_rework。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="case-section decision-band" aria-labelledby="decision-title">
+      <div class="section-rail">
+        <span class="section-number">03</span>
+        <p class="section-kicker">判定</p>
+      </div>
+      <div class="section-body">
+        <h2 id="decision-title">不接受“已完成”；案件转入 needs_rework。</h2>
+        <p><strong>理由：</strong>当前证据可以证明审查失败与实现主张冲突，却没有可复核证据证明链接实现已存在并通过真实测试。剩余不确定性只能通过补齐代码或提交代码反证、保留测试输出和独立复审来消除。</p>
+      </div>
+    </section>
+
+    <section class="case-section" id="evidence" aria-labelledby="evidence-title">
+      <div class="section-rail">
+        <span class="section-number">04</span>
+        <p class="section-kicker">证据链</p>
+      </div>
+      <div class="section-body">
+        <h2 id="evidence-title">从审查结论，追到定义缺失，再落到用户可见渲染</h2>
+        <p class="section-lead">E-002 → E-003 → E-005 构成连续链：结论不是只靠状态字段，而是由目标代码审查支撑。</p>
+
+        <div class="evidence-chain" aria-label="E-002 到 E-003 到 E-005 的连续证据链">
+          <article class="evidence-step">
+            <p class="evidence-id">E-002</p>
+            <h3>最终审查给出 needs_rework</h3>
+            <p>YQE-143 评论记录最新 review outcome 为 needs_rework。</p>
+            <span class="proof-meaning">证明：当前权威审查结论不是通过。</span>
+          </article>
+          <article class="evidence-step">
+            <p class="evidence-id">E-003</p>
+            <h3>目标函数定义均未检出</h3>
+            <p>YQE-143 评论记录，在 YQE-134/YQE-142 两个 workspace 的目标 <code>elixir/lib/symphony_elixir/workflow/controller.ex</code> 中，以 <code>def issue_link|def issue_url|def extract_team_domain</code> 检索函数定义均为 0 matches；这不等于整个 workspace 没有调用引用。</p>
+            <span class="proof-meaning">证明：自报的三个实现定义在目标文件中没有得到代码证据支持。</span>
+          </article>
+          <article class="evidence-step">
+            <p class="evidence-id">E-005</p>
+            <h3>目标渲染仍输出纯文本</h3>
+            <p>YQE-143 评论记录，<code>render_plan_comment</code>、<code>render_issue_result_comment</code>、<code>node_description</code> 仍输出纯文本 identifier。</p>
+            <span class="proof-meaning">证明：用户要求的可达链接没有出现在目标渲染点。</span>
+          </article>
+        </div>
+
+        <aside class="evidence-note" aria-label="测试证据 E-006">
+          <p class="evidence-id">E-006</p>
+          <p><strong>测试调用不等于实现存在：</strong>测试中存在 <code>issue_link/2</code> 调用/引用，但实现定义不存在。因此，YQE-142 自报的 28 tests / 0 failures 不能直接替代可复核测试输出。</p>
+        </aside>
+
+        <aside class="margin-timeline" aria-label="状态往返证据 E-007">
+          <p class="margin-label">E-007 · 时间旁注</p>
+          <p>YQE-134 在最终审查后经历 Done → In Progress → Done。它说明 root 状态发生往返，但时间线只是旁证，不能取代“代码证据未闭合”的主判定。</p>
+        </aside>
+      </div>
+    </section>
+
+    <section class="case-section" id="actions" aria-labelledby="actions-title">
+      <div class="section-rail">
+        <span class="section-number">05</span>
+        <p class="section-kicker">处置</p>
+      </div>
+      <div class="section-body">
+        <h2 id="actions-title">只有四项处置全部闭合，才可恢复 Done</h2>
+        <ol class="action-list">
+          <li>
+            <p class="action-copy">将 root 恢复 active / needs_rework，停止传播错误 Done。</p>
+            <span class="responsibility">责任角色：workflow owner</span>
+          </li>
+          <li>
+            <p class="action-copy">补齐链接实现，或提交可复核的代码反证。</p>
+            <span class="responsibility">责任角色：实现交付方</span>
+          </li>
+          <li>
+            <p class="action-copy">重新运行目标测试与完整测试，并保留真实输出。</p>
+            <span class="responsibility">责任角色：实现交付方</span>
+          </li>
+          <li>
+            <p class="action-copy">由独立 reviewer 重新审查，只有 accepted / pass 才可恢复 Done。</p>
+            <span class="responsibility">责任角色：独立 reviewer</span>
+          </li>
+        </ol>
+
+        <div class="raw-material" aria-label="可展开的原始材料">
+          <details>
+            <summary>原始 Issue Result 摘要 · YQE-142</summary>
+            <div class="details-body">
+              <p>YQE-142 自报 completed，称 controller 已包含 <code>issue_link/2</code>、<code>issue_url/2</code>、<code>extract_team_domain/1</code>，并称 28 tests / 0 failures。</p>
+              <p class="claim-warning">这是 implementation agent 的主张，不等于已验证。</p>
+            </div>
+          </details>
+          <details>
+            <summary>YQE-134 状态历史 · 三次精确往返</summary>
+            <div class="details-body">
+              <ol>
+                <li><time datetime="2026-06-30T16:14:06.035Z">2026-06-30T16:14:06.035Z</time> · In Progress → Done</li>
+                <li><time datetime="2026-06-30T16:25:24.952Z">2026-06-30T16:25:24.952Z</time> · Done → In Progress</li>
+                <li><time datetime="2026-06-30T16:44:49.371Z">2026-06-30T16:44:49.371Z</time> · In Progress → Done</li>
+              </ol>
+            </div>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <footer class="document-footer">
+      <p>事实边界</p>
+      <p>仅使用 2026-07-13 的 <code>report_context.json</code> 冻结快照；本页未把评论证据冒充本轮代码复验。人工评审仍待用户完成。</p>
+    </footer>
+  </main>
+</body>
+</html>

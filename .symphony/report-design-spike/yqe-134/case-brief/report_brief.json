@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "case_id": "YQE-134",
+  "audience": "workflow owner",
+  "decision_to_enable": "判断表面 Done 的 root 是否可信完成，并定位返工责任和证据",
+  "information_conflicts": ["C-001", "C-002", "C-003"],
+  "evidence_priorities": ["E-002", "E-003", "E-005", "E-007"],
+  "narrative_hypothesis": "先把表面状态与可信结论并置，再按证据链解释为何必须返工，可以最快消除 Done 的误导",
+  "form_rationale": "案例的核心像一份互相矛盾的案件卷宗，因此用情况、冲突、判定、证据链和处置组织阅读",
+  "visual_system": "编辑部案件 brief；纸张感中性色、单一警示红、强标题、旁注和证据编号，不使用 dashboard 卡片阵列",
+  "discarded_alternatives": ["把 issue 状态放入矩阵", "按时间顺序平铺全部日志"],
+  "assumptions": ["读者先需要结论，再决定是否展开原始评论", "Linear 链接只作为证据入口，不承担页面视觉"]
+}
