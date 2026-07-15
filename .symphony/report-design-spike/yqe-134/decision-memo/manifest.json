@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "case_id": "YQE-134",
+  "variant": "decision-memo",
+  "context_path": "../report_context.json",
+  "brief_path": "report_brief.json",
+  "html_path": "index.html",
+  "summary_path": "summary.md",
+  "review_path": "review.md",
+  "desktop_screenshot": "screenshot.png",
+  "mobile_screenshot": "screenshot-mobile.png",
+  "generator": "huashu-design-guided-manual-spike",
+  "status": "candidate"
+}

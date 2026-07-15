@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "case_id": "YQE-134",
+  "audience": "workflow owner",
+  "decision_to_enable": "决定接受完成、要求返工或请求人工调查中的哪一种动作",
+  "information_conflicts": ["C-001", "C-002", "C-003"],
+  "evidence_priorities": ["E-001", "E-002", "E-003", "E-006"],
+  "narrative_hypothesis": "把接受完成和要求返工作为两个可检验选项，用同一组判据逐项排除错误选项，可以让 owner 看见判断过程",
+  "form_rationale": "用户面对的是一个需要立即作出的完成决策，而不是要阅读完整案件史，因此用决策问题、判据、选项、推理和建议组织页面",
+  "visual_system": "克制的决策 memo；宽页边距、纵向推理线、黑白正文与琥珀警示，不使用案件 brief 的左右卷宗构图",
+  "discarded_alternatives": ["直接宣布 needs_rework 而不展示判据", "用状态时间线代替决策过程"],
+  "assumptions": ["读者希望知道为什么拒绝 Done，而不只需要最终标签", "两种主要选项足以覆盖当前证据"]
+}
