@@ -56,8 +56,14 @@
 
     a:focus-visible,
     summary:focus-visible {
-      outline: 3px solid #78a9d6;
+      outline: 3px solid var(--link);
       outline-offset: 3px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
     }
 
     code {
