@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YQE-134 同案三解</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #181817;
+      --muted: #68645d;
+      --paper: #f5f3ee;
+      --line: #cbc5ba;
+      --accent: #a93428;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      letter-spacing: 0;
+    }
+    header, main, footer {
+      width: min(1500px, calc(100% - 40px));
+      margin-inline: auto;
+    }
+    header {
+      padding: 44px 0 28px;
+      border-bottom: 1px solid var(--line);
+    }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      max-width: 900px;
+      font-family: SimSun, "Songti SC", serif;
+      font-size: 56px;
+      line-height: 1.06;
+    }
+    .lede {
+      max-width: 760px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+    main {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0;
+      padding: 34px 0 50px;
+      border-bottom: 1px solid var(--line);
+    }
+    article {
+      min-width: 0;
+      padding: 0 24px 28px;
+      border-left: 1px solid var(--line);
+    }
+    article:first-child { border-left: 0; }
+    figure { margin: 0; }
+    img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      object-fit: cover;
+      object-position: top;
+      border: 1px solid var(--line);
+      background: white;
+    }
+    .number {
+      display: block;
+      margin: 22px 0 8px;
+      color: var(--accent);
+      font: 700 12px/1 "Consolas", monospace;
+    }
+    h2 {
+      margin: 0;
+      font-family: SimSun, "Songti SC", serif;
+      font-size: 28px;
+      line-height: 1.2;
+    }
+    .question {
+      min-height: 72px;
+      margin: 16px 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.6;
+    }
+    dl {
+      display: grid;
+      grid-template-columns: 76px 1fr;
+      gap: 8px 12px;
+      margin: 0 0 22px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    dt { color: var(--muted); }
+    dd { margin: 0; }
+    a {
+      display: inline-block;
+      color: var(--ink);
+      font-weight: 700;
+      text-underline-offset: 4px;
+    }
+    a:focus-visible {
+      outline: 3px solid #1d5f94;
+      outline-offset: 3px;
+    }
+    footer {
+      padding: 22px 0 36px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    @media (max-width: 900px) {
+      body { padding-bottom: 32px; }
+      header, main, footer { width: min(680px, calc(100% - 28px)); }
+      h1 { font-size: 36px; }
+      main { grid-template-columns: 1fr; padding-top: 18px; }
+      article, article:first-child, article:last-child {
+        padding: 24px 0 30px;
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+      article:first-child { border-top: 0; }
+      .question { min-height: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <p class="eyebrow">YQE-134 · report design pattern spike</p>
+    <h1>同一组事实，三种判断路径</h1>
+    <p class="lede">三版共享相同 Linear 事实，只改变叙事角色、信息顺序和证据组织。它们都是 candidate，不代表已经通过人工可读性门禁。</p>
+  </header>
+  <main>
+    <article>
+      <figure><img src="case-brief/screenshot.png" alt="案件 brief 桌面截图"></figure>
+      <span class="number">01 / CASE BRIEF</span>
+      <h2>案件 brief</h2>
+      <p class="question">先揭示表面 Done 与真实 needs_rework 的冲突，再用证据链给出处置。</p>
+      <dl>
+        <dt>首要问题</dt><dd>发生了什么，为什么不能结案？</dd>
+        <dt>证据组织</dt><dd>冲突 → 判定 → 证据链</dd>
+        <dt>最终动作</dt><dd>恢复 active 并返工</dd>
+      </dl>
+      <a href="case-brief/index.html">打开完整候选</a>
+    </article>
+    <article>
+      <figure><img src="decision-memo/screenshot.png" alt="决策 memo 桌面截图"></figure>
+      <span class="number">02 / DECISION MEMO</span>
+      <h2>决策 memo</h2>
+      <p class="question">围绕是否接受完成这一决定，用共同判据排除错误选项。</p>
+      <dl>
+        <dt>首要问题</dt><dd>接受完成还是要求返工？</dd>
+        <dt>证据组织</dt><dd>选项 → 判据 → 推理</dd>
+        <dt>最终动作</dt><dd>拒绝接受，等待重审</dd>
+      </dl>
+      <a href="decision-memo/index.html">打开完整候选</a>
+    </article>
+    <article>
+      <figure><img src="review-narrative/screenshot.png" alt="审查叙事桌面截图"></figure>
+      <span class="number">03 / REVIEW NARRATIVE</span>
+      <h2>审查叙事</h2>
+      <p class="question">把核心交付缺失作为阻断 finding，用独立反证说明影响和通过条件。</p>
+      <dl>
+        <dt>首要问题</dt><dd>哪个 finding 阻断了通过？</dd>
+        <dt>证据组织</dt><dd>finding → 反证 → 影响</dd>
+        <dt>最终动作</dt><dd>满足通过条件后重审</dd>
+      </dl>
+      <a href="review-narrative/index.html">打开完整候选</a>
+    </article>
+  </main>
+  <footer>事实快照：2026-07-13 · 当前阶段：第一轮人工选型</footer>
+</body>
+</html>
