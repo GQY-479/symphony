@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "case_id": "YQE-134",
+  "audience": "workflow owner",
+  "decision_to_enable": "理解最终审查的阻断 finding、影响、证据和重新通过条件",
+  "information_conflicts": ["C-001", "C-002", "C-003"],
+  "evidence_priorities": ["E-003", "E-004", "E-005", "E-006"],
+  "narrative_hypothesis": "findings first 可以把核心交付缺失作为唯一阻断项，再用代码、渲染和测试证据逐层证明，减少状态噪声",
+  "form_rationale": "案例最强事实来自 final review 的代码审查，因此用 finding、影响、主张、反证和通过条件组织页面",
+  "visual_system": "审查批注式叙事；高密度排印、行号感证据边栏、严重性红和通过条件绿，不使用 memo 的选项推理线",
+  "discarded_alternatives": ["按 issue 分三栏", "把所有审查 evidence 做成无层级列表"],
+  "assumptions": ["读者接受 findings-first 的工程审查语言", "一个 P0 阻断 finding 比多个状态摘要更准确"]
+}

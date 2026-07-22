@@ -1,0 +1,97 @@
+<!-- 假设：workflow owner 接受 findings-first 审查语言。形式来源：final review 的代码审查记录。事实边界：只使用报告事实包；上游自报不是本轮复验，页面不宣称本轮重新执行代码或测试。 -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YQE-134 审查叙事</title>
+  <style>
+    :root { --paper:#f6f4ef; --ink:#20201d; --muted:#625f58; --rule:#c9c3b8; --red:#a42222; --red-soft:#f4e4df; --green:#1f6a4c; --green-soft:#e5f0e9; --note:#f0ece4; }
+    * { box-sizing:border-box; }
+    html { background:var(--paper); }
+    body { margin:0; color:var(--ink); background:var(--paper); font-family:"Noto Serif CJK SC","Songti SC",SimSun,serif; font-size:16px; line-height:1.65; letter-spacing:0; overflow-wrap:anywhere; }
+    a { color:inherit; text-decoration-color:var(--red); text-decoration-thickness:1px; text-underline-offset:3px; }
+    a:focus-visible { outline:3px solid #1d5f94; outline-offset:3px; border-radius:1px; }
+    .page { width:min(1120px,calc(100% - 40px)); margin:0 auto; padding:36px 0 64px; }
+    .masthead { display:flex; justify-content:space-between; gap:24px; align-items:baseline; padding-bottom:18px; border-bottom:2px solid var(--ink); font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; }
+    .kicker,.folio,.eyebrow,.evidence-id,.margin-label,.condition-label { margin:0; font-size:12px; font-weight:700; line-height:1.4; letter-spacing:0; text-transform:uppercase; }
+    .folio { color:var(--muted); text-align:right; }
+    .finding,.review-grid { display:grid; grid-template-columns:144px minmax(0,1fr); gap:32px; }
+    .finding { padding:34px 0 28px; border-bottom:1px solid var(--rule); }
+    .review-grid { padding:31px 0; border-bottom:1px solid var(--rule); }
+    .margin-note { padding-top:7px; color:var(--red); font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; }
+    .margin-note strong { display:block; font-size:20px; line-height:1.1; }
+    h1,h2,h3,p { margin-top:0; }
+    h1 { max-width:810px; margin-bottom:14px; font-size:clamp(30px,4vw,52px); font-weight:700; line-height:1.1; letter-spacing:0; text-wrap:pretty; }
+    h2 { margin-bottom:8px; font-size:26px; line-height:1.2; letter-spacing:0; text-wrap:pretty; }
+    .issue-id { white-space:nowrap; }
+    .lead { max-width:780px; margin-bottom:0; font-size:20px; line-height:1.55; text-wrap:pretty; }
+    .lead strong { color:var(--red); }
+    .judgment { display:grid; grid-template-columns:1fr 1.5fr; gap:24px; margin-top:26px; padding:18px 0; border-top:1px solid var(--ink); border-bottom:1px solid var(--ink); font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; }
+    .judgment p { margin:0; }.judgment .eyebrow { color:var(--red); }.judgment .statement { font-size:16px; font-weight:700; }
+    .claim { margin:0 0 19px; padding:15px 18px; background:var(--note); border-left:4px solid var(--muted); font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; }
+    .claim .eyebrow { margin-bottom:6px; color:var(--muted); }.claim p,.evidence-list p,.conditions p,.state-note p,.footer p { margin:0; }
+    .evidence-list,.conditions { margin:0; padding:0; list-style:none; }
+    .evidence-list { border-top:1px solid var(--rule); }
+    .evidence-list li { display:grid; grid-template-columns:84px minmax(0,1fr); gap:18px; padding:17px 0; border-bottom:1px solid var(--rule); }
+    .evidence-id { color:var(--red); font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; }
+    .evidence-list strong { font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; }
+    .boundary { margin:20px 0 0; padding:14px 17px; color:#393734; background:var(--red-soft); border-top:1px solid var(--red); font-size:14px; }.boundary strong { color:var(--red); }
+    .conditions { border-top:1px solid var(--green); }.conditions li { display:grid; grid-template-columns:130px minmax(0,1fr); gap:18px; padding:15px 0; border-bottom:1px solid #9bbba9; }.condition-label { color:var(--green); font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; }
+    .state-note { margin:18px 0 0; padding:15px 18px; background:var(--green-soft); border-left:4px solid var(--green); }.state-note strong { color:var(--green); }
+    .footer { display:flex; justify-content:space-between; gap:20px; padding-top:20px; color:var(--muted); font-size:13px; font-family:"Noto Sans CJK SC","Microsoft YaHei",sans-serif; }
+    @media (max-width:640px) { .page { width:min(1120px,calc(100% - 28px)); padding-top:22px; }.masthead,.footer { display:block; }.folio { margin-top:8px; text-align:left; }.finding,.review-grid { grid-template-columns:1fr; gap:12px; }.finding { padding-top:25px; }.margin-note { padding-top:0; }h1 { font-size:34px; }.lead { font-size:18px; }.judgment { grid-template-columns:1fr; gap:8px; }.evidence-list li { grid-template-columns:74px minmax(0,1fr); gap:11px; }.conditions li { grid-template-columns:92px minmax(0,1fr); gap:11px; }.footer p + p { margin-top:6px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="masthead">
+      <p class="kicker">最终审查批注 / workflow owner 阅读版</p>
+      <p class="folio">事实快照：2026-07-13 · 案例 <a href="https://linear.app/yqeeqy/issue/YQE-134/我希望当在一个issue里引用其他issue的时候是一个可达的链接这个操作最好是不耗token的" class="issue-id">YQE-134</a></p>
+    </header>
+    <section class="finding" aria-labelledby="finding-title">
+      <aside class="margin-note" aria-label="finding 严重性"><p class="margin-label">Finding 01</p><strong>P0 阻断</strong></aside>
+      <div>
+        <h1 id="finding-title">核心链接化交付不存在</h1>
+        <p class="lead">目标 issue identifier 尚未形成可复核的链接化交付。<strong>因此 root 的 Done 不可信；继续推进后续状态和通知会传播错误状态。</strong></p>
+        <div class="judgment" aria-label="当前审查判断"><p class="eyebrow">当前判断</p><p class="statement"><a href="https://linear.app/yqeeqy/issue/YQE-134/我希望当在一个issue里引用其他issue的时候是一个可达的链接这个操作最好是不耗token的" class="issue-id">YQE-134</a> 表面为 Done，但最终审查为 needs_rework；审查后又经历 Done → In Progress → Done 往返，当前不能视为可信完成。下一步应恢复 active / needs_rework，补齐实现并重审。</p></div>
+      </div>
+    </section>
+    <section class="review-grid" aria-labelledby="claim-title">
+      <aside class="margin-note"><p class="margin-label">上游陈述</p></aside>
+      <div>
+        <h2 id="claim-title">自报不等于本轮验证</h2>
+        <div class="claim"><p class="eyebrow">来自 <a href="https://linear.app/yqeeqy/issue/YQE-142/issue-identifier-链接化" class="issue-id">YQE-142</a> 的上游主张</p><p>YQE-142 自报 completed，并声称 <strong>issue_link/2、issue_url/2、extract_team_domain/1</strong> 三个函数存在、<strong>28 tests, 0 failures</strong>。这不是本轮验证结果。</p></div>
+        <p>最终审查任务 <a href="https://linear.app/yqeeqy/issue/YQE-143/最终审查" class="issue-id">YQE-143</a> 的 issue 状态为 Done，表示审查任务已完成；其 review outcome 为 fail / needs_rework，<strong>不表示实现已通过或 accepted</strong>。</p>
+      </div>
+    </section>
+    <section class="review-grid" aria-labelledby="evidence-title">
+      <aside class="margin-note"><p class="margin-label">独立反证</p></aside>
+      <div>
+        <h2 id="evidence-title">审查记录逐层否定该交付</h2>
+        <ol class="evidence-list">
+          <li><p class="evidence-id">E-003</p><p><strong>定义检索，范围受限。</strong>YQE-143 的评论记录：仅在 YQE-134 与 YQE-142 workspace 的两个目标 <code>controller.ex</code> 中，按 <code>def issue_link|def issue_url|def extract_team_domain</code> 模式检索函数定义，均为 <strong>0 matches</strong>。这不能扩大为对整个 workspace 的结论。</p></li>
+          <li><p class="evidence-id">E-004</p><p><strong>diff 不支持实现说法。</strong>YQE-143 的评论记录：<code>controller.ex</code> diff 只有行尾变化和 <code>validate_node_agents</code>，没有链接实现。</p></li>
+          <li><p class="evidence-id">E-005</p><p><strong>渲染点仍是纯文本。</strong>YQE-143 的评论记录：<code>render_plan_comment</code>、<code>render_issue_result_comment</code>、<code>node_description</code> 仍输出纯文本 identifier。</p></li>
+          <li><p class="evidence-id">E-006</p><p><strong>测试引用与定义缺口并存。</strong>YQE-142 的 <code>workflow_controller_test.exs</code> 第 1915 行存在对 <code>issue_link/2</code> 的调用/引用，但目标函数定义未找到；因此自报测试结果不能直接采信。</p></li>
+        </ol>
+        <p class="boundary"><strong>事实边界：</strong>上述反证来自已记录的最终审查评论；本页没有重新检索代码、查看 diff、渲染页面或执行测试。</p>
+      </div>
+    </section>
+    <section class="review-grid" aria-labelledby="conditions-title">
+      <aside class="margin-note"><p class="margin-label">重新通过条件</p></aside>
+      <div>
+        <h2 id="conditions-title">先证实交付，再对齐状态</h2>
+        <ol class="conditions">
+          <li><p class="condition-label">01 / 实现</p><p><strong>issue_link/2、issue_url/2、extract_team_domain/1</strong> 三个函数与目标渲染点均存在，且可由独立审查复核。</p></li>
+          <li><p class="condition-label">02 / 测试</p><p>目标测试与完整测试必须在本轮真实通过；不能以历史自报替代执行记录。</p></li>
+          <li><p class="condition-label">03 / 审查</p><p>独立审查给出 accepted/pass，明确覆盖实现、渲染和测试证据。</p></li>
+          <li><p class="condition-label">04 / 状态</p><p>仅在上述条件成立后，再对齐 root 状态与后续通知。</p></li>
+        </ol>
+        <div class="state-note"><p><strong>状态处理顺序：</strong>恢复 active / needs_rework，重新实现或提交反证，重新运行测试并独立审查；最后才恢复 <span class="issue-id">YQE-134</span> 的可信完成状态。</p></div>
+      </div>
+    </section>
+    <footer class="footer"><p>审查叙事候选 · findings-first · 不以状态替代证据</p><p>三个 issue 链接仅用于追溯事实快照</p></footer>
+  </main>
+</body>
+</html>
