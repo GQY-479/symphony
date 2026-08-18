@@ -97,8 +97,8 @@ routing:
   default_agent: mimocode
 orchestration:
   enabled: true
-  planner_agent: mimocode
-  reviewer_agent: mimocode
+  planner_agent: codex
+  reviewer_agent: codex
   artifact_dir: ".symphony"
   planning_max_turns: 1
   review_max_turns: 1

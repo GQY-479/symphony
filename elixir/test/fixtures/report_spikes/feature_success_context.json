@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "subject": {
+    "kind": "issue",
+    "id": "YQE-801",
+    "title": "Add report artifact protocol",
+    "links": [
+      {
+        "label": "Linear issue",
+        "href": "https://linear.app/example/issue/YQE-801"
+      }
+    ]
+  },
+  "task": {
+    "original_request": "Add a local HTML report artifact protocol for engineering task summaries.",
+    "task_type_hint": "feature_implementation",
+    "success_criteria": [
+      "The report has a stable output directory.",
+      "The report includes HTML, Markdown, manifest, and review form files.",
+      "The report is generated from structured facts, not free-form chat."
+    ]
+  },
+  "work_items": [
+    {
+      "id": "YQE-801",
+      "title": "Add report artifact protocol",
+      "status": "completed",
+      "outcome": "completed",
+      "summary": "Defined a local artifact directory shape and report context schema for engineering task reports.",
+      "evidence": [
+        {
+          "label": "Design spec",
+          "href": "docs/superpowers/specs/2026-07-06-report-readability-spike-design.md"
+        },
+        {
+          "label": "Verification command",
+          "href": "commands/git-diff-check.txt"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "commands": [
+      {
+        "command": "git diff --check HEAD~1 HEAD",
+        "status": "pass",
+        "summary": "No whitespace or patch formatting problems were found."
+      }
+    ],
+    "test_results": []
+  },
+  "risks": [
+    "HTML report readability is not proven until the generated sample is reviewed by a human."
+  ],
+  "open_questions": [],
+  "raw_artifacts": [
+    {
+      "label": "Raw context",
+      "path": "report_context.json",
+      "kind": "json"
+    }
+  ]
+}

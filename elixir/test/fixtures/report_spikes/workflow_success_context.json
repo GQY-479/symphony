@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "subject": {
+    "kind": "workflow",
+    "id": "YQE-900",
+    "title": "Generate readable report samples",
+    "links": [
+      {
+        "label": "Root issue",
+        "href": "https://linear.app/example/issue/YQE-900"
+      }
+    ]
+  },
+  "task": {
+    "original_request": "Create report samples that prove the HTML format can explain a multi-issue workflow.",
+    "task_type_hint": "workflow_batch",
+    "success_criteria": [
+      "The report summarizes all work items.",
+      "The report highlights whether human attention is needed.",
+      "The report links each conclusion to evidence."
+    ]
+  },
+  "work_items": [
+    {
+      "id": "YQE-901",
+      "title": "Collect workflow facts",
+      "status": "completed",
+      "outcome": "completed",
+      "summary": "Collected root issue, work item, verification, and evidence facts into a structured context file.",
+      "evidence": [
+        {
+          "label": "Context fixture",
+          "href": "elixir/test/fixtures/report_spikes/workflow_success_context.json"
+        }
+      ]
+    },
+    {
+      "id": "YQE-902",
+      "title": "Render sample report",
+      "status": "completed",
+      "outcome": "completed",
+      "summary": "Rendered a self-contained HTML report and short Markdown summary.",
+      "evidence": [
+        {
+          "label": "Generated HTML",
+          "href": ".symphony/report-spikes/workflow-success/index.html"
+        }
+      ]
+    },
+    {
+      "id": "YQE-903",
+      "title": "Run readability checks",
+      "status": "completed",
+      "outcome": "completed",
+      "summary": "Verified first-screen summary, evidence index, short summary, and absence of external resources.",
+      "evidence": [
+        {
+          "label": "Manifest",
+          "href": ".symphony/report-spikes/workflow-success/manifest.json"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "commands": [
+      {
+        "command": "mix test test/symphony_elixir/workflow_report_spike_test.exs",
+        "status": "pass",
+        "summary": "Spike tests passed for fixture loading, rendering, and quality checks."
+      }
+    ],
+    "test_results": [
+      {
+        "name": "workflow_report_spike_test",
+        "status": "pass",
+        "summary": "All targeted report spike tests passed."
+      }
+    ]
+  },
+  "risks": [],
+  "open_questions": [],
+  "raw_artifacts": [
+    {
+      "label": "Raw context",
+      "path": "report_context.json",
+      "kind": "json"
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "subject": {
+    "kind": "workflow",
+    "id": "YQE-910",
+    "title": "Validate failure-heavy report readability",
+    "links": [
+      {
+        "label": "Root issue",
+        "href": "https://linear.app/example/issue/YQE-910"
+      }
+    ]
+  },
+  "task": {
+    "original_request": "Create a report sample that makes failed, blocked, and needs_rework work items obvious.",
+    "task_type_hint": "workflow_batch",
+    "success_criteria": [
+      "The report puts attention items above successful items.",
+      "The report explains why each attention item needs follow-up.",
+      "The report does not hide missing evidence."
+    ]
+  },
+  "work_items": [
+    {
+      "id": "YQE-911",
+      "title": "Implement base report generator",
+      "status": "completed",
+      "outcome": "completed",
+      "summary": "Generated an initial HTML report from structured context.",
+      "evidence": [
+        {
+          "label": "Generator test",
+          "href": "elixir/test/symphony_elixir/workflow_report_spike_test.exs"
+        }
+      ]
+    },
+    {
+      "id": "YQE-912",
+      "title": "Review attention handling",
+      "status": "completed",
+      "outcome": "needs_rework",
+      "summary": "Review found that evidence for one claim was too weak and should be rewritten before formal reporting.",
+      "evidence": [
+        {
+          "label": "Review result",
+          "href": ".symphony/issue_result.json"
+        }
+      ]
+    },
+    {
+      "id": "YQE-913",
+      "title": "Publish report externally",
+      "status": "blocked",
+      "outcome": "blocked",
+      "summary": "External publishing is intentionally blocked until readability samples pass human review.",
+      "evidence": []
+    },
+    {
+      "id": "YQE-914",
+      "title": "Validate dashboard embedding",
+      "status": "failed",
+      "outcome": "failed",
+      "summary": "Dashboard embedding was not attempted because the spike has not passed the readability gate.",
+      "evidence": [
+        {
+          "label": "Gate decision",
+          "href": "docs/superpowers/specs/2026-07-06-report-readability-spike-design.md"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "commands": [
+      {
+        "command": "mix test test/symphony_elixir/workflow_report_spike_test.exs",
+        "status": "pass",
+        "summary": "Targeted spike tests passed before sample generation."
+      }
+    ],
+    "test_results": []
+  },
+  "risks": [
+    "A report that hides needs_rework or blocked items would fail the spike even if all files are generated.",
+    "Human review can reject a report that passes rule checks."
+  ],
+  "open_questions": [
+    "Which visual density level is most useful for the workflow owner?"
+  ],
+  "raw_artifacts": [
+    {
+      "label": "Raw context",
+      "path": "report_context.json",
+      "kind": "json"
+    },
+    {
+      "label": "Raw validation log",
+      "path": "validation.log",
+      "kind": "log"
+    }
+  ]
+}

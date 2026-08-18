@@ -7,4 +7,6 @@ SPEC.pdf
 graphify-out/
 .superpowers/
 .worktrees/
+.mimocode/
+.symphony/
 *-local-command-*.txt
