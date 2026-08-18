@@ -21,6 +21,73 @@ defmodule SymphonyElixir.Workspace do
           issue_identifier: String.t()
         }
 
+  @spec run_command(Path.t(), String.t()) ::
+          {:ok, {String.t(), non_neg_integer()}} | {:error, term()}
+  def run_command(workspace, command), do: run_command(workspace, command, nil, [])
+
+  @spec run_command(Path.t(), String.t(), worker_host()) ::
+          {:ok, {String.t(), non_neg_integer()}} | {:error, term()}
+  def run_command(workspace, command, worker_host), do: run_command(workspace, command, worker_host, [])
+
+  @spec run_command(Path.t(), String.t(), worker_host(), keyword()) ::
+          {:ok, {String.t(), non_neg_integer()}} | {:error, term()}
+  def run_command(workspace, command, nil, opts)
+      when is_binary(workspace) and is_binary(command) and is_list(opts) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, Config.settings!().hooks.timeout_ms)
+
+    task =
+      Task.async(fn ->
+        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+      end)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, result} ->
+        {:ok, result}
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, {:workspace_command_timeout, timeout_ms}}
+    end
+  end
+
+  def run_command(workspace, command, worker_host, opts)
+      when is_binary(workspace) and is_binary(command) and is_binary(worker_host) and is_list(opts) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, Config.settings!().hooks.timeout_ms)
+    script = "cd #{shell_escape(workspace)} && #{command}"
+
+    case run_remote_command(worker_host, script, timeout_ms) do
+      {:ok, {output, status}} ->
+        {:ok, {output, status}}
+
+      {:error, {:workspace_hook_timeout, "remote_command", ^timeout_ms}} ->
+        {:error, {:workspace_command_timeout, timeout_ms}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec read_file(Path.t()) :: {:ok, binary()} | {:error, term()}
+  def read_file(path), do: read_file(path, nil)
+
+  @spec read_file(Path.t(), worker_host()) :: {:ok, binary()} | {:error, term()}
+  def read_file(path, nil) when is_binary(path), do: File.read(path)
+
+  def read_file(path, worker_host) when is_binary(path) and is_binary(worker_host) do
+    workspace = Path.dirname(path)
+    filename = Path.basename(path)
+
+    with {:ok, {encoded, 0}} <-
+           run_command(workspace, "base64 < #{shell_escape(filename)}", worker_host),
+         {:ok, body} <- Base.decode64(String.replace(encoded, ~r/\s+/, "")) do
+      {:ok, body}
+    else
+      {:ok, {output, status}} -> {:error, {:workspace_read_failed, status, output}}
+      :error -> {:error, :invalid_base64_file_content}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @spec create_for_issue(map() | String.t() | nil, worker_host()) ::
           {:ok, Path.t()} | {:error, term()}
   def create_for_issue(issue_or_identifier, worker_host \\ nil) do

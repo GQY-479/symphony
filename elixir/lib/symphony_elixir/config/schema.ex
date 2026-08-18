@@ -255,6 +255,9 @@ defmodule SymphonyElixir.Config.Schema do
       field(:artifact_dir, :string, default: ".symphony")
       field(:planning_max_turns, :integer, default: 1)
       field(:review_max_turns, :integer, default: 1)
+      field(:git_remote, :string, default: "origin")
+      field(:target_branch, :string, default: "main")
+      field(:completion_max_continuations, :integer, default: 3)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -262,12 +265,25 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:enabled, :mode, :planner_agent, :reviewer_agent, :artifact_dir, :planning_max_turns, :review_max_turns],
+        [
+          :enabled,
+          :mode,
+          :planner_agent,
+          :reviewer_agent,
+          :artifact_dir,
+          :planning_max_turns,
+          :review_max_turns,
+          :git_remote,
+          :target_branch,
+          :completion_max_continuations
+        ],
         empty_values: []
       )
       |> validate_inclusion(:mode, ["workflow", "legacy"])
+      |> validate_required([:git_remote, :target_branch])
       |> validate_number(:planning_max_turns, greater_than: 0)
       |> validate_number(:review_max_turns, greater_than: 0)
+      |> validate_number(:completion_max_continuations, greater_than: 0)
     end
   end
 

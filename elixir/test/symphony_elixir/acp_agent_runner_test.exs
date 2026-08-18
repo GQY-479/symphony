@@ -543,6 +543,8 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
         labels: []
       }
 
+      save_workflow_issue_registry!(issue, "implementation")
+
       assert :ok =
                AgentRunner.run(
                  issue,
@@ -622,6 +624,8 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
         state: "In Progress",
         labels: []
       }
+
+      save_workflow_issue_registry!(issue, "implementation")
 
       assert :ok =
                AgentRunner.run(
@@ -707,6 +711,8 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
         labels: []
       }
 
+      save_workflow_issue_registry!(issue, "review")
+
       assert :ok =
                AgentRunner.run(
                  issue,
@@ -727,6 +733,127 @@ defmodule SymphonyElixir.AcpAgentRunnerTest do
       kill_fake_acp(pid_file)
       File.rm_rf(test_root)
     end
+  end
+
+  test "AgentRunner 在 before_run hook 前准备 issue 私有分支" do
+    test_root =
+      Path.join(System.tmp_dir!(), "symphony-agent-runner-git-prepare-#{System.unique_integer([:positive])}")
+
+    trace_file = Path.join(test_root, "prepare.trace")
+    workspace_root = Path.join(test_root, "workspaces")
+
+    try do
+      File.mkdir_p!(test_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: workspace_root,
+        hook_before_run: "printf 'hook\\n' >> #{trace_file}; exit 17",
+        orchestration: %{enabled: true, artifact_dir: ".symphony"}
+      )
+
+      root_issue = %Issue{
+        id: "root-agent-prepare",
+        identifier: "YQE-AGENT-PREPARE",
+        title: "root",
+        state: "In Progress"
+      }
+
+      issue = %Issue{
+        id: "issue-agent-prepare",
+        identifier: "YQE-AGENT-1",
+        title: "implementation",
+        state: "In Progress"
+      }
+
+      root_issue
+      |> SymphonyElixir.Workflow.Registry.new_root()
+      |> SymphonyElixir.Workflow.Registry.put_workflow_git(%{
+        "remote" => "origin",
+        "target_branch" => "main",
+        "candidate_branch" => "symphony/YQE-AGENT-PREPARE/candidate",
+        "candidate_head_sha" => "candidate-base"
+      })
+      |> SymphonyElixir.Workflow.Registry.put_node("implementation", %{
+        "issue_id" => issue.id,
+        "issue_identifier" => issue.identifier,
+        "task_type" => "implementation",
+        "branch" => "symphony/YQE-AGENT-PREPARE/YQE-AGENT-1",
+        "base_candidate_sha" => "candidate-base",
+        "status" => "ready"
+      })
+      |> SymphonyElixir.Workflow.Registry.save!()
+
+      Application.put_env(:symphony_elixir, :workflow_git_adapter_stub, %{
+        prepare_private_branch: fn remote, branch, base_sha ->
+          File.write!(trace_file, "prepare\n", [:append])
+          {:ok, %{remote: remote, branch: branch, head_sha: base_sha}}
+        end
+      })
+
+      assert_raise AgentRunner.Error, fn ->
+        AgentRunner.run(issue, nil,
+          workflow_phase: :issue,
+          prepare_workflow_workspace: true,
+          max_turns: 1
+        )
+      end
+
+      assert File.read!(trace_file) |> String.split("\n", trim: true) == ["prepare", "hook"]
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp save_workflow_issue_registry!(%Issue{} = issue, task_type) do
+    root_identifier = "ROOT-#{issue.identifier}"
+
+    registry =
+      %Issue{
+        id: "root-#{issue.id}",
+        identifier: root_identifier,
+        title: "root",
+        state: "In Progress"
+      }
+      |> SymphonyElixir.Workflow.Registry.new_root()
+      |> SymphonyElixir.Workflow.Registry.put_workflow_git(%{
+        "remote" => "origin",
+        "target_branch" => "main",
+        "candidate_branch" => "symphony/#{root_identifier}/candidate",
+        "candidate_head_sha" => "candidate-base"
+      })
+
+    node_key = if task_type == "review", do: "final_review", else: "implementation"
+
+    node = %{
+      "issue_id" => issue.id,
+      "issue_identifier" => issue.identifier,
+      "task_type" => task_type,
+      "status" => "ready"
+    }
+
+    registry =
+      if task_type == "review" do
+        registry
+        |> SymphonyElixir.Workflow.Registry.put_subject("subject-1", %{
+          "type" => "candidate_range",
+          "head_sha" => "candidate-base"
+        })
+        |> SymphonyElixir.Workflow.Registry.put_node(
+          node_key,
+          Map.put(node, "subject_id", "subject-1")
+        )
+      else
+        SymphonyElixir.Workflow.Registry.put_node(
+          registry,
+          node_key,
+          node
+          |> Map.put("branch", "symphony/#{root_identifier}/#{issue.identifier}")
+          |> Map.put("base_candidate_sha", "candidate-base")
+        )
+      end
+
+    SymphonyElixir.Workflow.Registry.save!(registry)
   end
 
   defp kill_fake_acp(pid_file) when is_binary(pid_file) do

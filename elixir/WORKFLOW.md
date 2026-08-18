@@ -102,6 +102,9 @@ orchestration:
   artifact_dir: ".symphony"
   planning_max_turns: 1
   review_max_turns: 1
+  git_remote: origin
+  target_branch: main
+  completion_max_continuations: 3
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`
@@ -173,6 +176,10 @@ The legacy top-level `codex:` config is accepted for compatibility only. New wor
 - Keep ticket metadata current (state, checklist, acceptance criteria, links).
 - Treat the Workflow registry and artifact files as the source of truth for control state. Linear comments and workpads are visibility only, not authoritative state.
 - When orchestration is active, planning must produce `workflow_plan.json`; every non-planning workflow issue, including review issues, must produce `.symphony/issue_result.json`.
+- `issue_result.json` 是完成申请；Symphony 还会校验私有分支提交、最新 candidate 祖先关系和远程 checkpoint，之后才会完成节点。
+- 可写 workflow 任务必须在自己的 workspace 提交全部应交付业务变更；不得 push 或更新 candidate/target，共享引用由 Controller 负责。
+- Controller 要求 completion continuation 时，必须复用当前 workspace，只处理未提交内容、candidate 漂移或冲突，不得重新开始任务。
+- 对派生 issue 而言，root workflow 与上游 workspace 都是只读上下文；所有业务修改只能发生在当前 issue workspace。
 - Do not move the current Linear issue to signal completion, handoff, review, or closure; Symphony advances or closes the current issue after it reads and validates the structured artifact.
 - Issue result evidence is required for review `pass` outcomes; review issues must not return `pass` without sufficient evidence in `issue_result.json`.
 - Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as non-negotiable acceptance input: carry it into the relevant artifacts and execute it before considering the work complete.

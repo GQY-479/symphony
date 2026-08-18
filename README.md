@@ -10,6 +10,17 @@ _In this [demo video](https://player.vimeo.com/video/1186371009?h=5626e4b899), S
 > [!WARNING]
 > Symphony is a low-key engineering preview for testing in trusted environments.
 
+## Issue Graph 的 Git 交付边界
+
+在 Issue Graph 模式中，`implementation`、`integration` 和 `review` 只表示当前 issue 的任务责任，
+不对应长期驻留或具有独立身份的 agent 实体。统一的 coding agent 按 node 上下文执行不同责任。
+
+可写 issue 的 agent 负责判断需要提交的内容、清理工作区、创建完整提交，以及在私有分支解决
+candidate 或 target 冲突；agent 不直接更新共享 candidate 或 target。Workflow Controller 校验 Git
+事实后，以 compare-and-swap 受保护地推进共享引用并保存 checkpoint。最终审查绑定 Controller
+生成的 target/candidate SHA；任一引用漂移都会使审查失效。只有审查通过的 candidate 已发布到远程
+target 且 publication checkpoint 已持久化后，root issue 才能进入 Done。
+
 ## Running Symphony
 
 ### Requirements

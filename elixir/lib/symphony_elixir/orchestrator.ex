@@ -289,7 +289,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp handle_workflow_phase_down(state, issue_id, running_entry, :planning) do
     with {:ok, workspace} <- running_workspace(running_entry),
-         {:ok, registry} <- Controller.handle_planning_completion(running_entry.issue, workspace) do
+         {:ok, registry} <-
+           Controller.handle_planning_completion(
+             running_entry.issue,
+             workspace,
+             worker_host: Map.get(running_entry, :worker_host)
+           ) do
       apply_workflow_planning_result(state, issue_id, running_entry, registry)
     else
       {:error, reason} ->
@@ -300,7 +305,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp handle_workflow_phase_down(state, issue_id, running_entry, :issue) do
     with {:ok, workspace} <- running_workspace(running_entry),
-         {:ok, result} <- Controller.handle_issue_completion(running_entry.issue, workspace) do
+         {:ok, result} <-
+           Controller.handle_issue_completion(
+             running_entry.issue,
+             workspace,
+             worker_host: Map.get(running_entry, :worker_host)
+           ) do
       apply_workflow_issue_result(state, issue_id, running_entry, result)
     else
       {:error, reason} ->
@@ -390,6 +400,60 @@ defmodule SymphonyElixir.Orchestrator do
     |> complete_issue(issue_id)
     |> release_issue_claim(issue_id)
     |> schedule_tick(0)
+  end
+
+  defp apply_workflow_issue_result(
+         state,
+         issue_id,
+         running_entry,
+         {:continue_agent, _result_issue_id, reason, context}
+       ) do
+    continuation = Map.put(context, "reason", Atom.to_string(reason))
+
+    workflow_context =
+      Map.put(
+        Map.get(running_entry, :workflow_context) || %{},
+        "completion_continuation",
+        continuation
+      )
+
+    state
+    |> complete_issue(issue_id)
+    |> schedule_issue_retry(issue_id, 1, %{
+      retry_kind: :agent,
+      delay_type: :continuation,
+      identifier: Map.get(running_entry, :identifier),
+      issue_url: get_in(running_entry, [:issue, Access.key(:url)]),
+      agent_id: Map.get(running_entry, :agent_id),
+      agent_kind: Map.get(running_entry, :agent_kind),
+      worker_host: Map.get(running_entry, :worker_host),
+      workspace_path: Map.get(running_entry, :workspace_path),
+      workflow_phase: :issue,
+      workflow_context: workflow_context,
+      workflow_root_issue_id: Map.get(running_entry, :workflow_root_issue_id)
+    })
+  end
+
+  defp apply_workflow_issue_result(
+         state,
+         issue_id,
+         running_entry,
+         {:retry_controller, _result_issue_id, reason, context}
+       ) do
+    state
+    |> complete_issue(issue_id)
+    |> schedule_issue_retry(issue_id, 1, %{
+      retry_kind: :controller,
+      error: inspect(reason),
+      controller_context: context,
+      identifier: Map.get(running_entry, :identifier),
+      issue_url: get_in(running_entry, [:issue, Access.key(:url)]),
+      worker_host: Map.get(running_entry, :worker_host),
+      workspace_path: Map.get(running_entry, :workspace_path),
+      workflow_phase: :issue,
+      workflow_context: Map.get(running_entry, :workflow_context),
+      workflow_root_issue_id: Map.get(running_entry, :workflow_root_issue_id)
+    })
   end
 
   defp apply_workflow_issue_result(state, issue_id, running_entry, decision) do
@@ -668,6 +732,13 @@ defmodule SymphonyElixir.Orchestrator do
           state
       end
     end
+  end
+
+  @doc false
+  @spec apply_workflow_issue_result_for_test(State.t(), String.t(), map(), term()) :: State.t()
+  def apply_workflow_issue_result_for_test(%State{} = state, issue_id, running_entry, result)
+      when is_binary(issue_id) and is_map(running_entry) do
+    apply_workflow_issue_result(state, issue_id, running_entry, result)
   end
 
   @doc false
@@ -1711,7 +1782,16 @@ defmodule SymphonyElixir.Orchestrator do
     |> maybe_put_runner_opt(:workflow_phase, metadata_value(metadata, :workflow_phase))
     |> maybe_put_runner_opt(:workflow_context, metadata_value(metadata, :workflow_context))
     |> maybe_put_runner_opt(:workflow_root_issue_id, metadata_value(metadata, :workflow_root_issue_id))
+    |> maybe_put_runner_opt(
+      :prepare_workflow_workspace,
+      prepare_workflow_workspace?(metadata)
+    )
     |> maybe_put_runner_opt(:max_turns, metadata_value(metadata, :max_turns))
+  end
+
+  defp prepare_workflow_workspace?(metadata) do
+    metadata_value(metadata, :workflow_phase) in [:issue, "issue"] and
+      is_binary(metadata_value(metadata, :workflow_root_issue_id))
   end
 
   defp metadata_value(metadata, key) when is_map(metadata) and is_atom(key) do
@@ -1779,6 +1859,8 @@ defmodule SymphonyElixir.Orchestrator do
     workflow_context = pick_retry_workflow_value(previous_retry, metadata, :workflow_context)
     workflow_root_issue_id = pick_retry_workflow_value(previous_retry, metadata, :workflow_root_issue_id)
     max_turns = pick_retry_workflow_value(previous_retry, metadata, :max_turns)
+    retry_kind = pick_retry_workflow_value(previous_retry, metadata, :retry_kind)
+    controller_context = pick_retry_workflow_value(previous_retry, metadata, :controller_context)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1808,7 +1890,9 @@ defmodule SymphonyElixir.Orchestrator do
             workflow_phase: workflow_phase,
             workflow_context: workflow_context,
             workflow_root_issue_id: workflow_root_issue_id,
-            max_turns: max_turns
+            max_turns: max_turns,
+            retry_kind: retry_kind,
+            controller_context: controller_context
           })
     }
   end
@@ -1827,7 +1911,9 @@ defmodule SymphonyElixir.Orchestrator do
           workflow_phase: Map.get(retry_entry, :workflow_phase),
           workflow_context: Map.get(retry_entry, :workflow_context),
           workflow_root_issue_id: Map.get(retry_entry, :workflow_root_issue_id),
-          max_turns: Map.get(retry_entry, :max_turns)
+          max_turns: Map.get(retry_entry, :max_turns),
+          retry_kind: Map.get(retry_entry, :retry_kind),
+          controller_context: Map.get(retry_entry, :controller_context)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1922,19 +2008,52 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
-    if retry_candidate_issue?(issue, terminal_state_set()) and
-         dispatch_slots_available?(issue, state) and
-         worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata)}
+    if metadata[:retry_kind] == :controller do
+      handle_controller_retry(state, issue, attempt, metadata)
     else
-      Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+      if retry_candidate_issue?(issue, terminal_state_set()) and
+           dispatch_slots_available?(issue, state) and
+           worker_slots_available?(state, metadata[:worker_host]) do
+        {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata)}
+      else
+        Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
-      metadata =
-        metadata
-        |> Map.put(:identifier, issue.identifier)
-        |> Map.put_new(:issue_url, issue.url)
+        metadata =
+          metadata
+          |> Map.put(:identifier, issue.identifier)
+          |> Map.put_new(:issue_url, issue.url)
 
-      {:noreply, schedule_issue_retry(state, issue.id, attempt, metadata)}
+        {:noreply, schedule_issue_retry(state, issue.id, attempt, metadata)}
+      end
+    end
+  end
+
+  defp handle_controller_retry(state, issue, attempt, metadata) do
+    workspace = metadata[:workspace_path]
+
+    case Controller.handle_issue_completion(
+           issue,
+           workspace,
+           worker_host: metadata[:worker_host],
+           controller_retry: true,
+           controller_context: metadata[:controller_context]
+         ) do
+      {:ok, result} ->
+        running_entry =
+          metadata
+          |> Map.put(:issue, issue)
+          |> Map.put(:identifier, issue.identifier)
+          |> Map.put_new(:workflow_context, %{})
+
+        {:noreply, apply_workflow_issue_result(state, issue.id, running_entry, result)}
+
+      {:error, reason} ->
+        retry_metadata =
+          metadata
+          |> Map.put(:retry_kind, :controller)
+          |> Map.put(:error, "controller retry failed: #{inspect(reason)}")
+
+        {:noreply, schedule_issue_retry(state, issue.id, attempt + 1, retry_metadata)}
     end
   end
 

@@ -32,6 +32,50 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
              Path.join([workspace, ".symphony", "issue_result.json"])
   end
 
+  test "artifact loader 保持本地 API 并接受 worker host 参数" do
+    workspace =
+      Path.join(System.tmp_dir!(), "workflow-artifacts-worker-read-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm_rf(workspace) end)
+    File.mkdir_p!(Path.join(workspace, ".symphony"))
+
+    plan = %{
+      "kind" => "issue_graph",
+      "summary" => "worker artifact",
+      "confidence" => "high",
+      "nodes" => [
+        %{
+          "node_key" => "implementation",
+          "task_type" => "implementation",
+          "title" => "实现",
+          "goal" => "实现目标",
+          "agent_id" => "codex"
+        },
+        final_review_node()
+      ],
+      "edges" => [%{"from" => "implementation", "to" => "final_review"}]
+    }
+
+    result = %{
+      "schema_version" => 1,
+      "node_key" => "implementation",
+      "task_type" => "implementation",
+      "outcome" => "completed",
+      "summary" => "已完成",
+      "evidence" => ["mix test"],
+      "decisions" => [],
+      "open_questions" => []
+    }
+
+    File.write!(Artifacts.workflow_plan_path(workspace), Jason.encode!(plan))
+    File.write!(Artifacts.issue_result_path(workspace), Jason.encode!(result))
+
+    assert {:ok, ^plan} = Artifacts.load_workflow_plan(workspace)
+    assert {:ok, ^plan} = Artifacts.load_workflow_plan(workspace, nil)
+    assert {:ok, ^result} = Artifacts.load_issue_result(workspace)
+    assert {:ok, ^result} = Artifacts.load_issue_result(workspace, nil)
+  end
+
   test "execution summary path uses the configured artifact directory" do
     write_workflow_file!(Workflow.workflow_file_path(),
       orchestration: %{enabled: true, artifact_dir: ".symphony"}
@@ -605,6 +649,59 @@ defmodule SymphonyElixir.WorkflowArtifactsTest do
     assert checkpoint["candidate_after_sha"] == "after"
     assert registry["subjects"]["subject-001"]["status"] == "pending"
     assert registry["reviews"]["implementation_review"]["status"] == "accepted"
+  end
+
+  test "registry 保存 workflow Git、node continuation 和幂等 checkpoint" do
+    root = %Issue{id: "root-git", identifier: "YQE-GIT", title: "root", state: "In Progress"}
+
+    registry =
+      root
+      |> Registry.new_root()
+      |> Registry.put_workflow_git(%{
+        "remote" => "origin",
+        "target_branch" => "main",
+        "target_base_sha" => "base",
+        "candidate_branch" => "symphony/YQE-GIT/candidate",
+        "candidate_head_sha" => "base"
+      })
+      |> Registry.put_node("implementation", %{"status" => "running"})
+      |> Registry.put_node_git("implementation", %{
+        "branch" => "issue-branch",
+        "base_candidate_sha" => "base"
+      })
+      |> Registry.put_node_continuation("implementation", %{
+        "reason" => "candidate_advanced",
+        "attempt" => 1
+      })
+      |> Registry.add_checkpoint_once(%{"id" => "cp-1", "kind" => "candidate_promotion"})
+      |> Registry.add_checkpoint_once(%{"id" => "cp-1", "kind" => "candidate_promotion"})
+
+    assert registry["publication"]["status"] == "pending"
+    assert Registry.node(registry, "implementation")["branch"] == "issue-branch"
+
+    assert Registry.node(registry, "implementation")["continuation"]["reason"] ==
+             "candidate_advanced"
+
+    assert Enum.count(registry["checkpoints"]) == 1
+  end
+
+  test "registry 可清除 continuation 并更新 publication" do
+    registry =
+      %Issue{id: "root-publication", identifier: "YQE-PUB", title: "root", state: "In Progress"}
+      |> Registry.new_root()
+      |> Registry.put_node("implementation", %{
+        "status" => "running",
+        "continuation" => %{"attempt" => 1}
+      })
+      |> Registry.clear_node_continuation("implementation")
+      |> Registry.put_publication(%{
+        "status" => "published",
+        "published_target_sha" => "published-sha"
+      })
+
+    refute Map.has_key?(Registry.node(registry, "implementation"), "continuation")
+    assert registry["publication"]["status"] == "published"
+    assert registry["publication"]["published_target_sha"] == "published-sha"
   end
 
   test "registry paths expand tilde workspace roots before joining workflow directory" do

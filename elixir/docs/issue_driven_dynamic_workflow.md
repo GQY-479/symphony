@@ -36,11 +36,24 @@ review 不再是 orchestrator 内部 phase；review 是普通 issue node。是�
 3. planner 只能写出 `issue_graph` 或 `needs_human_input`。所有可执行工作，包括小任务，都用 `issue_graph` 表达。
 4. `issue_graph` 必须显式包含 `final_review` node；controller 只校验和物化 graph，不替 planner 补建编排节点。
 5. 派生 issue 只有在 registry 节点为 `ready` 且依赖已完成时才会执行。
-6. 普通 issue agent 写出 `issue_result.json` 后，Symphony 写回 Issue Result 评论，并按 registry 依赖边解锁下游。
-7. review issue agent 也写出 `issue_result.json`。`outcome=pass` 会把 review 节点标记为 `completed`，并把依赖满足的下游节点推进到 `ready`。
-8. review `needs_rework` 会创建普通返工 issue，原节点在 registry 中标记为 `superseded`，下游改为等待返工节点通过。可由 agent 通过代码、测试、文档或配置返工修复的 gap 应使用 `needs_rework`，不要使用 `fail`。如果被 supersede 的 review 是 root `final_review`，控制层会创建替代 `final_review`，确保返工结果仍经过最终审查后才完成 root workflow。
-9. review `needs_replan` 会把 root workflow 标记为 `replanning`，废弃未完成节点，并把这些被废弃的派生 issue 移到终态，避免旧路径继续被轮询；随后调度 root issue 重新进入 planning，planner 会收到重规划原因和被审查 issue。
-10. `needs_human` 和 `fail` 会把 issue 留在可诊断的 blocked 状态，避免静默成功。`fail` 只用于不应自动继续的不可恢复问题，例如目标本身无效、继续会破坏数据/安全边界、外部条件永久不可满足，或已经无法把返工安全地绑定到现有 workflow 节点。
+6. 普通 issue agent 在私有分支完成提交并写出 `issue_result.json`；该文件是完成申请，不是已交付证明。工作区仍有未提交业务变更时，Controller 返回同一 issue 的 agent continuation。
+7. Controller fetch 最新远程 candidate，校验其为 issue HEAD 的祖先后，先确认私有分支，再以 compare-and-swap 推进 candidate 并保存 checkpoint。CAS 竞争交给 agent 吸收新 candidate；临时 Git、Registry 或 Tracker 故障只做 controller retry。
+8. 普通 review 的 subject 由 Controller 根据被审查 node 的 checkpoint 创建。`outcome=pass` 会接受该 subject；后续 candidate checkpoint 与其路径相交时，subject 和 review 都会变为 `stale`。
+9. review `needs_rework` 会创建普通返工 issue，原节点在 registry 中标记为 `superseded`，下游改为等待返工节点通过。可由 agent 通过代码、测试、文档或配置返工修复的 gap 应使用 `needs_rework`，不要使用 `fail`。如果被 supersede 的 review 是 root `final_review`，控制层会创建替代 `final_review`，确保返工结果仍经过最终审查后才完成 root workflow。
+10. review `needs_replan` 会把 root workflow 标记为 `replanning`，废弃未完成节点，并把这些被废弃的派生 issue 移到终态，避免旧路径继续被轮询；随后调度 root issue 重新进入 planning，planner 会收到重规划原因和被审查 issue。
+11. final review 解锁前，Controller 检查远程 target 是否为 candidate 的祖先；如果不是，会物化 `task_type=integration` 的 target sync issue，由普通 coding agent 在私有分支解决冲突并提交。
+12. final review subject 固定 target/candidate SHA。审查通过时 Controller 再次验证两者未漂移，受保护地发布 target，保存 publication checkpoint，最后依次关闭 final review issue 和 root issue。
+13. `needs_human` 和 `fail` 会把 issue 留在可诊断的 blocked 状态，避免静默成功。`fail` 只用于不应自动继续的不可恢复问题，例如目标本身无效、继续会破坏数据/安全边界、外部条件永久不可满足，或已经无法把返工安全地绑定到现有 workflow 节点。
+
+## 任务责任不是 Agent 实体
+
+`implementation`、`integration` 和 `review` 只是当前 node 的任务责任。Registry 不创建或保存
+对应的长期 agent 实体；Orchestrator 仍按统一 routing 选择任意可用 coding agent。具体行为由
+`task_type`、workflow context、私有 workspace 和 review subject 共同约束。
+
+Agent 可以在私有分支执行提交、合并和冲突解决，但不得直接更新共享 candidate、target、checkpoint
+或 Tracker 终态。Controller 不判断如何修改代码，也不解决内容冲突；它只校验事实并执行确定性的
+共享引用推进与状态持久化。
 
 ## 需要人工输入
 
@@ -71,7 +84,13 @@ Workflow registry 存放在：
 <workspace.root>/.symphony/workflows/<root-identifier>.json
 ```
 
-registry 记录 root issue、派生 issue、节点状态、依赖边和 agent 分配。第一版不依赖 Linear sub-issue，也不引入数据库。
+registry 记录 root issue、派生 issue、节点状态、依赖边、agent 路由、candidate/target Git 事实、
+node checkpoint、review subject、review 状态和 publication 结果。远程引用、commit 图和幂等
+checkpoint 共同支持 Controller 中断恢复；第一版不引入通用 operation journal 或数据库。
+
+Root workflow 的完成条件不是“所有 node 状态看起来已完成”，而是同时满足：所有有效 executable
+node 已完成、final review 已接受且未漂移、远程 target 已推进到被审查 candidate、publication
+checkpoint 已持久化。
 
 ## 可观测性
 
